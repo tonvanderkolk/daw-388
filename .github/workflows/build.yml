@@ -23,7 +23,7 @@ jobs:
             binary: daw388.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -32,11 +32,13 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # Tests draaien in het release-profiel, zodat de release-build daarna dezelfde
+      # gecompileerde afhankelijkheden hergebruikt in plaats van alles opnieuw te bouwen.
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --release
       - name: Release-build
         run: cargo build --release -p daw388
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: target/release/${{ matrix.binary }}
