@@ -604,13 +604,13 @@ impl DawApp {
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                meter(ui, track.meter_db, 180.0);
+                meter(ui, track.meter_db, FADER_HEIGHT + 2.0 * FADER_MARGIN);
                 let fader = fader(ui, &mut track.fader_db, palette::CREAM);
                 if fader.changed() || fader.double_clicked() {
                     commands.push(Command::SetGain(index, db_to_gain(track.fader_db)));
                 }
             });
-            ui.label(RichText::new(format!("{:+.1} dB", track.fader_db)).size(11.0).color(palette::TEXT_DIM));
+            ui.label(RichText::new(format_db(track.fader_db)).size(11.0).color(palette::TEXT_DIM));
         });
         if !commands.is_empty() {
             self.mark_dirty();
@@ -634,8 +634,8 @@ impl DawApp {
             ui.label(RichText::new("STEREO").strong().size(14.0).color(palette::CREAM));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                meter(ui, self.master_meter_db[0], 240.0);
-                meter(ui, self.master_meter_db[1], 240.0);
+                meter(ui, self.master_meter_db[0], FADER_HEIGHT + 2.0 * FADER_MARGIN);
+                meter(ui, self.master_meter_db[1], FADER_HEIGHT + 2.0 * FADER_MARGIN);
                 let response = fader(ui, &mut self.master_db, palette::RED);
                 if response.changed() || response.double_clicked() {
                     let gain = db_to_gain(self.master_db);
@@ -643,7 +643,7 @@ impl DawApp {
                     self.mark_dirty();
                 }
             });
-            ui.label(RichText::new(format!("{:+.1} dB", self.master_db)).size(11.0).color(palette::TEXT_DIM));
+            ui.label(RichText::new(format_db(self.master_db)).size(11.0).color(palette::TEXT_DIM));
         });
     }
 
@@ -692,28 +692,78 @@ fn transport_key(ui: &mut Ui, label: &str, lit: bool) -> egui::Response {
     ui.add(egui::Button::new(text).fill(palette::KEY).min_size(vec2(64.0, 40.0)).corner_radius(CornerRadius::same(3)))
 }
 
-/// A vertical fader in dB; double-click resets it to 0 dB.
+/// Fader travel in points; long enough for fine work around 0 dB.
+const FADER_HEIGHT: f32 = 260.0;
+/// Room above and below the travel for the cap.
+const FADER_MARGIN: f32 = 10.0;
+
+/// The fader taper: (position from 0 at the bottom to 1 at the top, dB). Like a console fader,
+/// it gives the range around 0 dB most of the travel and squeezes the quiet end; the bottom
+/// position is off.
+const TAPER: [(f32, f32); 9] =
+    [(0.0, MIN_DB), (0.12, -40.0), (0.25, -30.0), (0.39, -20.0), (0.54, -10.0), (0.66, -5.0), (0.78, 0.0), (0.89, 5.0), (1.0, MAX_DB)];
+
+/// Scale marks printed next to the faders.
+const FADER_MARKS: [(f32, &str); 9] =
+    [(10.0, "10"), (5.0, "5"), (0.0, "0"), (-5.0, "5"), (-10.0, "10"), (-20.0, "20"), (-30.0, "30"), (-40.0, "40"), (MIN_DB, "∞")];
+
+/// Position (0 to 1) of a level in dB on the fader.
+fn fader_position(db: f32) -> f32 {
+    let db = db.clamp(MIN_DB, MAX_DB);
+    for pair in TAPER.windows(2) {
+        let ((p0, d0), (p1, d1)) = (pair[0], pair[1]);
+        if db <= d1 {
+            return p0 + (db - d0) / (d1 - d0) * (p1 - p0);
+        }
+    }
+    1.0
+}
+
+/// Level in dB at a fader position (0 to 1).
+fn fader_db(position: f32) -> f32 {
+    let position = position.clamp(0.0, 1.0);
+    for pair in TAPER.windows(2) {
+        let ((p0, d0), (p1, d1)) = (pair[0], pair[1]);
+        if position <= p1 {
+            return d0 + (position - p0) / (p1 - p0) * (d1 - d0);
+        }
+    }
+    MAX_DB
+}
+
+/// A fader level as text, "-∞" when closed.
+fn format_db(db: f32) -> String {
+    if db <= MIN_DB { "-∞ dB".into() } else { format!("{db:+.1} dB") }
+}
+
+/// A vertical fader in dB with a console taper and a printed scale. Shift while dragging moves it
+/// five times finer; double-click resets it to 0 dB.
 fn fader(ui: &mut Ui, db: &mut f32, cap: Color32) -> egui::Response {
-    let height = 180.0;
-    let (rect, response) = ui.allocate_exact_size(vec2(34.0, height), Sense::click_and_drag());
-    let to_y = |value: f32| rect.bottom() - 10.0 - (value - MIN_DB) / (MAX_DB - MIN_DB) * (height - 20.0);
-    let mut response = response;
+    let height = FADER_HEIGHT + 2.0 * FADER_MARGIN;
+    let (rect, mut response) = ui.allocate_exact_size(vec2(58.0, height), Sense::click_and_drag());
+    let travel = FADER_HEIGHT;
+    let slot_x = rect.right() - 17.0;
+    let to_y = |value: f32| rect.bottom() - FADER_MARGIN - fader_position(value) * travel;
     if response.dragged() {
-        let delta = -response.drag_delta().y / (height - 20.0) * (MAX_DB - MIN_DB);
         let fine = if ui.input(|i| i.modifiers.shift) { 0.2 } else { 1.0 };
-        *db = (*db + delta * fine).clamp(MIN_DB, MAX_DB);
+        let position = fader_position(*db) - response.drag_delta().y / travel * fine;
+        *db = fader_db(position);
         response.mark_changed();
     }
     if response.double_clicked() {
         *db = 0.0;
     }
     let painter = ui.painter();
-    let slot = egui::Rect::from_center_size(rect.center(), vec2(4.0, height - 16.0));
+    let font = egui::FontId::proportional(9.0);
+    for (value, label) in FADER_MARKS {
+        let y = to_y(value);
+        let colour = if value == 0.0 { palette::CREAM } else { palette::TEXT_DIM };
+        painter.line_segment([egui::pos2(slot_x - 20.0, y), egui::pos2(slot_x - 16.0, y)], Stroke::new(1.0, colour));
+        painter.text(egui::pos2(slot_x - 22.0, y), egui::Align2::RIGHT_CENTER, label, font.clone(), colour);
+    }
+    let slot = egui::Rect::from_center_size(egui::pos2(slot_x, rect.center().y), vec2(4.0, travel + 6.0));
     painter.rect_filled(slot, 2.0, Color32::BLACK);
-    let unity = to_y(0.0);
-    painter
-        .line_segment([egui::pos2(rect.left() + 4.0, unity), egui::pos2(rect.right() - 4.0, unity)], Stroke::new(1.0, palette::TEXT_DIM));
-    let knob = egui::Rect::from_center_size(egui::pos2(rect.center().x, to_y(*db)), vec2(28.0, 16.0));
+    let knob = egui::Rect::from_center_size(egui::pos2(slot_x, to_y(*db)), vec2(28.0, 16.0));
     painter.rect_filled(knob, 3.0, cap);
     painter.line_segment(
         [egui::pos2(knob.left() + 3.0, knob.center().y), egui::pos2(knob.right() - 3.0, knob.center().y)],
@@ -972,6 +1022,24 @@ mod tests {
         assert_eq!(format_counter(0.0), "00:00.0");
         assert_eq!(format_counter(61.25), "01:01.2");
         assert_eq!(format_counter(-3.0), "00:00.0");
+    }
+
+    #[test]
+    fn fader_taper_gives_most_travel_around_zero() {
+        assert_eq!(fader_position(MIN_DB), 0.0);
+        assert_eq!(fader_position(MAX_DB), 1.0);
+        assert!((fader_position(0.0) - 0.78).abs() < 1e-6);
+        for db in [-55.0, -35.0, -12.5, -1.0, 0.0, 3.3, 9.0] {
+            assert!((fader_db(fader_position(db)) - db).abs() < 1e-4, "{db}");
+        }
+        // Between -10 and +5 dB there is far more travel per dB than at the quiet end.
+        let near_zero = (fader_position(5.0) - fader_position(-10.0)) / 15.0;
+        let quiet = (fader_position(-40.0) - fader_position(MIN_DB)) / 20.0;
+        assert!(near_zero > 3.0 * quiet);
+        // At least 5 points of travel per dB around 0 dB.
+        assert!(near_zero * FADER_HEIGHT >= 5.0);
+        assert_eq!(format_db(MIN_DB), "-∞ dB");
+        assert_eq!(format_db(-3.0), "-3.0 dB");
     }
 
     #[test]

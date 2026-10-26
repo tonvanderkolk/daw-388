@@ -2,6 +2,13 @@
 
 Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Versioning](https://semver.org/lang/nl/).
 
+## [0.2.2] - 2026-10-27
+
+### Gewijzigd
+- Faders hebben een mengtafel-curve: 0 dB zit op ongeveer driekwart van de baan en tussen -10 en +5 dB is veel ruimte (ongeveer 6 punten per dB, met Shift 30). De stille kant onderin is samengedrukt.
+- Langere faderbaan (260 punten) met schaalverdeling (+10 tot -40 en ∞) naast elke fader.
+- Een dichte fader toont "-∞ dB".
+
 ## [0.2.1] - 2026-10-27
 
 ### Toegevoegd
