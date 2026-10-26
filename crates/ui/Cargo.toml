@@ -1,0 +1,17 @@
+[package]
+name = "daw388-ui"
+description = "egui-interface van DAW 388"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+daw388-engine.workspace = true
+daw388-project.workspace = true
+egui.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

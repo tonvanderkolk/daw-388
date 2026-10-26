@@ -1,0 +1,14 @@
+[package]
+name = "daw388-project"
+description = "Projectbestanden, import en export van audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+hound.workspace = true
+
+[lints]
+workspace = true
