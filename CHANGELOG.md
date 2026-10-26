@@ -2,6 +2,12 @@
 
 Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Versioning](https://semver.org/lang/nl/).
 
+## [0.1.1] - 2026-10-26
+
+### Opgelost
+- Tikjes bij het verschuiven van de stereo master-fader: de master-gain verandert nu geleidelijk, net als de spoorfaders.
+- Een dichtgetrokken fader geeft nu echt stilte.
+
 ## [0.1.0] - 2026-10-26
 
 ### Toegevoegd

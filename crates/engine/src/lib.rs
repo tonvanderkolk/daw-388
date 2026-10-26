@@ -65,6 +65,13 @@ fn store_peak(cell: &AtomicU32, value: f32) {
     }
 }
 
+/// Move a gain one step towards its target, landing on it exactly once it is close (so a closed
+/// fader is truly silent and no denormals build up).
+fn smooth(current: &mut f32, target: f32) {
+    let difference = target - *current;
+    if difference.abs() < 1e-6 { *current = target } else { *current += difference * SMOOTH }
+}
+
 fn take_peak(cell: &AtomicU32) -> f32 {
     f32::from_bits(cell.swap(0, Ordering::Relaxed))
 }
@@ -81,6 +88,7 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         shared,
         tracks: Default::default(),
         master: 1.0,
+        master_current: 1.0,
         position: 0,
         playing: false,
         end: 0,
@@ -186,6 +194,8 @@ pub struct Engine {
     shared: Arc<Shared>,
     tracks: [Track; TRACKS],
     master: f32,
+    /// Smoothed master gain.
+    master_current: f32,
     position: u64,
     playing: bool,
     /// Length of the longest track in samples; playback stops there.
@@ -250,8 +260,8 @@ impl Engine {
             }
             for (track, peak) in self.tracks.iter_mut().zip(track_peaks.iter_mut()) {
                 let target = track.target();
-                track.current[0] += (target[0] - track.current[0]) * SMOOTH;
-                track.current[1] += (target[1] - track.current[1]) * SMOOTH;
+                smooth(&mut track.current[0], target[0]);
+                smooth(&mut track.current[1], target[1]);
                 if !self.playing {
                     continue;
                 }
@@ -268,8 +278,9 @@ impl Engine {
             if self.playing {
                 self.position += 1;
             }
-            let left = mix[0] * self.master;
-            let right = mix[1] * self.master;
+            smooth(&mut self.master_current, self.master);
+            let left = mix[0] * self.master_current;
+            let right = mix[1] * self.master_current;
             master_peaks[0] = master_peaks[0].max(left.abs());
             master_peaks[1] = master_peaks[1].max(right.abs());
             match frame {
@@ -408,6 +419,22 @@ mod tests {
         settle(&mut engine);
         engine.render(&mut out, 2);
         assert_eq!(out, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn master_changes_are_smoothed() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![1.0; 100_000])));
+        handle.send(Command::SetPan(0, -1.0));
+        settle(&mut engine);
+        handle.play();
+        handle.send(Command::SetMaster(0.0));
+        let mut out = vec![0.0; 2 * 2_000];
+        engine.render(&mut out, 2);
+        let left: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
+        // No jump: every step is small, and the level does fall towards zero.
+        assert!(left.windows(2).all(|w| (w[0] - w[1]).abs() < 0.01));
+        assert!(left[0] > 0.99 && left[left.len() - 1] < 0.01);
     }
 
     #[test]
