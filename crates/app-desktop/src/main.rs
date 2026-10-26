@@ -133,7 +133,7 @@ fn main() -> eframe::Result {
         })),
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("DAW 388")
-            .with_inner_size([1480.0, 660.0])
+            .with_inner_size([1560.0, 660.0])
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };

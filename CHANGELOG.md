@@ -2,6 +2,15 @@
 
 Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Versioning](https://semver.org/lang/nl/).
 
+## [0.3.0] - 2026-10-27
+
+### Toegevoegd
+- Schakelaar TRACK METERS PRE/POST in de master-sectie. PRE (standaard, zoals op de 388) toont het niveau van het spoor zelf, POST het niveau na fader en mute. De stand wordt in het project opgeslagen; oudere projecten openen met PRE.
+
+### Gewijzigd
+- Fader-curve naar het voorbeeld van Logic Pro: +6 dB bovenaan, 0 dB op ongeveer driekwart en rond 0 dB ongeveer 11 punten per dB (met Shift 55). Schaal 6, 3, 0, -3, -6, -10, -15, -20, -30, -40 en ∞. Een fader die in een eerder project hoger dan +6 dB stond, opent op +6 dB.
+- Meters staan rechts van de fader en hebben een eigen schaal zoals in Logic: 0 dBFS bovenaan, gelijke stappen tot -24 en daaronder samengedrukt tot -60.
+
 ## [0.2.2] - 2026-10-27
 
 ### Gewijzigd

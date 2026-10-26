@@ -30,6 +30,9 @@ pub struct ProjectFile {
     pub app_version: String,
     #[serde(default)]
     pub master_db: f32,
+    /// Track meters show the level after the fader instead of the track's own level.
+    #[serde(default)]
+    pub meter_post: bool,
     #[serde(default)]
     pub tracks: Vec<TrackEntry>,
 }
@@ -48,6 +51,13 @@ pub struct TrackEntry {
     pub pan: f32,
     #[serde(default)]
     pub mute: bool,
+}
+
+/// Project-wide settings saved with the tracks.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ProjectSettings {
+    pub master_db: f32,
+    pub meter_post: bool,
 }
 
 /// What the UI hands over for one track when saving.
@@ -135,7 +145,7 @@ pub fn open(path: &Path) -> Result<OpenedProject, ProjectError> {
 /// Save a project into `dir` (created when needed). Audio from outside the project is copied
 /// into `audio/`. The previous `project.json` goes to `backups/` first: always when `backup` is
 /// [`Backup::Always`], else only when the newest backup is older than [`BACKUP_INTERVAL`].
-pub fn save(dir: &Path, master_db: f32, tracks: &[TrackToSave], backup: Backup) -> Result<Saved, ProjectError> {
+pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], backup: Backup) -> Result<Saved, ProjectError> {
     let audio_dir = dir.join(AUDIO_DIR);
     fs::create_dir_all(&audio_dir).map_err(io("Aanmaken van", &audio_dir))?;
 
@@ -156,7 +166,8 @@ pub fn save(dir: &Path, master_db: f32, tracks: &[TrackToSave], backup: Backup) 
         format: FORMAT.into(),
         version: FORMAT_VERSION,
         app_version: env!("CARGO_PKG_VERSION").into(),
-        master_db,
+        master_db: settings.master_db,
+        meter_post: settings.meter_post,
         tracks: entries,
     };
     let path = dir.join(PROJECT_FILE);
@@ -292,7 +303,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let dir = root.path().join("Mijn liedje");
 
-        let saved = save(&dir, -1.5, &tracks([Some(kick.clone()), None]), Backup::Always).unwrap_or_else(|e| panic!("{e}"));
+        let saved = save(&dir, &ProjectSettings { master_db: -1.5, meter_post: true }, &tracks([Some(kick.clone()), None]), Backup::Always)
+            .unwrap_or_else(|e| panic!("{e}"));
         let copied = saved.sources[0].clone().unwrap_or_else(|| panic!("no source"));
         assert!(copied.starts_with(dir.join(AUDIO_DIR)));
         assert!(copied.exists() && kick.exists(), "the original stays where it was");
@@ -300,6 +312,7 @@ mod tests {
 
         let opened = open(&dir).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(opened.file.master_db, -1.5);
+        assert!(opened.file.meter_post);
         assert_eq!(opened.file.tracks.len(), 2);
         assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/01_Kick.wav"));
         assert_eq!(opened.file.tracks[1].file, None);
@@ -323,12 +336,13 @@ mod tests {
         }
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let dir = root.path().join("p");
-        let saved = save(&dir, 0.0, &tracks([Some(first), Some(second)]), Backup::Always).unwrap_or_else(|e| panic!("{e}"));
+        let saved =
+            save(&dir, &ProjectSettings::default(), &tracks([Some(first), Some(second)]), Backup::Always).unwrap_or_else(|e| panic!("{e}"));
         let opened = open(&dir).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/take.wav"));
         assert_eq!(opened.file.tracks[1].file.as_deref(), Some("audio/take-2.wav"));
 
-        let again = save(&dir, 0.0, &tracks([saved.sources[0].clone(), saved.sources[1].clone()]), Backup::Always)
+        let again = save(&dir, &ProjectSettings::default(), &tracks([saved.sources[0].clone(), saved.sources[1].clone()]), Backup::Always)
             .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(again.sources, saved.sources);
         assert_eq!(fs::read_dir(dir.join(AUDIO_DIR)).map(Iterator::count).unwrap_or(0), 2);
@@ -339,14 +353,14 @@ mod tests {
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let dir = root.path().join("p");
         let empty = tracks([None, None]);
-        save(&dir, 0.0, &empty, Backup::Always).unwrap_or_else(|e| panic!("{e}"));
-        let second = save(&dir, 0.0, &empty, Backup::Always).unwrap_or_else(|e| panic!("{e}"));
+        save(&dir, &ProjectSettings::default(), &empty, Backup::Always).unwrap_or_else(|e| panic!("{e}"));
+        let second = save(&dir, &ProjectSettings::default(), &empty, Backup::Always).unwrap_or_else(|e| panic!("{e}"));
         assert!(second.backup.is_some());
         // An automatic save right after a backup does not make another one.
-        let auto = save(&dir, 0.0, &empty, Backup::WhenDue).unwrap_or_else(|e| panic!("{e}"));
+        let auto = save(&dir, &ProjectSettings::default(), &empty, Backup::WhenDue).unwrap_or_else(|e| panic!("{e}"));
         assert!(auto.backup.is_none());
         for _ in 0..MAX_BACKUPS + 5 {
-            save(&dir, 0.0, &empty, Backup::Always).unwrap_or_else(|e| panic!("{e}"));
+            save(&dir, &ProjectSettings::default(), &empty, Backup::Always).unwrap_or_else(|e| panic!("{e}"));
         }
         assert_eq!(list_backups(&dir.join(BACKUP_DIR)).len(), MAX_BACKUPS);
     }
@@ -356,7 +370,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let dir = root.path().join("p");
         let gone = dir.join(AUDIO_DIR).join("weg.wav");
-        save(&dir, 0.0, &tracks([Some(gone), None]), Backup::Always).unwrap_or_else(|e| panic!("{e}"));
+        save(&dir, &ProjectSettings::default(), &tracks([Some(gone), None]), Backup::Always).unwrap_or_else(|e| panic!("{e}"));
         let opened = open(&dir).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/weg.wav"));
     }
@@ -365,6 +379,11 @@ mod tests {
     fn rejects_other_files_and_newer_formats() {
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let path = root.path().join(PROJECT_FILE);
+        // A project from before the meter setting existed opens with PRE meters.
+        fs::write(&path, r#"{"format":"daw388-project","version":1,"app_version":"0.2.0","master_db":-3.0}"#)
+            .unwrap_or_else(|e| panic!("{e}"));
+        let old = open(&path).unwrap_or_else(|e| panic!("{e}"));
+        assert!(!old.file.meter_post && old.file.master_db == -3.0);
         fs::write(&path, r#"{"format":"iets-anders","version":1,"app_version":"x"}"#).unwrap_or_else(|e| panic!("{e}"));
         assert!(matches!(open(&path), Err(ProjectError::NotAProject(_))));
         fs::write(&path, r#"{"format":"daw388-project","version":99,"app_version":"x"}"#).unwrap_or_else(|e| panic!("{e}"));

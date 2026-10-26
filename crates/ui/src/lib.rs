@@ -3,7 +3,7 @@
 
 use daw388_engine::{Command, EngineHandle, TRACKS, TrackAudio};
 use daw388_project::session::{self, PROJECT_FILE};
-use daw388_project::{Backup, MonoClip, TrackToSave};
+use daw388_project::{Backup, MonoClip, ProjectSettings, TrackToSave};
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 use std::path::{Path, PathBuf};
 
@@ -58,7 +58,7 @@ mod palette {
 }
 
 const MIN_DB: f32 = -60.0;
-const MAX_DB: f32 = 10.0;
+const MAX_DB: f32 = 6.0;
 
 fn db_to_gain(db: f32) -> f32 {
     if db <= MIN_DB { 0.0 } else { 10f32.powf(db / 20.0) }
@@ -95,6 +95,8 @@ pub struct DawApp {
     device: Option<String>,
     tracks: [TrackState; TRACKS],
     master_db: f32,
+    /// Track meters after the fader (POST) instead of the track's own level (PRE, as on the 388).
+    meter_post: bool,
     master_meter_db: [f32; 2],
     status: String,
     /// The project folder, once saved or opened.
@@ -122,6 +124,7 @@ impl DawApp {
             device: None,
             tracks: Default::default(),
             master_db: 0.0,
+            meter_post: false,
             master_meter_db: [MIN_DB; 2],
             status: String::new(),
             project_dir: None,
@@ -251,6 +254,7 @@ impl DawApp {
             }
         }
         self.master_db = 0.0;
+        self.meter_post = false;
         if let Some(engine) = &mut self.engine {
             engine.stop();
             engine.rtz();
@@ -301,6 +305,7 @@ impl DawApp {
             }
         }
         self.master_db = opened.file.master_db.clamp(MIN_DB, MAX_DB);
+        self.meter_post = opened.file.meter_post;
         self.engine_send(Command::SetMaster(db_to_gain(self.master_db)));
         self.project_dir = Some(opened.dir);
         self.dirty = false;
@@ -318,7 +323,8 @@ impl DawApp {
         let Some(dir) = self.project_dir.clone() else { return self.save_as() };
         let tracks: Vec<TrackToSave> =
             self.tracks.iter().map(|t| TrackToSave { source: t.source.clone(), fader_db: t.fader_db, pan: t.pan, mute: t.mute }).collect();
-        match session::save(&dir, self.master_db, &tracks, backup) {
+        let settings = ProjectSettings { master_db: self.master_db, meter_post: self.meter_post };
+        match session::save(&dir, &settings, &tracks, backup) {
             Ok(saved) => {
                 for (track, source) in self.tracks.iter_mut().zip(saved.sources) {
                     track.source = source;
@@ -497,7 +503,8 @@ impl DawApp {
         // VU-like fall of about 20 dB per second.
         let fall = 20.0 * dt;
         for (index, track) in self.tracks.iter_mut().enumerate() {
-            let peak = gain_to_db(engine.take_track_peak(index));
+            let peaks = engine.take_track_peaks(index);
+            let peak = gain_to_db(if self.meter_post { peaks.post } else { peaks.pre });
             track.meter_db = peak.max(track.meter_db - fall);
         }
         let master = engine.take_master_peaks();
@@ -562,7 +569,7 @@ impl DawApp {
         let mut clear = false;
         let mut commands = Vec::new();
         let track = &mut self.tracks[index];
-        column(ui, 76.0, |ui| {
+        column(ui, 88.0, |ui| {
             ui.label(RichText::new(format!("{}", index + 1)).strong().size(18.0).color(palette::CREAM));
             let (name, colour) = match (&track.clip, &track.source) {
                 (Some(clip), _) => (clip.name.clone(), palette::TEXT_DIM),
@@ -604,11 +611,11 @@ impl DawApp {
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                meter(ui, track.meter_db, FADER_HEIGHT + 2.0 * FADER_MARGIN);
                 let fader = fader(ui, &mut track.fader_db, palette::CREAM);
                 if fader.changed() || fader.double_clicked() {
                     commands.push(Command::SetGain(index, db_to_gain(track.fader_db)));
                 }
+                meter(ui, track.meter_db, true);
             });
             ui.label(RichText::new(format_db(track.fader_db)).size(11.0).color(palette::TEXT_DIM));
         });
@@ -630,18 +637,36 @@ impl DawApp {
     }
 
     fn master_section(&mut self, ui: &mut Ui) {
-        column(ui, 90.0, |ui| {
+        column(ui, 100.0, |ui| {
             ui.label(RichText::new("STEREO").strong().size(14.0).color(palette::CREAM));
-            ui.add_space(6.0);
+            ui.add_space(4.0);
+            ui.label(RichText::new("TRACK METERS").size(9.0).color(palette::TEXT_DIM));
             ui.horizontal(|ui| {
-                meter(ui, self.master_meter_db[0], FADER_HEIGHT + 2.0 * FADER_MARGIN);
-                meter(ui, self.master_meter_db[1], FADER_HEIGHT + 2.0 * FADER_MARGIN);
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (post, label, tip) in [
+                    (false, "PRE", "Spoormeters tonen het niveau van het spoor zelf, voor de fader (zoals op de 388)"),
+                    (true, "POST", "Spoormeters tonen het niveau na fader en mute"),
+                ] {
+                    let lit = self.meter_post == post;
+                    let text = RichText::new(label).size(10.0).color(if lit { Color32::BLACK } else { palette::TEXT });
+                    let button =
+                        egui::Button::new(text).fill(if lit { palette::ORANGE } else { palette::PANEL_DARK }).min_size(vec2(40.0, 18.0));
+                    if ui.add(button).on_hover_text(tip).clicked() && !lit {
+                        self.meter_post = post;
+                        self.mark_dirty();
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
                 let response = fader(ui, &mut self.master_db, palette::RED);
                 if response.changed() || response.double_clicked() {
                     let gain = db_to_gain(self.master_db);
                     self.engine_send(Command::SetMaster(gain));
                     self.mark_dirty();
                 }
+                meter(ui, self.master_meter_db[0], true);
+                meter(ui, self.master_meter_db[1], false);
             });
             ui.label(RichText::new(format_db(self.master_db)).size(11.0).color(palette::TEXT_DIM));
         });
@@ -697,26 +722,62 @@ const FADER_HEIGHT: f32 = 260.0;
 /// Room above and below the travel for the cap.
 const FADER_MARGIN: f32 = 10.0;
 
-/// The fader taper: (position from 0 at the bottom to 1 at the top, dB). Like a console fader,
-/// it gives the range around 0 dB most of the travel and squeezes the quiet end; the bottom
-/// position is off.
-const TAPER: [(f32, f32); 9] =
-    [(0.0, MIN_DB), (0.12, -40.0), (0.25, -30.0), (0.39, -20.0), (0.54, -10.0), (0.66, -5.0), (0.78, 0.0), (0.89, 5.0), (1.0, MAX_DB)];
+/// The fader taper: (position from 0 at the bottom to 1 at the top, dB). Modelled on Logic Pro's
+/// faders: +6 dB at the top, 0 dB at about three quarters, most of the travel between -10 and
+/// +6 dB and the quiet end squeezed; the bottom position is off.
+const TAPER: [(f32, f32); 11] = [
+    (0.0, MIN_DB),
+    (0.08, -40.0),
+    (0.12, -30.0),
+    (0.21, -20.0),
+    (0.29, -15.0),
+    (0.40, -10.0),
+    (0.48, -6.0),
+    (0.61, -3.0),
+    (0.74, 0.0),
+    (0.87, 3.0),
+    (1.0, MAX_DB),
+];
 
 /// Scale marks printed next to the faders.
-const FADER_MARKS: [(f32, &str); 9] =
-    [(10.0, "10"), (5.0, "5"), (0.0, "0"), (-5.0, "5"), (-10.0, "10"), (-20.0, "20"), (-30.0, "30"), (-40.0, "40"), (MIN_DB, "∞")];
+const FADER_MARKS: [(f32, &str); 11] = [
+    (6.0, "6"),
+    (3.0, "3"),
+    (0.0, "0"),
+    (-3.0, "-3"),
+    (-6.0, "-6"),
+    (-10.0, "-10"),
+    (-15.0, "-15"),
+    (-20.0, "-20"),
+    (-30.0, "-30"),
+    (-40.0, "-40"),
+    (MIN_DB, "∞"),
+];
+
+/// The meter scale, as in Logic: (position from 0 at the bottom to 1 at the top, dBFS). Even
+/// steps from 0 to -24 dB, compressed below that.
+const METER_TAPER: [(f32, f32); 3] = [(0.0, MIN_DB), (0.47, -24.0), (1.0, 0.0)];
+
+/// Scale marks printed next to the meters (dB below full scale).
+const METER_MARKS: [(f32, &str); 9] =
+    [(0.0, "0"), (-6.0, "6"), (-12.0, "12"), (-18.0, "18"), (-24.0, "24"), (-30.0, "30"), (-40.0, "40"), (-50.0, "50"), (MIN_DB, "60")];
+
+/// Position (0 to 1) of a value on a piecewise linear scale.
+fn scale_position(taper: &[(f32, f32)], value: f32) -> f32 {
+    let (first, last) = (taper[0], taper[taper.len() - 1]);
+    let value = value.clamp(first.1, last.1);
+    for pair in taper.windows(2) {
+        let ((p0, d0), (p1, d1)) = (pair[0], pair[1]);
+        if value <= d1 {
+            return p0 + (value - d0) / (d1 - d0) * (p1 - p0);
+        }
+    }
+    last.0
+}
 
 /// Position (0 to 1) of a level in dB on the fader.
 fn fader_position(db: f32) -> f32 {
-    let db = db.clamp(MIN_DB, MAX_DB);
-    for pair in TAPER.windows(2) {
-        let ((p0, d0), (p1, d1)) = (pair[0], pair[1]);
-        if db <= d1 {
-            return p0 + (db - d0) / (d1 - d0) * (p1 - p0);
-        }
-    }
-    1.0
+    scale_position(&TAPER, db)
 }
 
 /// Level in dB at a fader position (0 to 1).
@@ -740,7 +801,7 @@ fn format_db(db: f32) -> String {
 /// five times finer; double-click resets it to 0 dB.
 fn fader(ui: &mut Ui, db: &mut f32, cap: Color32) -> egui::Response {
     let height = FADER_HEIGHT + 2.0 * FADER_MARGIN;
-    let (rect, mut response) = ui.allocate_exact_size(vec2(58.0, height), Sense::click_and_drag());
+    let (rect, mut response) = ui.allocate_exact_size(vec2(54.0, height), Sense::click_and_drag());
     let travel = FADER_HEIGHT;
     let slot_x = rect.right() - 17.0;
     let to_y = |value: f32| rect.bottom() - FADER_MARGIN - fader_position(value) * travel;
@@ -758,8 +819,8 @@ fn fader(ui: &mut Ui, db: &mut f32, cap: Color32) -> egui::Response {
     for (value, label) in FADER_MARKS {
         let y = to_y(value);
         let colour = if value == 0.0 { palette::CREAM } else { palette::TEXT_DIM };
-        painter.line_segment([egui::pos2(slot_x - 20.0, y), egui::pos2(slot_x - 16.0, y)], Stroke::new(1.0, colour));
-        painter.text(egui::pos2(slot_x - 22.0, y), egui::Align2::RIGHT_CENTER, label, font.clone(), colour);
+        painter.line_segment([egui::pos2(slot_x - 19.0, y), egui::pos2(slot_x - 15.0, y)], Stroke::new(1.0, colour));
+        painter.text(egui::pos2(slot_x - 20.0, y), egui::Align2::RIGHT_CENTER, label, font.clone(), colour);
     }
     let slot = egui::Rect::from_center_size(egui::pos2(slot_x, rect.center().y), vec2(4.0, travel + 6.0));
     painter.rect_filled(slot, 2.0, Color32::BLACK);
@@ -772,16 +833,30 @@ fn fader(ui: &mut Ui, db: &mut f32, cap: Color32) -> egui::Response {
     response.on_hover_text("Slepen: niveau, shift: fijn, dubbelklik: 0 dB")
 }
 
-/// A vertical peak meter from -60 to +6 dBFS-ish, amber above -6, red above 0.
-fn meter(ui: &mut Ui, db: f32, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(10.0, height), Sense::hover());
+/// A vertical peak meter on Logic's scale (0 dBFS at the top, 60 below at the bottom), green
+/// below -6 dB, amber up to 0 and red when it clips. With `scale`, the numbers are printed on
+/// its left.
+fn meter(ui: &mut Ui, db: f32, scale: bool) {
+    let width = if scale { 26.0 } else { 9.0 };
+    let (rect, _) = ui.allocate_exact_size(vec2(width, FADER_HEIGHT + 2.0 * FADER_MARGIN), Sense::hover());
+    let bar = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - 9.0, rect.top() + FADER_MARGIN),
+        egui::pos2(rect.right(), rect.bottom() - FADER_MARGIN),
+    );
     let painter = ui.painter();
-    painter.rect_filled(rect, 2.0, Color32::BLACK);
-    let span = 66.0;
-    let level = ((db - MIN_DB) / span).clamp(0.0, 1.0);
+    if scale {
+        let font = egui::FontId::proportional(8.5);
+        for (value, label) in METER_MARKS {
+            let y = bar.bottom() - scale_position(&METER_TAPER, value) * bar.height();
+            painter.line_segment([egui::pos2(bar.left() - 4.0, y), egui::pos2(bar.left() - 1.0, y)], Stroke::new(1.0, palette::TEXT_DIM));
+            painter.text(egui::pos2(bar.left() - 5.0, y), egui::Align2::RIGHT_CENTER, label, font.clone(), palette::TEXT_DIM);
+        }
+    }
+    painter.rect_filled(bar, 2.0, Color32::BLACK);
+    let level = if db > MIN_DB { scale_position(&METER_TAPER, db) } else { 0.0 };
     let lit = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + 1.0, rect.bottom() - level * rect.height()),
-        egui::pos2(rect.right() - 1.0, rect.bottom()),
+        egui::pos2(bar.left() + 1.0, bar.bottom() - level * bar.height()),
+        egui::pos2(bar.right() - 1.0, bar.bottom()),
     );
     let colour = if db > 0.0 {
         palette::LED
@@ -942,6 +1017,7 @@ mod tests {
         app.tracks[1].pan = -0.5;
         app.tracks[1].mute = true;
         app.master_db = -2.0;
+        app.meter_post = true;
         assert!(app.save(Backup::Always), "{}", app.status);
         assert!(!app.dirty);
         assert!(app.saved_label.as_deref().is_some_and(|l| l.starts_with("Opgeslagen")));
@@ -958,6 +1034,7 @@ mod tests {
         assert_eq!(app.tracks[1].pan, -0.5);
         assert!(app.tracks[1].mute);
         assert_eq!(app.master_db, -2.0);
+        assert!(app.meter_post);
         assert!(app.tracks[2].clip.is_none());
     }
 
@@ -1028,16 +1105,21 @@ mod tests {
     fn fader_taper_gives_most_travel_around_zero() {
         assert_eq!(fader_position(MIN_DB), 0.0);
         assert_eq!(fader_position(MAX_DB), 1.0);
-        assert!((fader_position(0.0) - 0.78).abs() < 1e-6);
-        for db in [-55.0, -35.0, -12.5, -1.0, 0.0, 3.3, 9.0] {
+        assert!((fader_position(0.0) - 0.74).abs() < 1e-6);
+        for db in [-55.0, -35.0, -12.5, -1.0, 0.0, 3.3, 5.5] {
             assert!((fader_db(fader_position(db)) - db).abs() < 1e-4, "{db}");
         }
         // Between -10 and +5 dB there is far more travel per dB than at the quiet end.
         let near_zero = (fader_position(5.0) - fader_position(-10.0)) / 15.0;
         let quiet = (fader_position(-40.0) - fader_position(MIN_DB)) / 20.0;
         assert!(near_zero > 3.0 * quiet);
-        // At least 5 points of travel per dB around 0 dB.
-        assert!(near_zero * FADER_HEIGHT >= 5.0);
+        // About as fine as Logic around 0 dB: at least 10 points of travel per dB.
+        let around_zero = (fader_position(3.0) - fader_position(-3.0)) / 6.0;
+        assert!(around_zero * FADER_HEIGHT >= 10.0, "{}", around_zero * FADER_HEIGHT);
+        // The meter scale runs from -60 at the bottom to 0 dBFS at the top.
+        assert_eq!(scale_position(&METER_TAPER, MIN_DB), 0.0);
+        assert_eq!(scale_position(&METER_TAPER, 0.0), 1.0);
+        assert_eq!(scale_position(&METER_TAPER, 3.0), 1.0);
         assert_eq!(format_db(MIN_DB), "-∞ dB");
         assert_eq!(format_db(-3.0), "-3.0 dB");
     }

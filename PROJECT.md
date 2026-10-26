@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.2.2
+Versie: 0.3.0
 Laatst bijgewerkt: 26-10-2026
 
 ## Doel
@@ -32,7 +32,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 
 - De UI-thread bezit een `EngineHandle`, de audio-callback bezit de `Engine`.
 - Commando's (PLAY, STOP, locate, spoor laden, gain, pan, mute, master) gaan via een lock-free ringbuffer naar de audiothread.
-- Positie, afspeelstatus en piekmeters komen terug via atomics.
+- Positie, afspeelstatus en piekmeters komen terug via atomics. Per spoor meet de engine twee pieken: voor de fader (het niveau van het spoor zelf, zoals de spoormeters van de 388) en na fader en mute. De schakelaar TRACK METERS PRE/POST kiest welke de UI toont.
 - Sporenbuffers die de engine loslaat gaan via een tweede ringbuffer terug naar de UI-thread en worden daar vrijgegeven. Er wordt dus nooit geheugen vrijgegeven in de audiothread.
 - De engine kent geen audioapparaten. `app-desktop` roept `Engine::render` aan vanuit de cpal-callback; een latere browserversie doet hetzelfde vanuit WebAudio.
 - Bij het wisselen van apparaat bouwt de app een nieuwe engine op de samplerate van het apparaat en stuurt de sporen (opnieuw geconverteerd), mixinstellingen en positie opnieuw.
@@ -48,7 +48,7 @@ Mijn liedje/
 └── backups/            # eerdere versies van project.json (laatste 10)
 ```
 
-- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 1), `app_version`, `master_db` en per spoor `number`, `file` (relatief pad), `fader_db`, `pan` en `mute`.
+- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 1), `app_version`, `master_db`, `meter_post` (spoormeters na de fader, standaard `false`) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan` en `mute`.
 - Opslaan kopieert audio van buiten het project naar `audio/`. Het origineel blijft staan. Bij een naamconflict krijgt de kopie een achtervoegsel (`take-2.wav`).
 - `project.json` wordt eerst naar een tijdelijk bestand geschreven en daarna hernoemd, zodat een crash nooit een half bestand achterlaat.
 - Autosave volgt 30 seconden na een wijziging, alleen als het project al een map heeft.

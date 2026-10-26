@@ -49,8 +49,10 @@ pub enum Command {
 struct Shared {
     position: AtomicU64,
     playing: AtomicBool,
-    /// Highest peak per track since the UI last read it, as `f32` bits.
+    /// Highest peak per track since the UI last read it, as `f32` bits: before the fader (the
+    /// track's own level, as the 388's track meters show it) and after fader and mute.
     track_peaks: [AtomicU32; TRACKS],
+    track_peaks_post: [AtomicU32; TRACKS],
     master_peaks: [AtomicU32; 2],
 }
 
@@ -74,6 +76,14 @@ fn smooth(current: &mut f32, target: f32) {
 
 fn take_peak(cell: &AtomicU32) -> f32 {
     f32::from_bits(cell.swap(0, Ordering::Relaxed))
+}
+
+/// A track's peak level before the fader and after fader and mute (pan does not count: the
+/// track is mono).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TrackPeaks {
+    pub pre: f32,
+    pub post: f32,
 }
 
 /// Build a connected handle and engine for a device running at `sample_rate`.
@@ -144,9 +154,12 @@ impl EngineHandle {
         self.shared.playing.load(Ordering::Relaxed)
     }
 
-    /// Peak of a track since the last call, linear.
-    pub fn take_track_peak(&self, track: usize) -> f32 {
-        self.shared.track_peaks.get(track).map_or(0.0, take_peak)
+    /// Peaks of a track since the last call, linear.
+    pub fn take_track_peaks(&self, track: usize) -> TrackPeaks {
+        TrackPeaks {
+            pre: self.shared.track_peaks.get(track).map_or(0.0, take_peak),
+            post: self.shared.track_peaks_post.get(track).map_or(0.0, take_peak),
+        }
     }
 
     /// Peaks of the stereo master since the last call, linear.
@@ -251,6 +264,7 @@ impl Engine {
         self.apply_commands();
         let channels = channels.max(1);
         let mut track_peaks = [0.0f32; TRACKS];
+        let mut track_peaks_post = [0.0f32; TRACKS];
         let mut master_peaks = [0.0f32; 2];
 
         for frame in out.chunks_mut(channels) {
@@ -258,7 +272,7 @@ impl Engine {
             if self.playing && self.end > 0 && self.position >= self.end {
                 self.playing = false;
             }
-            for (track, peak) in self.tracks.iter_mut().zip(track_peaks.iter_mut()) {
+            for ((track, peak), peak_post) in self.tracks.iter_mut().zip(track_peaks.iter_mut()).zip(track_peaks_post.iter_mut()) {
                 let target = track.target();
                 smooth(&mut track.current[0], target[0]);
                 smooth(&mut track.current[1], target[1]);
@@ -272,6 +286,9 @@ impl Engine {
                     .copied()
                     .unwrap_or(0.0);
                 *peak = peak.max(sample.abs());
+                // Constant-power pan keeps left² + right² equal to the fader gain squared.
+                let gain = track.current[0].hypot(track.current[1]);
+                *peak_post = peak_post.max(sample.abs() * gain);
                 mix[0] += sample * track.current[0];
                 mix[1] += sample * track.current[1];
             }
@@ -297,6 +314,9 @@ impl Engine {
         self.shared.position.store(self.position, Ordering::Relaxed);
         self.shared.playing.store(self.playing, Ordering::Relaxed);
         for (cell, peak) in self.shared.track_peaks.iter().zip(track_peaks) {
+            store_peak(cell, peak);
+        }
+        for (cell, peak) in self.shared.track_peaks_post.iter().zip(track_peaks_post) {
             store_peak(cell, peak);
         }
         for (cell, peak) in self.shared.master_peaks.iter().zip(master_peaks) {
@@ -347,8 +367,8 @@ mod tests {
         }
         assert_eq!(handle.position_samples(), 4);
         assert!(handle.is_playing());
-        assert!((handle.take_track_peak(0) - 0.25).abs() < 1e-6);
-        assert_eq!(handle.take_track_peak(0), 0.0);
+        assert!((handle.take_track_peaks(0).pre - 0.25).abs() < 1e-6);
+        assert_eq!(handle.take_track_peaks(0), TrackPeaks::default());
     }
 
     #[test]
@@ -419,6 +439,29 @@ mod tests {
         settle(&mut engine);
         engine.render(&mut out, 2);
         assert_eq!(out, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn post_fader_meter_follows_fader_and_mute_but_not_pan() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.8; 100_000])));
+        handle.send(Command::SetGain(0, 0.5));
+        handle.send(Command::SetPan(0, 1.0));
+        settle(&mut engine);
+        handle.play();
+        let mut out = vec![0.0; 2 * 64];
+        engine.render(&mut out, 2);
+        let peaks = handle.take_track_peaks(0);
+        assert!((peaks.pre - 0.8).abs() < 1e-6, "pre is the track itself");
+        assert!((peaks.post - 0.4).abs() < 1e-3, "post follows the fader: {}", peaks.post);
+        handle.send(Command::SetMute(0, true));
+        settle(&mut engine);
+        // Forget the peaks of the fade-out itself.
+        handle.take_track_peaks(0);
+        engine.render(&mut out, 2);
+        let peaks = handle.take_track_peaks(0);
+        assert!((peaks.pre - 0.8).abs() < 1e-6);
+        assert!(peaks.post < 1e-4, "muted: {}", peaks.post);
     }
 
     #[test]
