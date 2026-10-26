@@ -1,7 +1,11 @@
 //! Project files, audio import and export.
 //!
-//! For now: reading WAV files into mono tracks and converting them to the device's sample rate.
-//! `project.json`, autosave, backups and export follow in later phases (see ROADMAP.md).
+//! Reading WAV files into mono tracks and converting them to the device's sample rate, plus the
+//! project folder (see [`session`]). Export follows in phase 7 (see ROADMAP.md).
+
+pub mod session;
+
+pub use session::{Backup, OpenedProject, ProjectError, Saved, TrackToSave};
 
 use std::fmt;
 use std::path::Path;

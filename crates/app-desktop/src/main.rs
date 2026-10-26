@@ -100,6 +100,16 @@ impl Platform for Desktop {
         let dialog = rfd::FileDialog::new().add_filter("WAV-audio", &["wav", "wave"]).set_title("Audio laden");
         if multiple { dialog.pick_files().unwrap_or_default() } else { dialog.pick_file().into_iter().collect() }
     }
+
+    fn pick_project_to_open(&mut self) -> Option<PathBuf> {
+        rfd::FileDialog::new().add_filter("DAW 388-project", &["json"]).set_title("Project openen (kies project.json)").pick_file()
+    }
+
+    fn pick_project_location(&mut self, suggested_name: &str) -> Option<PathBuf> {
+        // The chosen name becomes the project folder; a typed extension is dropped.
+        let path = rfd::FileDialog::new().set_title("Project opslaan als").set_file_name(suggested_name).save_file()?;
+        Some(if path.extension().is_some() { path.with_extension("") } else { path })
+    }
 }
 
 struct DesktopApp(DawApp);
@@ -113,22 +123,28 @@ impl eframe::App for DesktopApp {
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let options = eframe::NativeOptions {
+        // winit's default macOS menu quits with Cmd+Q through `terminate:`, which ends the app
+        // without a close request and so skips the "save changes?" question. Without that menu,
+        // Cmd+Q reaches the UI, which asks first.
+        #[cfg(target_os = "macos")]
+        event_loop_builder: Some(Box::new(|builder| {
+            use winit::platform::macos::EventLoopBuilderExtMacOS;
+            builder.with_default_menu(false);
+        })),
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("DAW 388")
             .with_inner_size([1440.0, 560.0])
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };
-    // WAV files on the command line go onto tracks 1 to 8.
+    // A project folder or project.json on the command line opens it; WAV files go onto tracks 1 to 8.
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     eframe::run_native(
         "DAW 388",
         options,
         Box::new(move |cc| {
             let mut app = DawApp::new(&cc.egui_ctx, Box::new(Desktop::new()));
-            if !files.is_empty() {
-                app.load_paths(files);
-            }
+            app.open_arguments(files);
             Ok(Box::new(DesktopApp(app)))
         }),
     )

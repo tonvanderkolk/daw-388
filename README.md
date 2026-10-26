@@ -6,7 +6,7 @@ Hobbyproject van Ton van der Kolk. Gratis te delen, niet te verkopen. Geen relat
 
 ## Status
 
-Versie 0.1.0: 8 WAV-bestanden laden en synchroon afspelen via een eenvoudige stereomix, met keuze van het audio-uitvoerapparaat. Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
+Versie 0.2.0: 8 WAV-bestanden laden en synchroon afspelen via een eenvoudige stereomix, met keuze van het audio-uitvoerapparaat. Projecten opslaan en openen, met autosave en backups. Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
 
 ## Bouwen en starten
 
@@ -22,7 +22,13 @@ WAV-bestanden kun je ook meteen meegeven; ze komen op volgorde van naam op spoor
 cargo run --release -- pad/naar/01_Kick.wav pad/naar/02_Snare.wav
 ```
 
-Bediening: spatie is afspelen/stoppen, Home is RTZ (terug naar nul). Dubbelklik op een fader zet hem op 0 dB, dubbelklik op een panknop zet hem in het midden. Shift tijdens het slepen van een fader geeft fijne regeling.
+Een projectmap open je op dezelfde manier:
+
+```bash
+cargo run --release -- "pad/naar/Mijn liedje"
+```
+
+Bediening: Cmd+N, Cmd+O, Cmd+S, Shift+Cmd+S, Cmd+W en Cmd+Q voor nieuw, openen, opslaan, opslaan als, project sluiten en stoppen (Ctrl op Windows). Spatie is afspelen/stoppen, Home is RTZ (terug naar nul). Dubbelklik op een fader zet hem op 0 dB, dubbelklik op een panknop zet hem in het midden. Shift tijdens het slepen van een fader geeft fijne regeling.
 
 ## Opbouw
 

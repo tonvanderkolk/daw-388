@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.1.1
+Versie: 0.2.0
 Laatst bijgewerkt: 26-10-2026
 
 ## Doel
@@ -24,7 +24,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 | `daw388-engine` | `crates/engine` | Transport, 8 sporen en stereomix. Platformonafhankelijk, geen allocaties of locks in de audiothread |
 | `daw388-tape` | `crates/tape` | Tape-emulatie en dbx (fase 6, nog leeg) |
 | `daw388-fx` | `crates/fx` | Plate reverb en tape echo (fase 6, nog leeg) |
-| `daw388-project` | `crates/project` | WAV-import naar mono en samplerate-conversie. Later `project.json`, autosave, backups en export |
+| `daw388-project` | `crates/project` | WAV-import naar mono, samplerate-conversie en de projectmap (`project.json`, `audio/`, `backups/`). Later export |
 | `daw388-ui` | `crates/ui` | egui-interface, praat met het platform via de `Platform`-trait |
 | `daw388` | `crates/app-desktop` | Desktop-entrypoint: cpal-uitvoer, bestandsdialogen en het eframe-venster |
 
@@ -37,6 +37,22 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 - De engine kent geen audioapparaten. `app-desktop` roept `Engine::render` aan vanuit de cpal-callback; een latere browserversie doet hetzelfde vanuit WebAudio.
 - Bij het wisselen van apparaat bouwt de app een nieuwe engine op de samplerate van het apparaat en stuurt de sporen (opnieuw geconverteerd), mixinstellingen en positie opnieuw.
 - Sporen zijn mono, zoals op de 388. Stereobestanden worden bij het laden gemiddeld naar mono.
+
+## Projectmap
+
+```
+Mijn liedje/
+├── project.json        # mixinstellingen en verwijzingen naar de audio
+├── audio/              # WAV-bestanden van de sporen
+└── backups/            # eerdere versies van project.json (laatste 10)
+```
+
+- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 1), `app_version`, `master_db` en per spoor `number`, `file` (relatief pad), `fader_db`, `pan` en `mute`.
+- Opslaan kopieert audio van buiten het project naar `audio/`. Het origineel blijft staan. Bij een naamconflict krijgt de kopie een achtervoegsel (`take-2.wav`).
+- `project.json` wordt eerst naar een tijdelijk bestand geschreven en daarna hernoemd, zodat een crash nooit een half bestand achterlaat.
+- Autosave volgt 30 seconden na een wijziging, alleen als het project al een map heeft.
+- Backups: bij elke handmatige opslag en hooguit elke 5 minuten bij autosave.
+- Een project uit een nieuwere formaatversie wordt geweigerd met een melding.
 
 ## SoundCraft
 
@@ -51,7 +67,8 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 - Alleen WAV, nog geen AIFF of andere formaten.
 - Laden en samplerate-conversie gebeuren op de UI-thread; bij lange bestanden hapert het venster even.
 - Samplerate-conversie gebruikt Hermite-interpolatie: prima voor afluisteren, voor export komt een betere resampler.
-- Geen opname, EQ, sends, effecten, tape-model of projectbestand. Zie de roadmap.
+- Geen opname, EQ, sends, effecten of tape-model. Zie de roadmap.
+- Op macOS is het standaard app-menu uitgezet, zodat Cmd+Q via de opslaan-vraag loopt. Afsluiten door uitloggen of herstarten van de Mac gaat nog wel buiten die vraag om; autosave beperkt dan het verlies tot de laatste 30 seconden.
 - Geen terugval naar een stille klok als er geen audioapparaat is; de app meldt dat dan bovenin.
 
 ## Versiebeheer

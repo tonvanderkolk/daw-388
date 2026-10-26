@@ -2,9 +2,10 @@
 //! through the [`Platform`] trait, so the same UI can later run in the browser.
 
 use daw388_engine::{Command, EngineHandle, TRACKS, TrackAudio};
-use daw388_project::MonoClip;
-use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, RichText, Sense, Stroke, Ui, vec2};
-use std::path::PathBuf;
+use daw388_project::session::{self, PROJECT_FILE};
+use daw388_project::{Backup, MonoClip, TrackToSave};
+use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// What the UI needs from the platform it runs on.
@@ -18,6 +19,22 @@ pub trait Platform {
     fn open_output(&mut self, device: Option<&str>) -> Result<(EngineHandle, String), String>;
     /// Ask the user for one or more audio files.
     fn pick_audio_files(&mut self, multiple: bool) -> Vec<PathBuf>;
+    /// Ask the user for a project to open (its folder or its `project.json`).
+    fn pick_project_to_open(&mut self) -> Option<PathBuf>;
+    /// Ask the user where to save a project. Returns the project folder to create or reuse.
+    fn pick_project_location(&mut self, suggested_name: &str) -> Option<PathBuf>;
+}
+
+/// Seconds between a change and the automatic save that follows it.
+const AUTOSAVE_AFTER: f64 = 30.0;
+
+/// Something that would throw away unsaved changes, waiting for the user's answer.
+#[derive(Debug, Clone, PartialEq)]
+enum Pending {
+    New,
+    Close,
+    Open(Option<PathBuf>),
+    Quit,
 }
 
 /// Colours from mockup A2.
@@ -58,6 +75,10 @@ pub fn format_counter(seconds: f64) -> String {
 #[derive(Default)]
 struct TrackState {
     clip: Option<MonoClip>,
+    /// The file the clip came from; after saving, its copy in the project's `audio/` folder.
+    source: Option<PathBuf>,
+    /// The project refers to a file that could not be loaded.
+    missing: bool,
     fader_db: f32,
     pan: f32,
     mute: bool,
@@ -74,6 +95,18 @@ pub struct DawApp {
     master_db: f32,
     master_meter_db: [f32; 2],
     status: String,
+    /// The project folder, once saved or opened.
+    project_dir: Option<PathBuf>,
+    dirty: bool,
+    /// "Opgeslagen 17:06" and the like.
+    saved_label: Option<String>,
+    /// When the next automatic save is due (in egui time), while there are unsaved changes.
+    autosave_at: Option<f64>,
+    now: f64,
+    pending: Option<Pending>,
+    /// The user agreed to quit; let the next close request through.
+    may_close: bool,
+    title: String,
 }
 
 impl DawApp {
@@ -89,6 +122,14 @@ impl DawApp {
             master_db: 0.0,
             master_meter_db: [MIN_DB; 2],
             status: String::new(),
+            project_dir: None,
+            dirty: false,
+            saved_label: None,
+            autosave_at: None,
+            now: 0.0,
+            pending: None,
+            may_close: false,
+            title: String::new(),
         };
         for track in &mut app.tracks {
             track.meter_db = MIN_DB;
@@ -123,16 +164,24 @@ impl DawApp {
         }
     }
 
-    fn load_into(&mut self, index: usize, path: &std::path::Path) {
+    /// Load a WAV file onto a track. Returns `false` (with a status message) when it cannot be read.
+    fn load_into(&mut self, index: usize, path: &Path) -> bool {
         match daw388_project::load_wav(path) {
             Ok(clip) => {
                 if let Some(engine) = &mut self.engine {
                     send_track(engine, index, Some(&clip));
                 }
                 self.status = format!("Spoor {}: {} geladen ({:.1} s)", index + 1, clip.name, clip.duration_seconds());
-                self.tracks[index].clip = Some(clip);
+                let track = &mut self.tracks[index];
+                track.clip = Some(clip);
+                track.source = Some(path.to_path_buf());
+                track.missing = false;
+                true
             }
-            Err(e) => self.status = format!("{}: {e}", path.display()),
+            Err(e) => {
+                self.status = format!("{}: {e}", path.display());
+                false
+            }
         }
     }
 
@@ -146,18 +195,274 @@ impl DawApp {
     pub fn load_paths(&mut self, mut paths: Vec<PathBuf>) {
         paths.sort();
         for (index, path) in paths.iter().take(TRACKS).enumerate() {
-            self.load_into(index, path);
+            if self.load_into(index, path) {
+                self.mark_dirty();
+            }
         }
         if paths.len() > TRACKS {
             self.status = format!("{} bestanden gekozen, alleen de eerste {TRACKS} zijn geladen", paths.len());
         }
     }
 
+    /// Handle command-line arguments: a project folder or `project.json` opens that project,
+    /// WAV files go onto the tracks.
+    pub fn open_arguments(&mut self, paths: Vec<PathBuf>) {
+        match paths.as_slice() {
+            [] => {}
+            [one] if one.is_dir() || one.file_name().is_some_and(|n| n == PROJECT_FILE) => self.open_project(one),
+            _ => self.load_paths(paths),
+        }
+    }
+
     fn clear_track(&mut self, index: usize) {
-        self.tracks[index].clip = None;
+        let track = &mut self.tracks[index];
+        track.clip = None;
+        track.source = None;
+        track.missing = false;
         if let Some(engine) = &mut self.engine {
             engine.send(Command::SetTrack(index, None));
         }
+        self.mark_dirty();
+    }
+
+    fn mark_dirty(&mut self) {
+        if !self.dirty {
+            self.dirty = true;
+            self.autosave_at = Some(self.now + AUTOSAVE_AFTER);
+        }
+    }
+
+    fn project_name(&self) -> String {
+        self.project_dir.as_deref().map_or_else(|| "Naamloos".into(), session::project_name)
+    }
+
+    /// Put every track and the mix back to an empty project.
+    fn reset(&mut self) {
+        for index in 0..TRACKS {
+            let meter_db = self.tracks[index].meter_db;
+            self.tracks[index] = TrackState { meter_db, ..TrackState::default() };
+            if let Some(engine) = &mut self.engine {
+                engine.send(Command::SetTrack(index, None));
+                engine.send(Command::SetGain(index, 1.0));
+                engine.send(Command::SetPan(index, 0.0));
+                engine.send(Command::SetMute(index, false));
+            }
+        }
+        self.master_db = 0.0;
+        if let Some(engine) = &mut self.engine {
+            engine.stop();
+            engine.rtz();
+            engine.send(Command::SetMaster(1.0));
+        }
+        self.project_dir = None;
+        self.dirty = false;
+        self.autosave_at = None;
+        self.saved_label = None;
+    }
+
+    fn new_project(&mut self) {
+        self.reset();
+        self.status = "Nieuw project".into();
+    }
+
+    fn open_project(&mut self, path: &Path) {
+        let opened = match session::open(path) {
+            Ok(opened) => opened,
+            Err(e) => {
+                self.status = format!("Openen mislukt: {e}");
+                return;
+            }
+        };
+        self.reset();
+        let mut missing = Vec::new();
+        for entry in &opened.file.tracks {
+            let index = usize::from(entry.number.saturating_sub(1));
+            if index >= TRACKS {
+                continue;
+            }
+            let track = &mut self.tracks[index];
+            track.fader_db = entry.fader_db.clamp(MIN_DB, MAX_DB);
+            track.pan = entry.pan.clamp(-1.0, 1.0);
+            track.mute = entry.mute;
+            if let Some(engine) = &mut self.engine {
+                engine.send(Command::SetGain(index, db_to_gain(track.fader_db)));
+                engine.send(Command::SetPan(index, track.pan));
+                engine.send(Command::SetMute(index, track.mute));
+            }
+            if let Some(source) = opened.track_source(entry)
+                && !self.load_into(index, &source)
+            {
+                let track = &mut self.tracks[index];
+                track.source = Some(source);
+                track.missing = true;
+                missing.push(index + 1);
+            }
+        }
+        self.master_db = opened.file.master_db.clamp(MIN_DB, MAX_DB);
+        self.engine_send(Command::SetMaster(db_to_gain(self.master_db)));
+        self.project_dir = Some(opened.dir);
+        self.dirty = false;
+        self.autosave_at = None;
+        self.status = if missing.is_empty() {
+            format!("{} geopend", self.project_name())
+        } else {
+            let list: Vec<String> = missing.iter().map(ToString::to_string).collect();
+            format!("{} geopend, audio ontbreekt op spoor {}", self.project_name(), list.join(", "))
+        };
+    }
+
+    /// Save to the project folder, asking for one first when there is none. Returns `true` when saved.
+    fn save(&mut self, backup: Backup) -> bool {
+        let Some(dir) = self.project_dir.clone() else { return self.save_as() };
+        let tracks: Vec<TrackToSave> =
+            self.tracks.iter().map(|t| TrackToSave { source: t.source.clone(), fader_db: t.fader_db, pan: t.pan, mute: t.mute }).collect();
+        match session::save(&dir, self.master_db, &tracks, backup) {
+            Ok(saved) => {
+                for (track, source) in self.tracks.iter_mut().zip(saved.sources) {
+                    track.source = source;
+                }
+                self.dirty = false;
+                self.autosave_at = None;
+                let what = if backup == Backup::Always { "Opgeslagen" } else { "Automatisch opgeslagen" };
+                self.saved_label = Some(format!("{what} {}", session::clock_time()));
+                true
+            }
+            Err(e) => {
+                self.status = format!("Opslaan mislukt: {e}");
+                // Try again later rather than every frame.
+                self.autosave_at = Some(self.now + AUTOSAVE_AFTER);
+                false
+            }
+        }
+    }
+
+    fn save_as(&mut self) -> bool {
+        let Some(dir) = self.platform.pick_project_location(&self.project_name()) else { return false };
+        self.project_dir = Some(dir);
+        let saved = self.save(Backup::Always);
+        if saved {
+            self.status = format!(
+                "Project opgeslagen in {}",
+                self.project_dir.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_default()
+            );
+        }
+        saved
+    }
+
+    /// Do something that replaces the project, asking first when there are unsaved changes.
+    fn request(&mut self, action: Pending) {
+        if self.dirty { self.pending = Some(action) } else { self.perform(action) }
+    }
+
+    fn perform(&mut self, action: Pending) {
+        match action {
+            Pending::New => self.new_project(),
+            Pending::Close => {
+                let name = self.project_name();
+                self.reset();
+                self.status = format!("{name} gesloten");
+            }
+            Pending::Open(path) => {
+                if let Some(path) = path.or_else(|| self.platform.pick_project_to_open()) {
+                    self.open_project(&path);
+                }
+            }
+            Pending::Quit => self.may_close = true,
+        }
+    }
+
+    fn unsaved_dialog(&mut self, ctx: &egui::Context) {
+        let Some(action) = self.pending.clone() else { return };
+        let mut answer = None;
+        let response = egui::Modal::new(egui::Id::unique("unsaved-changes")).show(ctx, |ui| {
+            ui.set_width(360.0);
+            ui.label(RichText::new(format!("Wijzigingen in {} opslaan?", self.project_name())).strong().size(16.0));
+            ui.add_space(6.0);
+            ui.label("Als je niet opslaat, gaan de wijzigingen sinds de laatste keer opslaan verloren.");
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Opslaan").clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Niet opslaan").clicked() {
+                    answer = Some(false);
+                }
+                if ui.button("Annuleren").clicked() {
+                    self.pending = None;
+                }
+            });
+        });
+        if response.should_close() && answer.is_none() {
+            self.pending = None;
+        }
+        if let Some(save) = answer {
+            self.pending = None;
+            if !save || self.save(Backup::Always) {
+                self.perform(action);
+            }
+        }
+    }
+
+    fn handle_file_shortcuts(&mut self, ui: &Ui) {
+        let shortcut = |key| KeyboardShortcut::new(Modifiers::COMMAND, key);
+        let save_as = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+        let (save_as, save, open, new) = ui.input_mut(|i| {
+            (
+                i.consume_shortcut(&save_as),
+                i.consume_shortcut(&shortcut(Key::S)),
+                i.consume_shortcut(&shortcut(Key::O)),
+                i.consume_shortcut(&shortcut(Key::N)),
+            )
+        });
+        let (close, quit) = ui.input_mut(|i| (i.consume_shortcut(&shortcut(Key::W)), i.consume_shortcut(&shortcut(Key::Q))));
+        if close {
+            self.request(Pending::Close);
+        }
+        if quit {
+            self.request(Pending::Quit);
+        }
+        if save_as {
+            self.save_as();
+        } else if save {
+            self.save(Backup::Always);
+        }
+        if open {
+            self.request(Pending::Open(None));
+        }
+        if new {
+            self.request(Pending::New);
+        }
+    }
+
+    fn file_menu(&mut self, ui: &mut Ui) {
+        let command = |ui: &Ui, key| ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key));
+        ui.menu_button("Bestand", |ui| {
+            if ui.add(egui::Button::new("Nieuw").shortcut_text(command(ui, Key::N))).clicked() {
+                self.request(Pending::New);
+            }
+            if ui.add(egui::Button::new("Openen...").shortcut_text(command(ui, Key::O))).clicked() {
+                self.request(Pending::Open(None));
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Opslaan").shortcut_text(command(ui, Key::S))).clicked() {
+                self.save(Backup::Always);
+            }
+            let save_as = ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::S));
+            if ui.add(egui::Button::new("Opslaan als...").shortcut_text(save_as)).clicked() {
+                self.save_as();
+            }
+            ui.separator();
+            if ui.button("8 WAV-bestanden laden...").clicked() {
+                self.load_all();
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Project sluiten").shortcut_text(command(ui, Key::W))).clicked() {
+                self.request(Pending::Close);
+            }
+            if ui.add(egui::Button::new("Stop DAW 388").shortcut_text(command(ui, Key::Q))).clicked() {
+                self.request(Pending::Quit);
+            }
+        });
     }
 
     fn engine_send(&mut self, command: Command) {
@@ -214,6 +519,10 @@ impl DawApp {
 
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
+            self.file_menu(ui);
+            let name = format!("{}{}", self.project_name(), if self.dirty { " (gewijzigd)" } else { "" });
+            ui.label(RichText::new(name).color(palette::TEXT_DIM).size(13.0));
+            ui.separator();
             ui.label(RichText::new("Uitvoer").color(palette::TEXT_DIM));
             let selected = self.device.clone().unwrap_or_else(|| "Geen apparaat".into());
             let mut choice: Option<Option<String>> = None;
@@ -233,13 +542,15 @@ impl DawApp {
             if let Some(choice) = choice {
                 self.open_device(choice);
             }
-            ui.separator();
-            if ui.button("8 WAV-bestanden laden").clicked() {
-                self.load_all();
-            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let colour = if self.engine.is_some() { palette::GREEN } else { palette::LED };
-                ui.label(RichText::new(&self.status).color(colour).size(13.0));
+                if let Some(saved) = &self.saved_label
+                    && !self.dirty
+                {
+                    ui.label(RichText::new(saved).color(palette::GREEN).size(13.0));
+                    ui.separator();
+                }
+                let colour = if self.engine.is_some() { palette::TEXT_DIM } else { palette::LED };
+                ui.add(egui::Label::new(RichText::new(&self.status).color(colour).size(13.0)).truncate());
             });
         });
     }
@@ -251,13 +562,24 @@ impl DawApp {
         let track = &mut self.tracks[index];
         column(ui, 76.0, |ui| {
             ui.label(RichText::new(format!("{}", index + 1)).strong().size(18.0).color(palette::CREAM));
-            let name = track.clip.as_ref().map_or("leeg".to_string(), |c| c.name.clone());
-            ui.add(egui::Label::new(RichText::new(name).size(11.0).color(palette::TEXT_DIM)).truncate());
+            let (name, colour) = match (&track.clip, &track.source) {
+                (Some(clip), _) => (clip.name.clone(), palette::TEXT_DIM),
+                (None, Some(source)) if track.missing => {
+                    (format!("ontbreekt: {}", source.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), palette::LED)
+                }
+                _ => ("leeg".to_string(), palette::TEXT_DIM),
+            };
+            let label = ui.add(egui::Label::new(RichText::new(name).size(11.0).color(colour)).truncate());
+            if track.missing
+                && let Some(source) = &track.source
+            {
+                label.on_hover_text(format!("Niet gevonden: {}", source.display()));
+            }
             ui.horizontal(|ui| {
                 if ui.small_button("Laad").on_hover_text("WAV-bestand op dit spoor laden").clicked() {
                     load = true;
                 }
-                if track.clip.is_some() && ui.small_button("Wis").clicked() {
+                if (track.clip.is_some() || track.missing) && ui.small_button("Wis").clicked() {
                     clear = true;
                 }
             });
@@ -288,11 +610,17 @@ impl DawApp {
             });
             ui.label(RichText::new(format!("{:+.1} dB", track.fader_db)).size(11.0).color(palette::TEXT_DIM));
         });
+        if !commands.is_empty() {
+            self.mark_dirty();
+        }
         for command in commands {
             self.engine_send(command);
         }
-        if load && let Some(path) = self.platform.pick_audio_files(false).first() {
-            self.load_into(index, path);
+        if load
+            && let Some(path) = self.platform.pick_audio_files(false).first()
+            && self.load_into(index, path)
+        {
+            self.mark_dirty();
         }
         if clear {
             self.clear_track(index);
@@ -310,6 +638,7 @@ impl DawApp {
                 if response.changed() || response.double_clicked() {
                     let gain = db_to_gain(self.master_db);
                     self.engine_send(Command::SetMaster(gain));
+                    self.mark_dirty();
                 }
             });
             ui.label(RichText::new(format!("{:+.1} dB", self.master_db)).size(11.0).color(palette::TEXT_DIM));
@@ -425,8 +754,15 @@ impl DawApp {
     /// Draw one frame. Called by the platform's `eframe::App::ui`.
     pub fn ui(&mut self, ui: &mut Ui) {
         let dt = ui.input(|i| i.stable_dt).min(0.1);
+        self.now = ui.input(|i| i.time);
         self.update_meters(dt);
-        self.handle_keys(ui);
+        self.handle_file_shortcuts(ui);
+        if self.pending.is_none() {
+            self.handle_keys(ui);
+        }
+        self.autosave();
+        self.handle_close(ui);
+        self.update_title(ui);
 
         egui::Panel::top("header")
             .frame(Frame::new().fill(Color32::from_rgb(0x12, 0x10, 0x11)).inner_margin(Margin::symmetric(16, 8)))
@@ -460,13 +796,174 @@ impl DawApp {
             });
         });
 
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+        let ctx = ui.ctx().clone();
+        self.unsaved_dialog(&ctx);
+        if self.may_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    }
+
+    /// Save automatically some time after a change, once the project has a folder.
+    fn autosave(&mut self) {
+        if self.dirty && self.project_dir.is_some() && self.autosave_at.is_some_and(|at| self.now >= at) {
+            self.save(Backup::WhenDue);
+        }
+    }
+
+    /// Ask before closing the window with unsaved changes.
+    fn handle_close(&mut self, ui: &Ui) {
+        if ui.input(|i| i.viewport().close_requested()) && self.dirty && !self.may_close {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending = Some(Pending::Quit);
+        }
+    }
+
+    fn update_title(&mut self, ui: &Ui) {
+        let title = format!("{}{} - DAW 388", self.project_name(), if self.dirty { " *" } else { "" });
+        if title != self.title {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A platform without audio hardware whose dialogs give fixed answers.
+    struct FakePlatform {
+        save_location: Option<PathBuf>,
+        /// Keeps the audio side alive so commands are accepted.
+        engines: Vec<daw388_engine::Engine>,
+    }
+
+    impl Platform for FakePlatform {
+        fn output_devices(&mut self) -> Vec<String> {
+            vec!["Test".into()]
+        }
+        fn default_output_device(&mut self) -> Option<String> {
+            Some("Test".into())
+        }
+        fn open_output(&mut self, _: Option<&str>) -> Result<(EngineHandle, String), String> {
+            let (handle, engine) = daw388_engine::create(48_000);
+            self.engines.push(engine);
+            Ok((handle, "Test".into()))
+        }
+        fn pick_audio_files(&mut self, _: bool) -> Vec<PathBuf> {
+            Vec::new()
+        }
+        fn pick_project_to_open(&mut self) -> Option<PathBuf> {
+            None
+        }
+        fn pick_project_location(&mut self, _: &str) -> Option<PathBuf> {
+            self.save_location.clone()
+        }
+    }
+
+    fn write_wav(path: &Path) {
+        let spec = hound::WavSpec { channels: 1, sample_rate: 44_100, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap_or_else(|e| panic!("{e}"));
+        for n in 0..441 {
+            writer.write_sample((n * 10) as i16).unwrap_or_else(|e| panic!("{e}"));
+        }
+        writer.finalize().unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    #[test]
+    fn save_and_reopen_a_project() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let kick = files.path().join("01_Kick.wav");
+        let bass = files.path().join("03_Bas.wav");
+        write_wav(&kick);
+        write_wav(&bass);
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("Demo");
+
+        let ctx = egui::Context::default();
+        let platform = FakePlatform { save_location: Some(dir.clone()), engines: Vec::new() };
+        let mut app = DawApp::new(&ctx, Box::new(platform));
+        app.load_paths(vec![kick, bass]);
+        assert!(app.dirty);
+        app.tracks[1].fader_db = -6.0;
+        app.tracks[1].pan = -0.5;
+        app.tracks[1].mute = true;
+        app.master_db = -2.0;
+        assert!(app.save(Backup::Always), "{}", app.status);
+        assert!(!app.dirty);
+        assert!(app.saved_label.as_deref().is_some_and(|l| l.starts_with("Opgeslagen")));
+        assert_eq!(app.project_name(), "Demo");
+        assert!(app.tracks[0].source.as_ref().is_some_and(|s| s.starts_with(&dir)), "audio now lives in the project");
+
+        app.new_project();
+        assert!(app.tracks.iter().all(|t| t.clip.is_none()));
+        app.open_arguments(vec![dir.clone()]);
+        assert_eq!(app.project_name(), "Demo");
+        assert!(!app.dirty);
+        assert!(app.tracks[0].clip.is_some() && app.tracks[1].clip.is_some());
+        assert_eq!(app.tracks[1].fader_db, -6.0);
+        assert_eq!(app.tracks[1].pan, -0.5);
+        assert!(app.tracks[1].mute);
+        assert_eq!(app.master_db, -2.0);
+        assert!(app.tracks[2].clip.is_none());
+    }
+
+    #[test]
+    fn a_missing_file_is_shown_and_kept() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let kick = files.path().join("kick.wav");
+        write_wav(&kick);
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("Demo");
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: Some(dir.clone()), engines: Vec::new() }));
+        app.load_paths(vec![kick]);
+        assert!(app.save(Backup::Always));
+        std::fs::remove_file(dir.join("audio/kick.wav")).unwrap_or_else(|e| panic!("{e}"));
+
+        app.open_project(&dir);
+        assert!(app.tracks[0].missing);
+        assert!(app.status.contains("ontbreekt op spoor 1"), "{}", app.status);
+        // Saving again keeps the reference, so putting the file back repairs the project.
+        app.mark_dirty();
+        assert!(app.save(Backup::Always));
+        let opened = session::open(&dir).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/kick.wav"));
+    }
+
+    #[test]
+    fn unsaved_changes_ask_before_new() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: None, engines: Vec::new() }));
+        app.request(Pending::New);
+        assert!(app.pending.is_none(), "nothing to lose, so no question");
+        app.mark_dirty();
+        app.request(Pending::New);
+        assert_eq!(app.pending, Some(Pending::New));
+    }
+
+    #[test]
+    fn closing_the_project_empties_it_and_quitting_asks_first() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let kick = files.path().join("kick.wav");
+        write_wav(&kick);
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: Some(root.path().join("Demo")), engines: Vec::new() }));
+        app.load_paths(vec![kick]);
+        app.request(Pending::Quit);
+        assert_eq!(app.pending, Some(Pending::Quit), "unsaved work: ask before quitting");
+        assert!(!app.may_close);
+        app.pending = None;
+        assert!(app.save(Backup::Always));
+        app.request(Pending::Close);
+        assert!(app.tracks[0].clip.is_none());
+        assert_eq!(app.project_name(), "Naamloos");
+        assert!(app.status.contains("Demo gesloten"), "{}", app.status);
+        app.request(Pending::Quit);
+        assert!(app.may_close, "nothing unsaved: quit straight away");
+    }
 
     #[test]
     fn counter_shows_minutes_seconds_and_tenths() {

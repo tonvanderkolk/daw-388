@@ -5,7 +5,7 @@
 - [x] PROJECT.md, ROADMAP.md, CHANGELOG.md, licenties (MIT OR Apache-2.0)
 - [x] GitHub Actions-build voor macOS en Windows
 - [x] Eerste werkende versie: uitvoerapparaat kiezen, 8 WAV-bestanden laden, synchroon afspelen met PLAY, STOP en RTZ
-- [ ] `project.json` met een `audio/`-submap opslaan en openen
+- [x] `project.json` met een `audio/`-submap opslaan en openen (0.2.0)
 
 ## Fase 2: Audio-engine
 - [ ] Laden en samplerate-conversie op een achtergrondthread
@@ -42,7 +42,7 @@
 ## Fase 7: Export, import, autosave
 - [ ] Stereo bounce en stems, verwerkingsopties, WAV/AIFF, 16/24/32-bit float, 44,1/48/96 kHz
 - [ ] Import van andere formaten (symphonia)
-- [ ] Autosave met visuele bevestiging, backups
+- [x] Autosave met visuele bevestiging, backups (0.2.0)
 
 ## Fase 8: Vintage UI-skin volgens A2
 - [ ] Meterbrug met VU-meters, bandrecorder met spoelen, houten omlijsting
