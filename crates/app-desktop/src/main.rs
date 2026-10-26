@@ -97,7 +97,7 @@ impl Platform for Desktop {
     }
 
     fn pick_audio_files(&mut self, multiple: bool) -> Vec<PathBuf> {
-        let dialog = rfd::FileDialog::new().add_filter("WAV-audio", &["wav", "wave"]).set_title("Audio laden");
+        let dialog = rfd::FileDialog::new().add_filter("Audio (WAV, AIFF)", &daw388_ui::AUDIO_EXTENSIONS).set_title("Audio laden");
         if multiple { dialog.pick_files().unwrap_or_default() } else { dialog.pick_file().into_iter().collect() }
     }
 
@@ -121,7 +121,7 @@ impl eframe::App for DesktopApp {
 }
 
 fn main() -> eframe::Result {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,symphonia=warn")).init();
     let options = eframe::NativeOptions {
         // winit's default macOS menu quits with Cmd+Q through `terminate:`, which ends the app
         // without a close request and so skips the "save changes?" question. Without that menu,
@@ -137,7 +137,7 @@ fn main() -> eframe::Result {
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };
-    // A project folder or project.json on the command line opens it; WAV files go onto tracks 1 to 8.
+    // A project folder or project.json on the command line opens it; audio files go onto tracks 1 to 8.
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     eframe::run_native(
         "DAW 388",

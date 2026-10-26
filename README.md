@@ -6,7 +6,7 @@ Hobbyproject van Ton van der Kolk. Gratis te delen, niet te verkopen. Geen relat
 
 ## Status
 
-Versie 0.2.0: 8 WAV-bestanden laden en synchroon afspelen via een eenvoudige stereomix, met keuze van het audio-uitvoerapparaat. Projecten opslaan en openen, met autosave en backups. Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
+Versie 0.2.1: 8 WAV- of AIFF-bestanden laden (8 tot 32 bit, float, elke samplerate) en synchroon afspelen via een eenvoudige stereomix, met keuze van het audio-uitvoerapparaat. Projecten opslaan en openen, met autosave en backups. Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
 
 ## Bouwen en starten
 
@@ -16,7 +16,7 @@ Vereist een recente stable Rust-toolchain (via [rustup](https://rustup.rs)).
 cargo run --release
 ```
 
-WAV-bestanden kun je ook meteen meegeven; ze komen op volgorde van naam op spoor 1 tot en met 8:
+Audiobestanden kun je ook meteen meegeven; ze komen op volgorde van naam op spoor 1 tot en met 8:
 
 ```bash
 cargo run --release -- pad/naar/01_Kick.wav pad/naar/02_Snare.wav

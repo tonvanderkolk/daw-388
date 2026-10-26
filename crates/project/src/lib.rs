@@ -1,8 +1,9 @@
 //! Project files, audio import and export.
 //!
-//! Reading WAV files into mono tracks and converting them to the device's sample rate, plus the
+//! Reading WAV and AIFF files into mono tracks and converting them to the device's sample rate, plus the
 //! project folder (see [`session`]). Export follows in phase 7 (see ROADMAP.md).
 
+mod aiff;
 pub mod session;
 
 pub use session::{Backup, OpenedProject, ProjectError, Saved, TrackToSave};
@@ -32,6 +33,8 @@ impl MonoClip {
 #[derive(Debug)]
 pub enum ImportError {
     Wav(hound::Error),
+    Aiff(String),
+    Io(std::io::Error),
     Empty,
 }
 
@@ -39,6 +42,8 @@ impl fmt::Display for ImportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Wav(e) => write!(f, "WAV-bestand niet leesbaar: {e}"),
+            Self::Aiff(e) => write!(f, "AIFF-bestand niet leesbaar: {e}"),
+            Self::Io(e) => write!(f, "bestand niet leesbaar: {e}"),
             Self::Empty => write!(f, "het bestand bevat geen audio"),
         }
     }
@@ -52,11 +57,37 @@ impl From<hound::Error> for ImportError {
     }
 }
 
+/// File extensions the import dialog offers.
+pub const AUDIO_EXTENSIONS: [&str; 5] = ["wav", "wave", "aif", "aiff", "aifc"];
+
+/// Read a WAV or AIFF file and average its channels to mono. The format is recognised by the
+/// file's first bytes, not its name.
+pub fn load_audio(path: &Path) -> Result<MonoClip, ImportError> {
+    let mut magic = [0u8; 4];
+    {
+        use std::io::Read;
+        let mut file = std::fs::File::open(path).map_err(ImportError::Io)?;
+        // A file shorter than four bytes is not audio; let the WAV reader report it.
+        let _ = file.read_exact(&mut magic);
+    }
+    if &magic == b"FORM" { aiff::load(path) } else { load_wav(path) }
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Average interleaved channels to one.
+fn to_mono(interleaved: &[f32], channels: usize) -> Vec<f32> {
+    let channels = channels.max(1);
+    let gain = 1.0 / channels as f32;
+    interleaved.chunks(channels).map(|frame| frame.iter().sum::<f32>() * gain).collect()
+}
+
 /// Read a WAV file (8 to 32-bit integer or 32-bit float) and average its channels to mono.
 pub fn load_wav(path: &Path) -> Result<MonoClip, ImportError> {
     let reader = hound::WavReader::open(path)?;
-    let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    decode(reader, name)
+    decode(reader, file_name(path))
 }
 
 fn decode<R: std::io::Read>(reader: hound::WavReader<R>, name: String) -> Result<MonoClip, ImportError> {
@@ -72,9 +103,7 @@ fn decode<R: std::io::Read>(reader: hound::WavReader<R>, name: String) -> Result
     if interleaved.is_empty() {
         return Err(ImportError::Empty);
     }
-    let gain = 1.0 / channels as f32;
-    let samples = interleaved.chunks(channels).map(|frame| frame.iter().sum::<f32>() * gain).collect();
-    Ok(MonoClip { name, sample_rate: spec.sample_rate, samples })
+    Ok(MonoClip { name, sample_rate: spec.sample_rate, samples: to_mono(&interleaved, channels) })
 }
 
 /// Convert between sample rates with 4-point Hermite interpolation. Good enough for monitoring;

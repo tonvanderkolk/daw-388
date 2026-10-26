@@ -2,6 +2,15 @@
 
 Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Versioning](https://semver.org/lang/nl/).
 
+## [0.2.1] - 2026-10-27
+
+### Toegevoegd
+- Import van AIFF en AIFF-C (`.aif`, `.aiff`, `.aifc`): 8, 16, 24 en 32-bit integer en 32-bit float, mono en stereo, elke samplerate.
+- Het formaat wordt herkend aan de inhoud van het bestand, dus een verkeerde extensie is geen probleem.
+
+### Gewijzigd
+- De bestandskiezer toont WAV- en AIFF-bestanden; de menuknop heet nu "8 audiobestanden laden".
+
 ## [0.2.0] - 2026-10-26
 
 ### Toegevoegd

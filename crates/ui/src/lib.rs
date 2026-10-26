@@ -6,6 +6,8 @@ use daw388_project::session::{self, PROJECT_FILE};
 use daw388_project::{Backup, MonoClip, TrackToSave};
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 use std::path::{Path, PathBuf};
+
+pub use daw388_project::AUDIO_EXTENSIONS;
 use std::sync::Arc;
 
 /// What the UI needs from the platform it runs on.
@@ -164,9 +166,9 @@ impl DawApp {
         }
     }
 
-    /// Load a WAV file onto a track. Returns `false` (with a status message) when it cannot be read.
+    /// Load a WAV or AIFF file onto a track. Returns `false` (with a status message) when it cannot be read.
     fn load_into(&mut self, index: usize, path: &Path) -> bool {
-        match daw388_project::load_wav(path) {
+        match daw388_project::load_audio(path) {
             Ok(clip) => {
                 if let Some(engine) = &mut self.engine {
                     send_track(engine, index, Some(&clip));
@@ -205,7 +207,7 @@ impl DawApp {
     }
 
     /// Handle command-line arguments: a project folder or `project.json` opens that project,
-    /// WAV files go onto the tracks.
+    /// audio files go onto the tracks.
     pub fn open_arguments(&mut self, paths: Vec<PathBuf>) {
         match paths.as_slice() {
             [] => {}
@@ -452,7 +454,7 @@ impl DawApp {
                 self.save_as();
             }
             ui.separator();
-            if ui.button("8 WAV-bestanden laden...").clicked() {
+            if ui.button("8 audiobestanden laden...").clicked() {
                 self.load_all();
             }
             ui.separator();
@@ -576,7 +578,7 @@ impl DawApp {
                 label.on_hover_text(format!("Niet gevonden: {}", source.display()));
             }
             ui.horizontal(|ui| {
-                if ui.small_button("Laad").on_hover_text("WAV-bestand op dit spoor laden").clicked() {
+                if ui.small_button("Laad").on_hover_text("WAV- of AIFF-bestand op dit spoor laden").clicked() {
                     load = true;
                 }
                 if (track.clip.is_some() || track.missing) && ui.small_button("Wis").clicked() {

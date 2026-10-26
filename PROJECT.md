@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.2.0
+Versie: 0.2.1
 Laatst bijgewerkt: 26-10-2026
 
 ## Doel
@@ -12,7 +12,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 - Rust (stable, edition 2024), Cargo workspace
 - Audio I/O: `cpal` 0.18 (CoreAudio op macOS, WASAPI op Windows)
 - UI: `egui` / `eframe` 0.37
-- Audiobestanden: `hound` (WAV)
+- Audiobestanden: `hound` (WAV) en `symphonia` (AIFF en AIFF-C)
 - Realtime-communicatie: `rtrb` (lock-free ringbuffer)
 - Bestandsdialogen: `rfd`
 - Builds: GitHub Actions voor macOS en Windows
@@ -24,7 +24,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 | `daw388-engine` | `crates/engine` | Transport, 8 sporen en stereomix. Platformonafhankelijk, geen allocaties of locks in de audiothread |
 | `daw388-tape` | `crates/tape` | Tape-emulatie en dbx (fase 6, nog leeg) |
 | `daw388-fx` | `crates/fx` | Plate reverb en tape echo (fase 6, nog leeg) |
-| `daw388-project` | `crates/project` | WAV-import naar mono, samplerate-conversie en de projectmap (`project.json`, `audio/`, `backups/`). Later export |
+| `daw388-project` | `crates/project` | WAV- en AIFF-import naar mono, samplerate-conversie en de projectmap (`project.json`, `audio/`, `backups/`). Later export |
 | `daw388-ui` | `crates/ui` | egui-interface, praat met het platform via de `Platform`-trait |
 | `daw388` | `crates/app-desktop` | Desktop-entrypoint: cpal-uitvoer, bestandsdialogen en het eframe-venster |
 
@@ -37,6 +37,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 - De engine kent geen audioapparaten. `app-desktop` roept `Engine::render` aan vanuit de cpal-callback; een latere browserversie doet hetzelfde vanuit WebAudio.
 - Bij het wisselen van apparaat bouwt de app een nieuwe engine op de samplerate van het apparaat en stuurt de sporen (opnieuw geconverteerd), mixinstellingen en positie opnieuw.
 - Sporen zijn mono, zoals op de 388. Stereobestanden worden bij het laden gemiddeld naar mono.
+- Het formaat van een audiobestand wordt herkend aan de eerste bytes (`RIFF` of `FORM`), niet aan de extensie.
 
 ## Projectmap
 
@@ -64,7 +65,7 @@ Mijn liedje/
 
 ## Bekende beperkingen van 0.1.0
 
-- Alleen WAV, nog geen AIFF of andere formaten.
+- Import van WAV en AIFF (ongecomprimeerd). Nog geen FLAC, MP3 of andere formaten.
 - Laden en samplerate-conversie gebeuren op de UI-thread; bij lange bestanden hapert het venster even.
 - Samplerate-conversie gebruikt Hermite-interpolatie: prima voor afluisteren, voor export komt een betere resampler.
 - Geen opname, EQ, sends, effecten of tape-model. Zie de roadmap.
