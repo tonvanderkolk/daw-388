@@ -2,6 +2,11 @@
 
 Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Versioning](https://semver.org/lang/nl/).
 
+## [Unreleased]
+
+### Gewijzigd
+- CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
+
 ## [0.7.0] - 2026-10-27
 
 ### Toegevoegd

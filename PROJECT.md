@@ -15,7 +15,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 - Audiobestanden: `hound` (WAV) en `symphonia` (AIFF en AIFF-C)
 - Realtime-communicatie: `rtrb` (lock-free ringbuffer)
 - Bestandsdialogen: `rfd`
-- Builds: GitHub Actions voor macOS en Windows
+- Builds: GitHub Actions. Bij elke push een controle op Windows (opmaak, Clippy, tests); bij een versielabel `v*` of handmatig de release voor macOS en Windows met downloadbare apps
 
 ## Workspace
 
