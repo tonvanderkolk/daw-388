@@ -6,7 +6,7 @@
 mod aiff;
 pub mod session;
 
-pub use session::{Backup, OpenedProject, ProjectError, ProjectSettings, Saved, TrackToSave};
+pub use session::{Backup, OpenedProject, ProjectError, ProjectSettings, RepeatMode, Saved, TrackToSave, TransportSettings};
 
 use std::fmt;
 use std::path::Path;

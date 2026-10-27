@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.3.0
+Versie: 0.4.0
 Laatst bijgewerkt: 26-10-2026
 
 ## Doel
@@ -48,7 +48,7 @@ Mijn liedje/
 └── backups/            # eerdere versies van project.json (laatste 10)
 ```
 
-- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 1), `app_version`, `master_db`, `meter_post` (spoormeters na de fader, standaard `false`) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan` en `mute`.
+- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 1), `app_version`, `master_db`, `meter_post` (spoormeters na de fader, standaard `false`), `transport` (zie hierboven) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan` en `mute`.
 - Opslaan kopieert audio van buiten het project naar `audio/`. Het origineel blijft staan. Bij een naamconflict krijgt de kopie een achtervoegsel (`take-2.wav`).
 - `project.json` wordt eerst naar een tijdelijk bestand geschreven en daarna hernoemd, zodat een crash nooit een half bestand achterlaat.
 - Autosave volgt 30 seconden na een wijziging, alleen als het project al een map heeft.
@@ -63,10 +63,24 @@ Mijn liedje/
 - Apparaat zoeken op naam met terugval op het standaardapparaat (`app-desktop/src/main.rs`, met bronvermelding).
 - Een scratchbuffer per callback zodat de callback niet alloceert, met omzetting naar het sampleformaat van het apparaat.
 
-## Bekende beperkingen van 0.1.0
+## Transport
+
+Naar de handleiding van de 388 (Memory/Transport Controls):
+
+- De bandpositie loopt in samples op de samplerate van de engine, met een fractie, zodat de pitch-knop de snelheid kan variëren (plus of min 15%, VARI/FIX). Tussen samples wordt met Hermite-interpolatie gelezen. De teller volgt de bandpositie, zoals de 388 de bandlengte meet.
+- RESET zet het nulpunt op de huidige plek; de teller toont de tijd vanaf het nulpunt, met een minteken daarvoor.
+- CUE onthoudt de huidige plek. STC zoekt het CUE-punt op (zonder CUE-punt: het begin). RTZ zoekt het nulpunt op. PLAY tijdens een zoekactie speelt bij aankomst.
+- REW en F FWD spoelen op 30 keer de normale snelheid, stil, tot STOP, het begin of het einde van het langste spoor.
+- REPEAT loopt van het nulpunt tot het CUE-punt. In de 388-modus spoelt de band terug en speelt opnieuw, en zet elke transporttoets behalve PLAY en RTZ REPEAT uit. In de cycle-modus springt de positie direct terug (ook bij RTZ en STC) en blijft REPEAT aan.
+- Nulpunt, CUE-punt, REPEAT-modus, pitch en VARI/FIX worden in `project.json` bewaard onder `transport`.
+
+## Laden
+
+Audio wordt op een achtergrondthread gedecodeerd en naar de samplerate van het apparaat omgezet (via `Platform::spawn`). Elk verzoek krijgt een volgnummer; een resultaat voor een spoor dat intussen gewist of opnieuw geladen is, wordt genegeerd. Bij een apparaatwissel worden de sporen op de achtergrond opnieuw omgezet.
+
+## Bekende beperkingen
 
 - Import van WAV en AIFF (ongecomprimeerd). Nog geen FLAC, MP3 of andere formaten.
-- Laden en samplerate-conversie gebeuren op de UI-thread; bij lange bestanden hapert het venster even.
 - Samplerate-conversie gebruikt Hermite-interpolatie: prima voor afluisteren, voor export komt een betere resampler.
 - Geen opname, EQ, sends, effecten of tape-model. Zie de roadmap.
 - Op macOS is het standaard app-menu uitgezet, zodat Cmd+Q via de opslaan-vraag loopt. Afsluiten door uitloggen of herstarten van de Mac gaat nog wel buiten die vraag om; autosave beperkt dan het verlies tot de laatste 30 seconden.

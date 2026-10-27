@@ -34,6 +34,8 @@ pub struct ProjectFile {
     #[serde(default)]
     pub meter_post: bool,
     #[serde(default)]
+    pub transport: TransportSettings,
+    #[serde(default)]
     pub tracks: Vec<TrackEntry>,
 }
 
@@ -53,11 +55,42 @@ pub struct TrackEntry {
     pub mute: bool,
 }
 
+/// How REPEAT (and RTZ and STC) reach their point.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RepeatMode {
+    /// Wind back through the tape in time, as the 388 does.
+    #[default]
+    Tape,
+    /// Jump back at once, as Logic's cycle mode does.
+    Cycle,
+}
+
+/// The tape transport's memory and settings in `project.json`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct TransportSettings {
+    /// The zero point set with RESET, in seconds from the start of the tape.
+    #[serde(default)]
+    pub zero_seconds: f64,
+    /// The CUE point, in seconds from the start of the tape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cue_seconds: Option<f64>,
+    #[serde(default)]
+    pub repeat_mode: RepeatMode,
+    /// Pitch control setting in percent (-15 to +15).
+    #[serde(default)]
+    pub pitch_percent: f32,
+    /// VARI (true): the pitch control works; FIX (false): normal speed.
+    #[serde(default)]
+    pub vari: bool,
+}
+
 /// Project-wide settings saved with the tracks.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ProjectSettings {
     pub master_db: f32,
     pub meter_post: bool,
+    pub transport: TransportSettings,
 }
 
 /// What the UI hands over for one track when saving.
@@ -168,6 +201,7 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
         app_version: env!("CARGO_PKG_VERSION").into(),
         master_db: settings.master_db,
         meter_post: settings.meter_post,
+        transport: settings.transport,
         tracks: entries,
     };
     let path = dir.join(PROJECT_FILE);
@@ -303,8 +337,23 @@ mod tests {
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let dir = root.path().join("Mijn liedje");
 
-        let saved = save(&dir, &ProjectSettings { master_db: -1.5, meter_post: true }, &tracks([Some(kick.clone()), None]), Backup::Always)
-            .unwrap_or_else(|e| panic!("{e}"));
+        let saved = save(
+            &dir,
+            &ProjectSettings {
+                master_db: -1.5,
+                meter_post: true,
+                transport: TransportSettings {
+                    zero_seconds: 1.25,
+                    cue_seconds: Some(30.5),
+                    repeat_mode: RepeatMode::Cycle,
+                    pitch_percent: -2.5,
+                    vari: true,
+                },
+            },
+            &tracks([Some(kick.clone()), None]),
+            Backup::Always,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         let copied = saved.sources[0].clone().unwrap_or_else(|| panic!("no source"));
         assert!(copied.starts_with(dir.join(AUDIO_DIR)));
         assert!(copied.exists() && kick.exists(), "the original stays where it was");
@@ -313,6 +362,12 @@ mod tests {
         let opened = open(&dir).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(opened.file.master_db, -1.5);
         assert!(opened.file.meter_post);
+        let transport = opened.file.transport;
+        assert_eq!(transport.zero_seconds, 1.25);
+        assert_eq!(transport.cue_seconds, Some(30.5));
+        assert_eq!(transport.repeat_mode, RepeatMode::Cycle);
+        assert_eq!(transport.pitch_percent, -2.5);
+        assert!(transport.vari);
         assert_eq!(opened.file.tracks.len(), 2);
         assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/01_Kick.wav"));
         assert_eq!(opened.file.tracks[1].file, None);
@@ -384,6 +439,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e}"));
         let old = open(&path).unwrap_or_else(|e| panic!("{e}"));
         assert!(!old.file.meter_post && old.file.master_db == -3.0);
+        assert_eq!(old.file.transport, TransportSettings::default(), "older projects: zero at the start, no cue, 388 mode, FIX");
         fs::write(&path, r#"{"format":"iets-anders","version":1,"app_version":"x"}"#).unwrap_or_else(|e| panic!("{e}"));
         assert!(matches!(open(&path), Err(ProjectError::NotAProject(_))));
         fs::write(&path, r#"{"format":"daw388-project","version":99,"app_version":"x"}"#).unwrap_or_else(|e| panic!("{e}"));

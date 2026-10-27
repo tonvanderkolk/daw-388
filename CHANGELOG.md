@@ -2,6 +2,20 @@
 
 Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Versioning](https://semver.org/lang/nl/).
 
+## [0.4.0] - 2026-10-27
+
+### Toegevoegd
+- Transport naar het voorbeeld van de 388: RESET (nulpunt), CUE (geheugenpunt), STC (naar het CUE-punt), REPEAT (herhalen van nulpunt tot CUE-punt), REW en F FWD (stil spoelen op 30 keer de snelheid), STOP, PLAY en RTZ (naar het nulpunt).
+- Teller vanaf het nulpunt, met een minteken ervoor, en het CUE-punt eronder.
+- PITCH-knop: snelheid en toonhoogte plus of min 15%, met VARI/FIX-schakelaar. Dubbelklik zet hem op 0%.
+- Instellingenvenster (Bestand, Instellingen of Cmd+,) met de REPEAT-modus: 388 (de band spoelt in de tijd terug, zoals het origineel) of cycle (springt direct terug, zoals in Logic).
+- Nulpunt, CUE-punt, REPEAT-modus, pitch en VARI/FIX worden in het project opgeslagen.
+- Sneltoetsen: komma is REW, punt is F FWD, C zet REPEAT aan of uit.
+- Bestanden en projecten laden op de achtergrond; het spoor toont "laden..." tot het klaar is.
+
+### Gewijzigd
+- RTZ gaat naar het nulpunt (RESET) in plaats van altijd naar het begin. In de 388-modus spoelt RTZ in de tijd.
+
 ## [0.3.0] - 2026-10-27
 
 ### Toegevoegd

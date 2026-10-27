@@ -110,6 +110,12 @@ impl Platform for Desktop {
         let path = rfd::FileDialog::new().set_title("Project opslaan als").set_file_name(suggested_name).save_file()?;
         Some(if path.extension().is_some() { path.with_extension("") } else { path })
     }
+
+    fn spawn(&mut self, job: Box<dyn FnOnce() + Send>) {
+        if let Err(e) = std::thread::Builder::new().name("daw388-load".into()).spawn(job) {
+            log::error!("cannot start a loader thread: {e}");
+        }
+    }
 }
 
 struct DesktopApp(DawApp);

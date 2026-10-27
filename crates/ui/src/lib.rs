@@ -1,14 +1,15 @@
 //! The egui interface of DAW 388. Platform-specific parts (audio devices, file dialogs) come in
 //! through the [`Platform`] trait, so the same UI can later run in the browser.
 
-use daw388_engine::{Command, EngineHandle, TRACKS, TrackAudio};
+use daw388_engine::{Command, EngineHandle, Motion, PITCH_RANGE, TRACKS, TrackAudio, TransportStyle};
 use daw388_project::session::{self, PROJECT_FILE};
-use daw388_project::{Backup, MonoClip, ProjectSettings, TrackToSave};
+use daw388_project::{Backup, MonoClip, ProjectSettings, RepeatMode, TrackToSave, TransportSettings};
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 use std::path::{Path, PathBuf};
 
 pub use daw388_project::AUDIO_EXTENSIONS;
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 /// What the UI needs from the platform it runs on.
 pub trait Platform {
@@ -25,6 +26,28 @@ pub trait Platform {
     fn pick_project_to_open(&mut self) -> Option<PathBuf>;
     /// Ask the user where to save a project. Returns the project folder to create or reuse.
     fn pick_project_location(&mut self, suggested_name: &str) -> Option<PathBuf>;
+    /// Run slow work (decoding and resampling audio) away from the UI thread.
+    fn spawn(&mut self, job: Box<dyn FnOnce() + Send>);
+}
+
+/// A finished background load or resample for one track.
+struct LoadResult {
+    index: usize,
+    generation: u64,
+    /// The track's audio as decoded and, for the engine, at `rate`.
+    outcome: Result<(Arc<MonoClip>, Arc<TrackAudio>), String>,
+    rate: u32,
+    /// The file came from a project being opened: keep the reference when it is missing.
+    from_project: bool,
+    /// A new file (not a resample of audio already on the track).
+    fresh: bool,
+}
+
+fn style_of(mode: RepeatMode) -> TransportStyle {
+    match mode {
+        RepeatMode::Tape => TransportStyle::Tape,
+        RepeatMode::Cycle => TransportStyle::Cycle,
+    }
 }
 
 /// Seconds between a change and the automatic save that follows it.
@@ -57,6 +80,9 @@ mod palette {
     pub const KEY: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9c);
 }
 
+/// The pitch control's range in percent (plus or minus).
+const PITCH_PERCENT: f32 = (PITCH_RANGE * 100.0) as f32;
+
 const MIN_DB: f32 = -60.0;
 const MAX_DB: f32 = 6.0;
 
@@ -68,15 +94,21 @@ fn gain_to_db(gain: f32) -> f32 {
     if gain <= 0.0 { MIN_DB } else { (20.0 * gain.log10()).max(MIN_DB) }
 }
 
-/// Counter text, minutes and seconds with tenths.
+/// Counter text, minutes and seconds with tenths; a minus sign before the zero point, as on the
+/// 388.
 pub fn format_counter(seconds: f64) -> String {
-    let tenths = (seconds.max(0.0) * 10.0).floor() as u64;
-    format!("{:02}:{:02}.{}", tenths / 600, (tenths / 10) % 60, tenths % 10)
+    let tenths = (seconds.abs() * 10.0).floor() as u64;
+    let sign = if seconds < 0.0 && tenths > 0 { "-" } else { "" };
+    format!("{sign}{:02}:{:02}.{}", tenths / 600, (tenths / 10) % 60, tenths % 10)
 }
 
 #[derive(Default)]
 struct TrackState {
-    clip: Option<MonoClip>,
+    clip: Option<Arc<MonoClip>>,
+    /// A file is being decoded for this track.
+    loading: bool,
+    /// Identifies the latest load request, so a late result for an older one is ignored.
+    generation: u64,
     /// The file the clip came from; after saving, its copy in the project's `audio/` folder.
     source: Option<PathBuf>,
     /// The project refers to a file that could not be loaded.
@@ -111,12 +143,26 @@ pub struct DawApp {
     /// The user agreed to quit; let the next close request through.
     may_close: bool,
     title: String,
+    /// Background loads report back here.
+    loads_tx: Sender<LoadResult>,
+    loads_rx: Receiver<LoadResult>,
+    next_generation: u64,
+    ctx: egui::Context,
+    /// Transport memory and settings, kept here so they survive a device change and are saved.
+    zero_seconds: f64,
+    cue_seconds: Option<f64>,
+    repeat: bool,
+    repeat_mode: RepeatMode,
+    pitch_percent: f32,
+    vari: bool,
+    show_settings: bool,
 }
 
 impl DawApp {
     pub fn new(ctx: &egui::Context, mut platform: Box<dyn Platform>) -> Self {
         apply_style(ctx);
         let devices = platform.output_devices();
+        let (loads_tx, loads_rx) = channel();
         let mut app = Self {
             platform,
             engine: None,
@@ -135,6 +181,17 @@ impl DawApp {
             pending: None,
             may_close: false,
             title: String::new(),
+            loads_tx,
+            loads_rx,
+            next_generation: 1,
+            ctx: ctx.clone(),
+            zero_seconds: 0.0,
+            cue_seconds: None,
+            repeat: false,
+            repeat_mode: RepeatMode::Tape,
+            pitch_percent: 0.0,
+            vari: false,
+            show_settings: false,
         };
         for track in &mut app.tracks {
             track.meter_db = MIN_DB;
@@ -152,7 +209,6 @@ impl DawApp {
             Ok((mut engine, opened)) => {
                 self.status = format!("{opened}, {} Hz", engine.sample_rate());
                 for (index, track) in self.tracks.iter().enumerate() {
-                    send_track(&mut engine, index, track.clip.as_ref());
                     engine.send(Command::SetGain(index, db_to_gain(track.fader_db)));
                     engine.send(Command::SetPan(index, track.pan));
                     engine.send(Command::SetMute(index, track.mute));
@@ -161,6 +217,11 @@ impl DawApp {
                 engine.locate_seconds(position);
                 self.device = Some(opened);
                 self.engine = Some(engine);
+                self.send_transport();
+                // The audio has to be resampled for the new device's rate.
+                for index in 0..TRACKS {
+                    self.request_resample(index);
+                }
             }
             Err(e) => {
                 self.status = format!("Geen audio-uitvoer: {e}");
@@ -169,25 +230,86 @@ impl DawApp {
         }
     }
 
-    /// Load a WAV or AIFF file onto a track. Returns `false` (with a status message) when it cannot be read.
-    fn load_into(&mut self, index: usize, path: &Path) -> bool {
-        match daw388_project::load_audio(path) {
-            Ok(clip) => {
-                if let Some(engine) = &mut self.engine {
-                    send_track(engine, index, Some(&clip));
-                }
-                self.status = format!("Spoor {}: {} geladen ({:.1} s)", index + 1, clip.name, clip.duration_seconds());
-                let track = &mut self.tracks[index];
-                track.clip = Some(clip);
-                track.source = Some(path.to_path_buf());
-                track.missing = false;
-                true
+    fn engine_rate(&self) -> u32 {
+        self.engine.as_ref().map_or(48_000, EngineHandle::sample_rate)
+    }
+
+    /// Start loading a WAV or AIFF file onto a track in the background; [`Self::poll_loads`]
+    /// puts it on the track when it is ready.
+    fn request_load(&mut self, index: usize, path: &Path, from_project: bool) {
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        let track = &mut self.tracks[index];
+        track.generation = generation;
+        track.loading = true;
+        track.missing = false;
+        track.source = Some(path.to_path_buf());
+        let (path, rate, tx, ctx) = (path.to_path_buf(), self.engine_rate(), self.loads_tx.clone(), self.ctx.clone());
+        self.platform.spawn(Box::new(move || {
+            let outcome = daw388_project::load_audio(&path)
+                .map(|clip| {
+                    let audio = Arc::new(TrackAudio { name: clip.name.clone(), samples: clip.at_rate(rate) });
+                    (Arc::new(clip), audio)
+                })
+                .map_err(|e| e.to_string());
+            let _ = tx.send(LoadResult { index, generation, outcome, rate, from_project, fresh: true });
+            ctx.request_repaint();
+        }));
+    }
+
+    /// Resample a track's audio for the current device in the background.
+    fn request_resample(&mut self, index: usize) {
+        let Some(clip) = self.tracks[index].clip.clone() else { return };
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        self.tracks[index].generation = generation;
+        let (rate, tx, ctx) = (self.engine_rate(), self.loads_tx.clone(), self.ctx.clone());
+        self.platform.spawn(Box::new(move || {
+            let audio = Arc::new(TrackAudio { name: clip.name.clone(), samples: clip.at_rate(rate) });
+            let _ = tx.send(LoadResult { index, generation, outcome: Ok((clip, audio)), rate, from_project: false, fresh: false });
+            ctx.request_repaint();
+        }));
+    }
+
+    /// Put finished background loads on their tracks.
+    pub fn poll_loads(&mut self) {
+        while let Ok(result) = self.loads_rx.try_recv() {
+            let index = result.index;
+            if self.tracks.get(index).is_none_or(|t| t.generation != result.generation) {
+                continue;
             }
-            Err(e) => {
-                self.status = format!("{}: {e}", path.display());
-                false
+            self.tracks[index].loading = false;
+            match result.outcome {
+                Ok((clip, audio)) => {
+                    if result.fresh && !result.from_project {
+                        self.status = format!("Spoor {}: {} geladen ({:.1} s)", index + 1, clip.name, clip.duration_seconds());
+                    }
+                    self.tracks[index].clip = Some(clip);
+                    if result.rate == self.engine_rate() {
+                        self.engine_send(Command::SetTrack(index, Some(audio)));
+                    } else {
+                        // The device changed while this was loading.
+                        self.request_resample(index);
+                    }
+                }
+                Err(e) if result.from_project => {
+                    log::warn!("track {}: {e}", index + 1);
+                    self.tracks[index].missing = true;
+                    let missing: Vec<String> =
+                        self.tracks.iter().enumerate().filter(|(_, t)| t.missing).map(|(i, _)| (i + 1).to_string()).collect();
+                    self.status = format!("{}: audio ontbreekt op spoor {}", self.project_name(), missing.join(", "));
+                }
+                Err(e) => {
+                    let name = self.tracks[index].source.take().map(|p| p.display().to_string()).unwrap_or_default();
+                    self.status = format!("{name}: {e}");
+                }
             }
         }
+    }
+
+    /// Whether any track is still loading.
+    pub fn is_loading(&self) -> bool {
+        self.tracks.iter().any(|t| t.loading)
     }
 
     /// Load up to eight files onto the tracks, starting at track 1.
@@ -200,9 +322,8 @@ impl DawApp {
     pub fn load_paths(&mut self, mut paths: Vec<PathBuf>) {
         paths.sort();
         for (index, path) in paths.iter().take(TRACKS).enumerate() {
-            if self.load_into(index, path) {
-                self.mark_dirty();
-            }
+            self.request_load(index, path, false);
+            self.mark_dirty();
         }
         if paths.len() > TRACKS {
             self.status = format!("{} bestanden gekozen, alleen de eerste {TRACKS} zijn geladen", paths.len());
@@ -220,10 +341,15 @@ impl DawApp {
     }
 
     fn clear_track(&mut self, index: usize) {
+        let generation = self.next_generation;
+        self.next_generation += 1;
         let track = &mut self.tracks[index];
         track.clip = None;
         track.source = None;
         track.missing = false;
+        track.loading = false;
+        // A load still running for this track is dropped when it arrives.
+        track.generation = generation;
         if let Some(engine) = &mut self.engine {
             engine.send(Command::SetTrack(index, None));
         }
@@ -245,7 +371,10 @@ impl DawApp {
     fn reset(&mut self) {
         for index in 0..TRACKS {
             let meter_db = self.tracks[index].meter_db;
-            self.tracks[index] = TrackState { meter_db, ..TrackState::default() };
+            // A fresh generation drops any load still running for the old project.
+            let generation = self.next_generation;
+            self.next_generation += 1;
+            self.tracks[index] = TrackState { meter_db, generation, ..TrackState::default() };
             if let Some(engine) = &mut self.engine {
                 engine.send(Command::SetTrack(index, None));
                 engine.send(Command::SetGain(index, 1.0));
@@ -255,11 +384,18 @@ impl DawApp {
         }
         self.master_db = 0.0;
         self.meter_post = false;
+        self.zero_seconds = 0.0;
+        self.cue_seconds = None;
+        self.repeat = false;
+        self.repeat_mode = RepeatMode::Tape;
+        self.pitch_percent = 0.0;
+        self.vari = false;
         if let Some(engine) = &mut self.engine {
             engine.stop();
-            engine.rtz();
+            engine.send(Command::Locate(0.0));
             engine.send(Command::SetMaster(1.0));
         }
+        self.send_transport();
         self.project_dir = None;
         self.dirty = false;
         self.autosave_at = None;
@@ -280,7 +416,6 @@ impl DawApp {
             }
         };
         self.reset();
-        let mut missing = Vec::new();
         for entry in &opened.file.tracks {
             let index = usize::from(entry.number.saturating_sub(1));
             if index >= TRACKS {
@@ -295,27 +430,57 @@ impl DawApp {
                 engine.send(Command::SetPan(index, track.pan));
                 engine.send(Command::SetMute(index, track.mute));
             }
-            if let Some(source) = opened.track_source(entry)
-                && !self.load_into(index, &source)
-            {
-                let track = &mut self.tracks[index];
-                track.source = Some(source);
-                track.missing = true;
-                missing.push(index + 1);
+            if let Some(source) = opened.track_source(entry) {
+                self.request_load(index, &source, true);
             }
         }
         self.master_db = opened.file.master_db.clamp(MIN_DB, MAX_DB);
         self.meter_post = opened.file.meter_post;
+        let transport = opened.file.transport;
+        self.zero_seconds = transport.zero_seconds.max(0.0);
+        self.cue_seconds = transport.cue_seconds.map(|c| c.max(0.0));
+        self.repeat_mode = transport.repeat_mode;
+        self.pitch_percent = transport.pitch_percent.clamp(-PITCH_PERCENT, PITCH_PERCENT);
+        self.vari = transport.vari;
         self.engine_send(Command::SetMaster(db_to_gain(self.master_db)));
+        self.send_transport();
         self.project_dir = Some(opened.dir);
         self.dirty = false;
         self.autosave_at = None;
-        self.status = if missing.is_empty() {
-            format!("{} geopend", self.project_name())
-        } else {
-            let list: Vec<String> = missing.iter().map(ToString::to_string).collect();
-            format!("{} geopend, audio ontbreekt op spoor {}", self.project_name(), list.join(", "))
-        };
+        self.status = format!("{} geopend", self.project_name());
+    }
+
+    /// The pitch control as a speed ratio (1.0 in FIX).
+    fn pitch_ratio(&self) -> f64 {
+        if self.vari { 1.0 + f64::from(self.pitch_percent) / 100.0 } else { 1.0 }
+    }
+
+    /// Bring the engine's transport memory and settings in line with the app's.
+    fn send_transport(&mut self) {
+        let (zero, cue, repeat, style, pitch) =
+            (self.zero_seconds, self.cue_seconds, self.repeat, style_of(self.repeat_mode), self.pitch_ratio());
+        if let Some(engine) = &mut self.engine {
+            engine.set_zero_seconds(zero);
+            engine.set_cue_seconds(cue);
+            engine.send(Command::SetRepeat(repeat));
+            engine.send(Command::SetStyle(style));
+            engine.send(Command::SetPitch(pitch));
+        }
+    }
+
+    /// Pick up the zero and CUE points the engine holds (RESET and CUE are set there, at the
+    /// exact tape position).
+    fn sync_transport(&mut self) {
+        let Some(engine) = &self.engine else { return };
+        let (zero, cue) = (engine.zero_seconds(), engine.cue_seconds());
+        let changed = (zero - self.zero_seconds).abs() > 1e-6
+            || cue.is_some() != self.cue_seconds.is_some()
+            || cue.zip(self.cue_seconds).is_some_and(|(a, b)| (a - b).abs() > 1e-6);
+        self.zero_seconds = zero;
+        self.cue_seconds = cue;
+        if changed {
+            self.mark_dirty();
+        }
     }
 
     /// Save to the project folder, asking for one first when there is none. Returns `true` when saved.
@@ -323,7 +488,14 @@ impl DawApp {
         let Some(dir) = self.project_dir.clone() else { return self.save_as() };
         let tracks: Vec<TrackToSave> =
             self.tracks.iter().map(|t| TrackToSave { source: t.source.clone(), fader_db: t.fader_db, pan: t.pan, mute: t.mute }).collect();
-        let settings = ProjectSettings { master_db: self.master_db, meter_post: self.meter_post };
+        let transport = TransportSettings {
+            zero_seconds: self.zero_seconds,
+            cue_seconds: self.cue_seconds,
+            repeat_mode: self.repeat_mode,
+            pitch_percent: self.pitch_percent,
+            vari: self.vari,
+        };
+        let settings = ProjectSettings { master_db: self.master_db, meter_post: self.meter_post, transport };
         match session::save(&dir, &settings, &tracks, backup) {
             Ok(saved) => {
                 for (track, source) in self.tracks.iter_mut().zip(saved.sources) {
@@ -422,7 +594,12 @@ impl DawApp {
                 i.consume_shortcut(&shortcut(Key::N)),
             )
         });
-        let (close, quit) = ui.input_mut(|i| (i.consume_shortcut(&shortcut(Key::W)), i.consume_shortcut(&shortcut(Key::Q))));
+        let (close, quit, settings) = ui.input_mut(|i| {
+            (i.consume_shortcut(&shortcut(Key::W)), i.consume_shortcut(&shortcut(Key::Q)), i.consume_shortcut(&shortcut(Key::Comma)))
+        });
+        if settings {
+            self.show_settings = true;
+        }
         if close {
             self.request(Pending::Close);
         }
@@ -463,6 +640,9 @@ impl DawApp {
             if ui.button("8 audiobestanden laden...").clicked() {
                 self.load_all();
             }
+            if ui.add(egui::Button::new("Instellingen...").shortcut_text(command(ui, Key::Comma))).clicked() {
+                self.show_settings = true;
+            }
             ui.separator();
             if ui.add(egui::Button::new("Project sluiten").shortcut_text(command(ui, Key::W))).clicked() {
                 self.request(Pending::Close);
@@ -480,21 +660,69 @@ impl DawApp {
     }
 
     fn play(&mut self) {
-        if let Some(engine) = &mut self.engine {
-            engine.play();
+        self.engine_send(Command::Play);
+    }
+
+    /// On the 388 every transport key except PLAY and RTZ switches REPEAT off; in cycle mode it
+    /// stays on, as in Logic.
+    fn transport_key_pressed(&mut self) {
+        if self.repeat && self.repeat_mode == RepeatMode::Tape {
+            self.set_repeat(false);
         }
     }
 
     fn stop(&mut self) {
-        if let Some(engine) = &mut self.engine {
-            engine.stop();
-        }
+        self.transport_key_pressed();
+        self.engine_send(Command::Stop);
+    }
+
+    fn rewind(&mut self) {
+        self.transport_key_pressed();
+        self.engine_send(Command::Rewind);
+    }
+
+    fn fast_forward(&mut self) {
+        self.transport_key_pressed();
+        self.engine_send(Command::FastForward);
     }
 
     fn rtz(&mut self) {
-        if let Some(engine) = &mut self.engine {
-            engine.rtz();
+        self.engine_send(Command::ReturnToZero);
+    }
+
+    fn search_to_cue(&mut self) {
+        self.transport_key_pressed();
+        self.engine_send(Command::SearchToCue);
+    }
+
+    fn reset_zero(&mut self) {
+        self.engine_send(Command::ResetZero);
+    }
+
+    fn mark_cue(&mut self) {
+        self.engine_send(Command::MarkCue);
+    }
+
+    fn set_repeat(&mut self, on: bool) {
+        self.repeat = on;
+        self.engine_send(Command::SetRepeat(on));
+        if on && self.cue_seconds.is_none_or(|cue| cue <= self.zero_seconds) {
+            self.status = "REPEAT loopt van het nulpunt naar het CUE-punt: zet eerst een CUE-punt na het nulpunt".into();
         }
+    }
+
+    fn set_repeat_mode(&mut self, mode: RepeatMode) {
+        if mode != self.repeat_mode {
+            self.repeat_mode = mode;
+            self.engine_send(Command::SetStyle(style_of(mode)));
+            self.mark_dirty();
+        }
+    }
+
+    fn send_pitch(&mut self) {
+        let pitch = self.pitch_ratio();
+        self.engine_send(Command::SetPitch(pitch));
+        self.mark_dirty();
     }
 
     fn update_meters(&mut self, dt: f32) {
@@ -517,12 +745,23 @@ impl DawApp {
         if ui.memory(|m| m.focused().is_some()) {
             return;
         }
-        let (space, home) = ui.input(|i| (i.key_pressed(egui::Key::Space), i.key_pressed(egui::Key::Home)));
+        let keys =
+            ui.input(|i| [Key::Space, Key::Home, Key::C, Key::Comma, Key::Period].map(|k| i.key_pressed(k) && i.modifiers.is_none()));
+        let [space, home, c, comma, period] = keys;
         if space {
-            if self.engine.as_ref().is_some_and(EngineHandle::is_playing) { self.stop() } else { self.play() }
+            if self.engine.as_ref().is_some_and(|e| e.motion() != Motion::Stopped) { self.stop() } else { self.play() }
         }
         if home {
             self.rtz();
+        }
+        if c {
+            self.set_repeat(!self.repeat);
+        }
+        if comma {
+            self.rewind();
+        }
+        if period {
+            self.fast_forward();
         }
     }
 
@@ -572,6 +811,7 @@ impl DawApp {
         column(ui, 88.0, |ui| {
             ui.label(RichText::new(format!("{}", index + 1)).strong().size(18.0).color(palette::CREAM));
             let (name, colour) = match (&track.clip, &track.source) {
+                (_, _) if track.loading => ("laden...".to_string(), palette::ORANGE),
                 (Some(clip), _) => (clip.name.clone(), palette::TEXT_DIM),
                 (None, Some(source)) if track.missing => {
                     (format!("ontbreekt: {}", source.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), palette::LED)
@@ -625,10 +865,8 @@ impl DawApp {
         for command in commands {
             self.engine_send(command);
         }
-        if load
-            && let Some(path) = self.platform.pick_audio_files(false).first()
-            && self.load_into(index, path)
-        {
+        if load && let Some(path) = self.platform.pick_audio_files(false).first() {
+            self.request_load(index, path, false);
             self.mark_dirty();
         }
         if clear {
@@ -673,29 +911,115 @@ impl DawApp {
     }
 
     fn transport(&mut self, ui: &mut Ui) {
-        let (seconds, playing) = self.engine.as_ref().map_or((0.0, false), |e| (e.position_seconds(), e.is_playing()));
-        column(ui, 220.0, |ui| {
+        let (counter, motion) = self.engine.as_ref().map_or((0.0, Motion::Stopped), |e| (e.counter_seconds(), e.motion()));
+        let cue_counter = self.cue_seconds.map(|cue| cue - self.zero_seconds);
+        column(ui, 236.0, |ui| {
             Frame::new()
                 .fill(Color32::from_rgb(0x12, 0x08, 0x07))
                 .corner_radius(CornerRadius::same(4))
                 .inner_margin(Margin::symmetric(14, 6))
                 .stroke(Stroke::new(2.0, palette::EDGE))
                 .show(ui, |ui| {
-                    ui.label(RichText::new(format_counter(seconds)).monospace().size(34.0).color(palette::LED));
+                    ui.set_width(200.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new(format_counter(counter)).monospace().size(34.0).color(palette::LED));
+                        let cue = cue_counter.map_or("CUE  --:--.-".to_string(), |c| format!("CUE  {}", format_counter(c)));
+                        let pitch = if self.vari { format!("   PITCH {:+.1}%", self.pitch_percent) } else { String::new() };
+                        ui.label(RichText::new(format!("{cue}{pitch}")).monospace().size(11.0).color(Color32::from_rgb(0xc8, 0x55, 0x3c)));
+                    });
                 });
-            ui.add_space(10.0);
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if transport_key(ui, "RTZ", false).on_hover_text("Terug naar nul (Home)").clicked() {
-                    self.rtz();
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let small = vec2(53.0, 30.0);
+                if small_key(ui, "RESET", false, small).on_hover_text("Teller op 00:00 zetten: hier ligt het nulpunt").clicked() {
+                    self.reset_zero();
                 }
-                if transport_key(ui, "STOP", !playing).on_hover_text("Stop (spatie)").clicked() {
+                if small_key(ui, "CUE", false, small).on_hover_text("De huidige plek als CUE-punt onthouden").clicked() {
+                    self.mark_cue();
+                }
+                if small_key(ui, "STC", false, small).on_hover_text("Naar het CUE-punt (Search To Cue)").clicked() {
+                    self.search_to_cue();
+                }
+                let tip = match self.repeat_mode {
+                    RepeatMode::Tape => "Herhalen van nulpunt tot CUE-punt; de band spoelt steeds terug (C)",
+                    RepeatMode::Cycle => "Herhalen van nulpunt tot CUE-punt; springt direct terug (C)",
+                };
+                if small_key(ui, "REPEAT", self.repeat, small).on_hover_text(tip).clicked() {
+                    self.set_repeat(!self.repeat);
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let size = vec2(53.0, 40.0);
+                if transport_key(ui, "REW", motion == Motion::Rewinding, size).on_hover_text("Terugspoelen (,)").clicked() {
+                    self.rewind();
+                }
+                if transport_key(ui, "F FWD", motion == Motion::Forwarding, size).on_hover_text("Vooruitspoelen (.)").clicked() {
+                    self.fast_forward();
+                }
+                if transport_key(ui, "STOP", motion == Motion::Stopped, size).on_hover_text("Stop (spatie)").clicked() {
                     self.stop();
                 }
-                if transport_key(ui, "PLAY", playing).on_hover_text("Afspelen (spatie)").clicked() {
+                if transport_key(ui, "PLAY", motion == Motion::Playing, size).on_hover_text("Afspelen (spatie)").clicked() {
                     self.play();
                 }
             });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if transport_key(ui, "RTZ", false, vec2(53.0, 40.0)).on_hover_text("Terug naar het nulpunt (Home)").clicked() {
+                    self.rtz();
+                }
+                ui.add_space(14.0);
+                let knob = knob(ui, &mut self.pitch_percent, -PITCH_PERCENT..=PITCH_PERCENT, self.vari);
+                let knob = knob.on_hover_text("PITCH: snelheid en toonhoogte, plus of min 15% (dubbelklik: 0%)");
+                if knob.changed() || knob.double_clicked() {
+                    self.send_pitch();
+                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(RichText::new("PITCH").size(9.0).color(palette::TEXT_DIM));
+                    for (vari, label, tip) in
+                        [(true, "VARI", "De pitch-knop werkt"), (false, "FIX", "Normale snelheid, de pitch-knop staat vast")]
+                    {
+                        let lit = self.vari == vari;
+                        let text = RichText::new(label).size(10.0).color(if lit { Color32::BLACK } else { palette::TEXT });
+                        let button = egui::Button::new(text)
+                            .fill(if lit { palette::ORANGE } else { palette::PANEL_DARK })
+                            .min_size(vec2(40.0, 16.0));
+                        if ui.add(button).on_hover_text(tip).clicked() && !lit {
+                            self.vari = vari;
+                            self.send_pitch();
+                        }
+                    }
+                });
+            });
         });
+    }
+
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_settings;
+        let mut mode = self.repeat_mode;
+        egui::Window::new("Instellingen").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(RichText::new("REPEAT, RTZ en STC").strong());
+            ui.add_space(4.0);
+            ui.radio_value(&mut mode, RepeatMode::Tape, "388: de band spoelt in de tijd terug naar het nulpunt");
+            ui.radio_value(&mut mode, RepeatMode::Cycle, "Cycle: springt direct terug, zoals in Logic");
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "REPEAT herhaalt van het nulpunt (RESET) tot het CUE-punt. In de 388-modus zet elke transporttoets \
+                     behalve PLAY en RTZ REPEAT uit; in de cycle-modus blijft REPEAT aan. Deze instelling wordt per project bewaard.",
+                )
+                .size(11.0)
+                .color(palette::TEXT_DIM),
+            );
+        });
+        self.show_settings = open;
+        self.set_repeat_mode(mode);
     }
 }
 
@@ -707,14 +1031,47 @@ fn column(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-fn send_track(engine: &mut EngineHandle, index: usize, clip: Option<&MonoClip>) {
-    let audio = clip.map(|c| Arc::new(TrackAudio { name: c.name.clone(), samples: c.at_rate(engine.sample_rate()) }));
-    engine.send(Command::SetTrack(index, audio));
+fn transport_key(ui: &mut Ui, label: &str, lit: bool, size: egui::Vec2) -> egui::Response {
+    let text = RichText::new(label).strong().size(12.0).color(if lit { palette::LED } else { Color32::from_rgb(0x2a, 0x26, 0x22) });
+    ui.add(egui::Button::new(text).fill(palette::KEY).min_size(size).corner_radius(CornerRadius::same(3)))
 }
 
-fn transport_key(ui: &mut Ui, label: &str, lit: bool) -> egui::Response {
-    let text = RichText::new(label).strong().size(13.0).color(if lit { palette::LED } else { Color32::from_rgb(0x2a, 0x26, 0x22) });
-    ui.add(egui::Button::new(text).fill(palette::KEY).min_size(vec2(64.0, 40.0)).corner_radius(CornerRadius::same(3)))
+/// A memory key (RESET, CUE, STC, REPEAT); `lit` shows its LED.
+fn small_key(ui: &mut Ui, label: &str, lit: bool, size: egui::Vec2) -> egui::Response {
+    let text = RichText::new(label).strong().size(10.0).color(if lit { palette::LED } else { Color32::from_rgb(0x2a, 0x26, 0x22) });
+    ui.add(egui::Button::new(text).fill(Color32::from_rgb(0x7e, 0x7e, 0x80)).min_size(size).corner_radius(CornerRadius::same(3)))
+}
+
+/// A rotary knob: drag up or down to turn it (Shift for fine), double-click to centre it.
+/// `enabled` false draws it dimmed (the pitch control in FIX).
+fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, enabled: bool) -> egui::Response {
+    let size = 38.0;
+    let (rect, mut response) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
+    let (min, max) = (*range.start(), *range.end());
+    if enabled && response.dragged() {
+        let fine = if ui.input(|i| i.modifiers.shift) { 0.2 } else { 1.0 };
+        let delta = -response.drag_delta().y / 150.0 * (max - min) * fine;
+        *value = (*value + delta).clamp(min, max);
+        response.mark_changed();
+    }
+    if enabled && response.double_clicked() {
+        *value = (min + max) / 2.0;
+    }
+    let painter = ui.painter();
+    let centre = rect.center();
+    let radius = size / 2.0 - 2.0;
+    let cap = if enabled { palette::CREAM } else { Color32::from_rgb(0x8a, 0x86, 0x7c) };
+    painter.circle_filled(centre, radius + 2.0, Color32::from_rgb(0x1b, 0x1b, 0x1c));
+    painter.circle_filled(centre, radius, cap);
+    // From -135 to +135 degrees, 0 at the top.
+    let fraction = (*value - min) / (max - min);
+    let angle = (-135.0 + 270.0 * fraction).to_radians();
+    let direction = vec2(angle.sin(), -angle.cos());
+    painter.line_segment(
+        [centre + direction * (radius * 0.3), centre + direction * (radius * 0.9)],
+        Stroke::new(2.5, Color32::from_rgb(0x2a, 0x26, 0x22)),
+    );
+    response
 }
 
 /// Fader travel in points; long enough for fine work around 0 dB.
@@ -882,6 +1239,8 @@ impl DawApp {
     pub fn ui(&mut self, ui: &mut Ui) {
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         self.now = ui.input(|i| i.time);
+        self.poll_loads();
+        self.sync_transport();
         self.update_meters(dt);
         self.handle_file_shortcuts(ui);
         if self.pending.is_none() {
@@ -924,6 +1283,7 @@ impl DawApp {
         });
 
         let ctx = ui.ctx().clone();
+        self.settings_window(&ctx);
         self.unsaved_dialog(&ctx);
         if self.may_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -987,6 +1347,10 @@ mod tests {
         fn pick_project_location(&mut self, _: &str) -> Option<PathBuf> {
             self.save_location.clone()
         }
+        fn spawn(&mut self, job: Box<dyn FnOnce() + Send>) {
+            // Run at once, so the tests only need to poll.
+            job();
+        }
     }
 
     fn write_wav(path: &Path) {
@@ -1012,6 +1376,7 @@ mod tests {
         let platform = FakePlatform { save_location: Some(dir.clone()), engines: Vec::new() };
         let mut app = DawApp::new(&ctx, Box::new(platform));
         app.load_paths(vec![kick, bass]);
+        app.poll_loads();
         assert!(app.dirty);
         app.tracks[1].fader_db = -6.0;
         app.tracks[1].pan = -0.5;
@@ -1027,6 +1392,7 @@ mod tests {
         app.new_project();
         assert!(app.tracks.iter().all(|t| t.clip.is_none()));
         app.open_arguments(vec![dir.clone()]);
+        app.poll_loads();
         assert_eq!(app.project_name(), "Demo");
         assert!(!app.dirty);
         assert!(app.tracks[0].clip.is_some() && app.tracks[1].clip.is_some());
@@ -1048,10 +1414,12 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: Some(dir.clone()), engines: Vec::new() }));
         app.load_paths(vec![kick]);
+        app.poll_loads();
         assert!(app.save(Backup::Always));
         std::fs::remove_file(dir.join("audio/kick.wav")).unwrap_or_else(|e| panic!("{e}"));
 
         app.open_project(&dir);
+        app.poll_loads();
         assert!(app.tracks[0].missing);
         assert!(app.status.contains("ontbreekt op spoor 1"), "{}", app.status);
         // Saving again keeps the reference, so putting the file back repairs the project.
@@ -1059,6 +1427,65 @@ mod tests {
         assert!(app.save(Backup::Always));
         let opened = session::open(&dir).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/kick.wav"));
+    }
+
+    #[test]
+    fn transport_settings_are_saved_and_restored() {
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("Demo");
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: Some(dir.clone()), engines: Vec::new() }));
+        app.zero_seconds = 2.0;
+        app.cue_seconds = Some(12.5);
+        app.repeat_mode = RepeatMode::Cycle;
+        app.pitch_percent = 3.0;
+        app.vari = true;
+        app.mark_dirty();
+        assert!(app.save(Backup::Always));
+        app.new_project();
+        assert_eq!((app.zero_seconds, app.cue_seconds, app.repeat_mode, app.vari), (0.0, None, RepeatMode::Tape, false));
+        app.open_project(&dir);
+        assert_eq!(app.zero_seconds, 2.0);
+        assert_eq!(app.cue_seconds, Some(12.5));
+        assert_eq!(app.repeat_mode, RepeatMode::Cycle);
+        assert_eq!(app.pitch_percent, 3.0);
+        assert!(app.vari);
+        assert!((app.pitch_ratio() - 1.03).abs() < 1e-9);
+        app.vari = false;
+        assert_eq!(app.pitch_ratio(), 1.0, "FIX plays at normal speed");
+    }
+
+    #[test]
+    fn transport_keys_switch_repeat_off_in_388_mode_only() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: None, engines: Vec::new() }));
+        app.set_repeat(true);
+        app.play();
+        app.rtz();
+        assert!(app.repeat, "PLAY and RTZ leave REPEAT on");
+        app.fast_forward();
+        assert!(!app.repeat, "any other transport key switches it off, as on the 388");
+        app.set_repeat_mode(RepeatMode::Cycle);
+        app.set_repeat(true);
+        app.stop();
+        app.rewind();
+        assert!(app.repeat, "in cycle mode REPEAT stays on");
+    }
+
+    #[test]
+    fn a_late_load_for_a_cleared_track_is_ignored() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let kick = files.path().join("kick.wav");
+        write_wav(&kick);
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: None, engines: Vec::new() }));
+        // The fake platform loads at once; the result waits until polled.
+        app.load_paths(vec![kick]);
+        assert!(app.is_loading());
+        app.clear_track(0);
+        app.poll_loads();
+        assert!(app.tracks[0].clip.is_none(), "the old load must not come back after Wis");
+        assert!(!app.is_loading());
     }
 
     #[test]
@@ -1081,6 +1508,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: Some(root.path().join("Demo")), engines: Vec::new() }));
         app.load_paths(vec![kick]);
+        app.poll_loads();
         app.request(Pending::Quit);
         assert_eq!(app.pending, Some(Pending::Quit), "unsaved work: ask before quitting");
         assert!(!app.may_close);
@@ -1098,7 +1526,8 @@ mod tests {
     fn counter_shows_minutes_seconds_and_tenths() {
         assert_eq!(format_counter(0.0), "00:00.0");
         assert_eq!(format_counter(61.25), "01:01.2");
-        assert_eq!(format_counter(-3.0), "00:00.0");
+        assert_eq!(format_counter(-3.0), "-00:03.0");
+        assert_eq!(format_counter(-0.04), "00:00.0");
     }
 
     #[test]

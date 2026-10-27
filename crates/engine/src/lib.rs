@@ -7,13 +7,23 @@
 //!
 //! The engine knows nothing about audio devices: a platform crate (desktop: cpal, later the
 //! browser: WebAudio) calls [`Engine::render`] from its callback.
+//!
+//! The transport follows the 388's: a tape position (in samples at the engine rate, fractional
+//! so the pitch control can vary the speed), a zero point set with RESET, one CUE point in
+//! memory, RTZ and STC searches, fast winding and REPEAT between zero and CUE. In
+//! [`TransportStyle::Tape`] searches wind through the tape in time, as on the machine; in
+//! [`TransportStyle::Cycle`] they jump straight there, as in a modern DAW.
 
 use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 /// Number of tape tracks, as on the 388.
 pub const TRACKS: usize = 8;
+/// Winding speed (REW, F FWD and searches) as a multiple of play speed.
+pub const WIND_SPEED: f64 = 30.0;
+/// Range of the pitch control: plus or minus 15%, as on the 388.
+pub const PITCH_RANGE: f64 = 0.15;
 
 const COMMANDS: usize = 256;
 const GARBAGE: usize = 64;
@@ -27,13 +37,53 @@ pub struct TrackAudio {
     pub samples: Vec<f32>,
 }
 
+/// How RTZ, STC and REPEAT reach their point.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TransportStyle {
+    /// Wind there in time, as the 388 does.
+    #[default]
+    Tape,
+    /// Jump there at once, as a DAW's cycle mode does.
+    Cycle,
+}
+
+/// What the transport is doing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Motion {
+    #[default]
+    Stopped,
+    Playing,
+    Rewinding,
+    Forwarding,
+}
+
 /// A request from the UI to the audio thread.
 #[derive(Debug)]
 pub enum Command {
+    /// Play; during an RTZ or STC search, play on arrival instead (as on the 388).
     Play,
     Stop,
-    /// Move the playhead to a position in samples.
-    Locate(u64),
+    /// Wind backwards until STOP or the start.
+    Rewind,
+    /// Wind forwards until STOP or the end of the longest track.
+    FastForward,
+    /// Return to the zero point.
+    ReturnToZero,
+    /// Search to the CUE point (to the start when there is none).
+    SearchToCue,
+    /// Move the tape to a position in samples at once.
+    Locate(f64),
+    /// Make the current position the zero point (RESET).
+    ResetZero,
+    SetZero(f64),
+    /// Store the current position as the CUE point.
+    MarkCue,
+    SetCue(Option<f64>),
+    /// Loop from zero to CUE while playing.
+    SetRepeat(bool),
+    SetStyle(TransportStyle),
+    /// Speed as a ratio: 1.0 is normal, 1.15 is 15% faster.
+    SetPitch(f64),
     SetTrack(usize, Option<Arc<TrackAudio>>),
     /// Linear gain.
     SetGain(usize, f32),
@@ -44,16 +94,53 @@ pub enum Command {
     SetMaster(f32),
 }
 
+const NO_CUE: u64 = u64::MAX;
+
 /// State the audio thread publishes for the UI.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Shared {
+    /// Tape position, zero point and CUE point as `f64` bits ([`NO_CUE`]: none).
     position: AtomicU64,
-    playing: AtomicBool,
+    zero: AtomicU64,
+    cue: AtomicU64,
+    motion: AtomicU8,
     /// Highest peak per track since the UI last read it, as `f32` bits: before the fader (the
     /// track's own level, as the 388's track meters show it) and after fader and mute.
     track_peaks: [AtomicU32; TRACKS],
     track_peaks_post: [AtomicU32; TRACKS],
     master_peaks: [AtomicU32; 2],
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            position: AtomicU64::new(0f64.to_bits()),
+            zero: AtomicU64::new(0f64.to_bits()),
+            cue: AtomicU64::new(NO_CUE),
+            motion: AtomicU8::new(0),
+            track_peaks: Default::default(),
+            track_peaks_post: Default::default(),
+            master_peaks: Default::default(),
+        }
+    }
+}
+
+fn motion_code(motion: Motion) -> u8 {
+    match motion {
+        Motion::Stopped => 0,
+        Motion::Playing => 1,
+        Motion::Rewinding => 2,
+        Motion::Forwarding => 3,
+    }
+}
+
+fn motion_from(code: u8) -> Motion {
+    match code {
+        1 => Motion::Playing,
+        2 => Motion::Rewinding,
+        3 => Motion::Forwarding,
+        _ => Motion::Stopped,
+    }
 }
 
 /// Raise the stored peak to `value` when it is higher.
@@ -78,6 +165,26 @@ fn take_peak(cell: &AtomicU32) -> f32 {
     f32::from_bits(cell.swap(0, Ordering::Relaxed))
 }
 
+/// The sample at a fractional position, with 4-point Hermite interpolation (exact on whole
+/// positions); silence outside the track.
+fn sample_at(samples: &[f32], position: f64) -> f32 {
+    if position < -1.0 || position >= samples.len() as f64 + 1.0 {
+        return 0.0;
+    }
+    let index = position.floor();
+    let t = (position - index) as f32;
+    let i = index as i64;
+    let at = |k: i64| usize::try_from(k).ok().and_then(|k| samples.get(k)).copied().unwrap_or(0.0);
+    let (y0, y1, y2, y3) = (at(i - 1), at(i), at(i + 1), at(i + 2));
+    if t == 0.0 {
+        return y1;
+    }
+    let c1 = 0.5 * (y2 - y0);
+    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+    ((c3 * t + c2) * t + c1) * t + y1
+}
+
 /// A track's peak level before the fader and after fader and mute (pan does not count: the
 /// track is mono).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -99,9 +206,14 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         tracks: Default::default(),
         master: 1.0,
         master_current: 1.0,
-        position: 0,
-        playing: false,
-        end: 0,
+        position: 0.0,
+        state: State::Stopped,
+        zero: 0.0,
+        cue: None,
+        repeat: false,
+        style: TransportStyle::Tape,
+        pitch: 1.0,
+        end: 0.0,
     };
     (handle, engine)
 }
@@ -134,24 +246,64 @@ impl EngineHandle {
 
     /// Return to zero.
     pub fn rtz(&mut self) {
-        self.send(Command::Locate(0));
+        self.send(Command::ReturnToZero);
+    }
+
+    fn samples(&self, seconds: f64) -> f64 {
+        seconds.max(0.0) * f64::from(self.sample_rate)
+    }
+
+    fn seconds(&self, samples: f64) -> f64 {
+        samples / f64::from(self.sample_rate)
     }
 
     pub fn locate_seconds(&mut self, seconds: f64) {
-        let samples = (seconds.max(0.0) * f64::from(self.sample_rate)).round() as u64;
+        let samples = self.samples(seconds);
         self.send(Command::Locate(samples));
     }
 
-    pub fn position_samples(&self) -> u64 {
-        self.shared.position.load(Ordering::Relaxed)
+    pub fn set_zero_seconds(&mut self, seconds: f64) {
+        let samples = self.samples(seconds);
+        self.send(Command::SetZero(samples));
     }
 
+    pub fn set_cue_seconds(&mut self, seconds: Option<f64>) {
+        let samples = seconds.map(|s| self.samples(s));
+        self.send(Command::SetCue(samples));
+    }
+
+    /// Tape position in samples from the start of the tape.
+    pub fn position_samples(&self) -> f64 {
+        f64::from_bits(self.shared.position.load(Ordering::Relaxed))
+    }
+
+    /// Tape position in seconds from the start of the tape.
     pub fn position_seconds(&self) -> f64 {
-        self.position_samples() as f64 / f64::from(self.sample_rate)
+        self.seconds(self.position_samples())
+    }
+
+    /// The zero point in seconds from the start of the tape.
+    pub fn zero_seconds(&self) -> f64 {
+        self.seconds(f64::from_bits(self.shared.zero.load(Ordering::Relaxed)))
+    }
+
+    /// The CUE point in seconds from the start of the tape, if one is stored.
+    pub fn cue_seconds(&self) -> Option<f64> {
+        let bits = self.shared.cue.load(Ordering::Relaxed);
+        (bits != NO_CUE).then(|| self.seconds(f64::from_bits(bits)))
+    }
+
+    /// The counter: seconds from the zero point, negative before it.
+    pub fn counter_seconds(&self) -> f64 {
+        self.position_seconds() - self.zero_seconds()
+    }
+
+    pub fn motion(&self) -> Motion {
+        motion_from(self.shared.motion.load(Ordering::Relaxed))
     }
 
     pub fn is_playing(&self) -> bool {
-        self.shared.playing.load(Ordering::Relaxed)
+        self.motion() == Motion::Playing
     }
 
     /// Peaks of a track since the last call, linear.
@@ -200,6 +352,19 @@ impl Track {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum State {
+    Stopped,
+    Playing,
+    /// Moving at winding speed; `speed` is negative when rewinding. With a `target` it is a
+    /// search (RTZ, STC, REPEAT) that stops there, or plays on when `then_play` is set.
+    Winding {
+        speed: f64,
+        target: Option<f64>,
+        then_play: bool,
+    },
+}
+
 /// The audio-thread side of the engine.
 pub struct Engine {
     commands: rtrb::Consumer<Command>,
@@ -209,13 +374,39 @@ pub struct Engine {
     master: f32,
     /// Smoothed master gain.
     master_current: f32,
-    position: u64,
-    playing: bool,
-    /// Length of the longest track in samples; playback stops there.
-    end: u64,
+    position: f64,
+    state: State,
+    zero: f64,
+    cue: Option<f64>,
+    repeat: bool,
+    style: TransportStyle,
+    pitch: f64,
+    /// Length of the longest track in samples; playback and winding stop there.
+    end: f64,
 }
 
 impl Engine {
+    /// Go to a point: wind there in tape style, jump there in cycle style (keeping the motion).
+    fn search(&mut self, target: f64, then_play: bool) {
+        let target = target.max(0.0);
+        match self.style {
+            TransportStyle::Cycle => {
+                self.position = target;
+                if then_play {
+                    self.state = State::Playing;
+                }
+            }
+            TransportStyle::Tape if (target - self.position).abs() < 0.5 => {
+                self.position = target;
+                self.state = if then_play { State::Playing } else { State::Stopped };
+            }
+            TransportStyle::Tape => {
+                let speed = if target < self.position { -WIND_SPEED } else { WIND_SPEED };
+                self.state = State::Winding { speed, target: Some(target), then_play };
+            }
+        }
+    }
+
     /// Apply queued commands. A track swap only happens when the old buffer can be handed back,
     /// so nothing is ever freed on the audio thread.
     fn apply_commands(&mut self) {
@@ -225,9 +416,30 @@ impl Engine {
             }
             let Ok(command) = self.commands.pop() else { break };
             match command {
-                Command::Play => self.playing = true,
-                Command::Stop => self.playing = false,
-                Command::Locate(position) => self.position = position,
+                Command::Play => match &mut self.state {
+                    State::Winding { target: Some(_), then_play, .. } => *then_play = true,
+                    state => *state = State::Playing,
+                },
+                Command::Stop => self.state = State::Stopped,
+                Command::Rewind => self.state = State::Winding { speed: -WIND_SPEED, target: None, then_play: false },
+                Command::FastForward => self.state = State::Winding { speed: WIND_SPEED, target: None, then_play: false },
+                Command::ReturnToZero => {
+                    // In cycle style RTZ keeps playing, as "go to start" does in a DAW.
+                    let keep_playing = self.style == TransportStyle::Cycle && self.state == State::Playing;
+                    self.search(self.zero, keep_playing);
+                }
+                Command::SearchToCue => {
+                    let keep_playing = self.style == TransportStyle::Cycle && self.state == State::Playing;
+                    self.search(self.cue.unwrap_or(0.0), keep_playing);
+                }
+                Command::Locate(position) => self.position = position.max(0.0),
+                Command::ResetZero => self.zero = self.position,
+                Command::SetZero(zero) => self.zero = zero.max(0.0),
+                Command::MarkCue => self.cue = Some(self.position),
+                Command::SetCue(cue) => self.cue = cue.map(|c| c.max(0.0)),
+                Command::SetRepeat(repeat) => self.repeat = repeat,
+                Command::SetStyle(style) => self.style = style,
+                Command::SetPitch(pitch) => self.pitch = pitch.clamp(1.0 - PITCH_RANGE, 1.0 + PITCH_RANGE),
                 Command::SetTrack(index, audio) => {
                     if let Some(track) = self.tracks.get_mut(index) {
                         let old = std::mem::replace(&mut track.audio, audio);
@@ -236,7 +448,7 @@ impl Engine {
                             let _ = self.garbage.push(old);
                         }
                     }
-                    self.end = self.tracks.iter().filter_map(|t| t.audio.as_ref()).map(|a| a.samples.len() as u64).max().unwrap_or(0);
+                    self.end = self.tracks.iter().filter_map(|t| t.audio.as_ref()).map(|a| a.samples.len()).max().unwrap_or(0) as f64;
                 }
                 Command::SetGain(index, gain) => {
                     if let Some(track) = self.tracks.get_mut(index) {
@@ -258,8 +470,55 @@ impl Engine {
         }
     }
 
+    /// The end of the loop when REPEAT applies: a CUE point after the zero point.
+    fn loop_end(&self) -> Option<f64> {
+        self.cue.filter(|&cue| self.repeat && cue > self.zero + 1.0)
+    }
+
+    /// Advance the tape by one sample of time.
+    fn advance(&mut self) {
+        match self.state {
+            State::Stopped => {}
+            State::Playing => {
+                self.position += self.pitch;
+                if let Some(end) = self.loop_end()
+                    && self.position >= end
+                {
+                    self.search(self.zero, true);
+                } else if self.end > 0.0 && self.position >= self.end {
+                    self.state = State::Stopped;
+                }
+            }
+            State::Winding { speed, target, then_play } => {
+                self.position += speed;
+                if let Some(target) = target
+                    && ((speed < 0.0 && self.position <= target) || (speed > 0.0 && self.position >= target))
+                {
+                    self.position = target;
+                    self.state = if then_play { State::Playing } else { State::Stopped };
+                } else if self.position <= 0.0 {
+                    self.position = 0.0;
+                    self.state = State::Stopped;
+                } else if self.position >= self.end {
+                    self.position = self.end;
+                    self.state = State::Stopped;
+                }
+            }
+        }
+    }
+
+    fn motion(&self) -> Motion {
+        match self.state {
+            State::Stopped => Motion::Stopped,
+            State::Playing => Motion::Playing,
+            State::Winding { speed, .. } if speed < 0.0 => Motion::Rewinding,
+            State::Winding { .. } => Motion::Forwarding,
+        }
+    }
+
     /// Fill an interleaved output buffer with `channels` channels. Channel 0 and 1 get the stereo
-    /// mix, further channels silence; a mono device gets the average of left and right.
+    /// mix, further channels silence; a mono device gets the average of left and right. Winding
+    /// is silent, as on the 388.
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
         self.apply_commands();
         let channels = channels.max(1);
@@ -269,22 +528,15 @@ impl Engine {
 
         for frame in out.chunks_mut(channels) {
             let mut mix = [0.0f32; 2];
-            if self.playing && self.end > 0 && self.position >= self.end {
-                self.playing = false;
-            }
+            let playing = self.state == State::Playing;
             for ((track, peak), peak_post) in self.tracks.iter_mut().zip(track_peaks.iter_mut()).zip(track_peaks_post.iter_mut()) {
                 let target = track.target();
                 smooth(&mut track.current[0], target[0]);
                 smooth(&mut track.current[1], target[1]);
-                if !self.playing {
+                if !playing {
                     continue;
                 }
-                let sample = track
-                    .audio
-                    .as_ref()
-                    .and_then(|a| usize::try_from(self.position).ok().and_then(|p| a.samples.get(p)))
-                    .copied()
-                    .unwrap_or(0.0);
+                let sample = track.audio.as_ref().map_or(0.0, |a| sample_at(&a.samples, self.position));
                 *peak = peak.max(sample.abs());
                 // Constant-power pan keeps left² + right² equal to the fader gain squared.
                 let gain = track.current[0].hypot(track.current[1]);
@@ -292,9 +544,7 @@ impl Engine {
                 mix[0] += sample * track.current[0];
                 mix[1] += sample * track.current[1];
             }
-            if self.playing {
-                self.position += 1;
-            }
+            self.advance();
             smooth(&mut self.master_current, self.master);
             let left = mix[0] * self.master_current;
             let right = mix[1] * self.master_current;
@@ -311,8 +561,10 @@ impl Engine {
             }
         }
 
-        self.shared.position.store(self.position, Ordering::Relaxed);
-        self.shared.playing.store(self.playing, Ordering::Relaxed);
+        self.shared.position.store(self.position.to_bits(), Ordering::Relaxed);
+        self.shared.zero.store(self.zero.to_bits(), Ordering::Relaxed);
+        self.shared.cue.store(self.cue.map_or(NO_CUE, f64::to_bits), Ordering::Relaxed);
+        self.shared.motion.store(motion_code(self.motion()), Ordering::Relaxed);
         for (cell, peak) in self.shared.track_peaks.iter().zip(track_peaks) {
             store_peak(cell, peak);
         }
@@ -346,7 +598,7 @@ mod tests {
         let mut out = vec![1.0; 64];
         engine.render(&mut out, 2);
         assert!(out.iter().all(|s| *s == 0.0));
-        assert_eq!(handle.position_samples(), 0);
+        assert_eq!(handle.position_samples(), 0.0);
         assert!(!handle.is_playing());
     }
 
@@ -365,7 +617,7 @@ mod tests {
             assert!((frame[0] - 0.25).abs() < 1e-4, "left {}", frame[0]);
             assert!((frame[1] - 0.5).abs() < 1e-4, "right {}", frame[1]);
         }
-        assert_eq!(handle.position_samples(), 4);
+        assert_eq!(handle.position_samples(), 4.0);
         assert!(handle.is_playing());
         assert!((handle.take_track_peaks(0).pre - 0.25).abs() < 1e-6);
         assert_eq!(handle.take_track_peaks(0), TrackPeaks::default());
@@ -391,23 +643,185 @@ mod tests {
         handle.play();
         let mut out = vec![0.0; 2 * 64];
         engine.render(&mut out, 2);
-        assert_eq!(handle.position_samples(), 20);
+        assert_eq!(handle.position_samples(), 20.0);
         assert!(!handle.is_playing());
     }
 
+    /// Render `frames` frames of stereo and return them.
+    fn run(engine: &mut Engine, frames: usize) -> Vec<f32> {
+        let mut out = vec![0.0; 2 * frames];
+        engine.render(&mut out, 2);
+        out
+    }
+
     #[test]
-    fn rtz_and_locate_move_the_playhead() {
+    fn locate_moves_the_tape_at_once() {
         let (mut handle, mut engine) = create(48_000);
         handle.send(Command::SetTrack(0, audio(vec![0.1; 1_000])));
-        handle.play();
-        let mut out = vec![0.0; 2 * 100];
-        engine.render(&mut out, 2);
-        handle.rtz();
-        engine.render(&mut out[..0], 2);
-        assert_eq!(handle.position_samples(), 0);
         handle.locate_seconds(0.01);
-        engine.render(&mut out[..0], 2);
-        assert_eq!(handle.position_samples(), 480);
+        run(&mut engine, 0);
+        assert_eq!(handle.position_samples(), 480.0);
+    }
+
+    #[test]
+    fn rewind_and_fast_forward_wind_silently_and_stop_at_the_ends() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 3_000])));
+        handle.send(Command::FastForward);
+        let out = run(&mut engine, 10);
+        assert!(out.iter().all(|s| *s == 0.0), "winding is silent");
+        assert_eq!(handle.position_samples(), 10.0 * WIND_SPEED);
+        assert_eq!(handle.motion(), Motion::Forwarding);
+        run(&mut engine, 1_000);
+        assert_eq!(handle.position_samples(), 3_000.0, "stops at the end of the longest track");
+        assert_eq!(handle.motion(), Motion::Stopped);
+        handle.send(Command::Rewind);
+        run(&mut engine, 1);
+        assert_eq!(handle.motion(), Motion::Rewinding);
+        run(&mut engine, 1_000);
+        assert_eq!(handle.position_samples(), 0.0);
+        assert_eq!(handle.motion(), Motion::Stopped);
+    }
+
+    #[test]
+    fn tape_style_rtz_winds_back_and_stops_unless_play_was_pressed() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 10_000])));
+        handle.send(Command::Locate(3_000.0));
+        handle.play();
+        run(&mut engine, 10);
+        handle.rtz();
+        run(&mut engine, 10);
+        assert_eq!(handle.motion(), Motion::Rewinding, "RTZ winds in time");
+        assert!((handle.position_samples() - (3_010.0 - 10.0 * WIND_SPEED)).abs() < 1e-6);
+        run(&mut engine, 200);
+        assert_eq!(handle.position_samples(), 0.0);
+        assert_eq!(handle.motion(), Motion::Stopped, "and stops at zero");
+
+        // PLAY during the search: play on arrival.
+        handle.send(Command::Locate(3_000.0));
+        handle.rtz();
+        run(&mut engine, 10);
+        handle.play();
+        run(&mut engine, 10);
+        assert_eq!(handle.motion(), Motion::Rewinding, "PLAY does not interrupt the search");
+        run(&mut engine, 200);
+        assert_eq!(handle.motion(), Motion::Playing);
+    }
+
+    #[test]
+    fn cycle_style_rtz_jumps_and_keeps_playing() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 10_000])));
+        handle.send(Command::SetStyle(TransportStyle::Cycle));
+        handle.send(Command::Locate(3_000.0));
+        handle.play();
+        run(&mut engine, 10);
+        handle.rtz();
+        run(&mut engine, 5);
+        assert_eq!(handle.position_samples(), 5.0);
+        assert_eq!(handle.motion(), Motion::Playing);
+    }
+
+    #[test]
+    fn reset_sets_the_zero_point_and_cue_is_remembered() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 100_000])));
+        handle.send(Command::Locate(4_800.0));
+        handle.send(Command::ResetZero);
+        run(&mut engine, 0);
+        assert!((handle.zero_seconds() - 0.1).abs() < 1e-9);
+        assert!(handle.counter_seconds().abs() < 1e-9, "the counter reads 00:00 at the new zero");
+        handle.send(Command::Locate(0.0));
+        run(&mut engine, 0);
+        assert!((handle.counter_seconds() + 0.1).abs() < 1e-9, "negative before zero");
+        assert_eq!(handle.cue_seconds(), None);
+        handle.send(Command::Locate(9_600.0));
+        handle.send(Command::MarkCue);
+        run(&mut engine, 0);
+        assert!((handle.cue_seconds().unwrap_or_default() - 0.2).abs() < 1e-9);
+        // STC goes to the cue, RESET does not clear it.
+        handle.send(Command::SetStyle(TransportStyle::Cycle));
+        handle.send(Command::Locate(0.0));
+        handle.send(Command::ResetZero);
+        handle.send(Command::SearchToCue);
+        run(&mut engine, 0);
+        assert_eq!(handle.position_samples(), 9_600.0);
+        assert!(handle.cue_seconds().is_some());
+    }
+
+    #[test]
+    fn search_to_cue_without_a_cue_goes_to_the_start() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 10_000])));
+        handle.send(Command::Locate(600.0));
+        handle.send(Command::SearchToCue);
+        run(&mut engine, 100);
+        assert_eq!(handle.position_samples(), 0.0);
+    }
+
+    #[test]
+    fn repeat_in_tape_style_winds_back_to_zero_and_plays_again() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 100_000])));
+        handle.send(Command::Locate(1_000.0));
+        handle.send(Command::ResetZero);
+        handle.send(Command::SetCue(Some(4_000.0)));
+        handle.send(Command::SetRepeat(true));
+        handle.play();
+        run(&mut engine, 3_000);
+        assert_eq!(handle.motion(), Motion::Rewinding, "at the cue the tape winds back");
+        run(&mut engine, 200);
+        assert_eq!(handle.motion(), Motion::Playing, "and plays again from zero");
+        assert!(handle.position_samples() < 1_300.0);
+    }
+
+    #[test]
+    fn repeat_in_cycle_style_jumps_without_a_gap() {
+        let (mut handle, mut engine) = create(48_000);
+        let ramp: Vec<f32> = (0..10_000).map(|n| n as f32 / 10_000.0).collect();
+        handle.send(Command::SetTrack(0, audio(ramp)));
+        handle.send(Command::SetPan(0, -1.0));
+        handle.send(Command::SetStyle(TransportStyle::Cycle));
+        handle.send(Command::SetCue(Some(2_000.0)));
+        handle.send(Command::SetRepeat(true));
+        settle(&mut engine);
+        handle.play();
+        let out = run(&mut engine, 2_100);
+        let left: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
+        assert!(left.iter().all(|s| *s < 0.2001), "never past the cue");
+        assert!((left[2_000] - 0.0).abs() < 1e-4 && (left[2_050] - 0.005).abs() < 1e-4, "straight back to zero");
+        // Turning REPEAT off lets it play on.
+        handle.send(Command::SetRepeat(false));
+        run(&mut engine, 3_000);
+        assert!(handle.position_samples() > 2_000.0);
+    }
+
+    #[test]
+    fn pitch_changes_the_speed_and_interpolates() {
+        let (mut handle, mut engine) = create(48_000);
+        let ramp: Vec<f32> = (0..10_000).map(|n| n as f32 / 10_000.0).collect();
+        handle.send(Command::SetTrack(0, audio(ramp)));
+        handle.send(Command::SetPan(0, -1.0));
+        handle.send(Command::SetPitch(1.1));
+        settle(&mut engine);
+        handle.play();
+        let out = run(&mut engine, 1_000);
+        assert!((handle.position_samples() - 1_100.0).abs() < 1e-6);
+        // Frame 455 reads tape position 500.5, between samples 500 and 501.
+        assert!((out[2 * 455] - 455.0 * 1.1 / 10_000.0).abs() < 1e-4);
+        handle.send(Command::SetPitch(2.0));
+        run(&mut engine, 100);
+        assert!((handle.position_samples() - (1_100.0 + 100.0 * (1.0 + PITCH_RANGE))).abs() < 1e-6, "limited to +15%");
+    }
+
+    #[test]
+    fn interpolation_is_exact_on_whole_positions() {
+        let samples = [0.0, 1.0, -1.0, 0.5];
+        assert_eq!(sample_at(&samples, 1.0), 1.0);
+        assert_eq!(sample_at(&samples, 2.0), -1.0);
+        assert_eq!(sample_at(&samples, -5.0), 0.0);
+        assert_eq!(sample_at(&samples, 10.0), 0.0);
     }
 
     #[test]

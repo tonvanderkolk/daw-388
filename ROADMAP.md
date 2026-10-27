@@ -8,11 +8,12 @@
 - [x] `project.json` met een `audio/`-submap opslaan en openen (0.2.0)
 
 ## Fase 2: Audio-engine
-- [ ] Laden en samplerate-conversie op een achtergrondthread
+- [x] Laden en samplerate-conversie op een achtergrondthread (0.4.0)
 - [ ] Stille klok als er geen apparaat is
 - [ ] Herstel na het wegvallen van het apparaat
 - [ ] Keuze van samplerate en buffergrootte
-- [ ] Transport compleet: CUE, REPEAT, REW, F FWD, teller in min:sec, pitch/varispeed
+- [x] Transport compleet: RESET, CUE, STC, REPEAT, REW, F FWD, teller in min:sec, pitch/varispeed (0.4.0)
+- [x] REPEAT-modus 388 (spoelt terug) of cycle (springt direct terug), per project (0.4.0)
 
 ## Fase 3: Opnemen
 - [ ] Ingangsapparaat kiezen, REC FUNCTION per spoor (arm-knoppen met lampje)
