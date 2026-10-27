@@ -12,10 +12,10 @@ daw388-engine.workspace = true
 daw388-project.workspace = true
 egui.workspace = true
 log.workspace = true
+hound.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-hound.workspace = true
 
 [lints]
 workspace = true

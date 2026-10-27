@@ -2,6 +2,22 @@
 
 Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Versioning](https://semver.org/lang/nl/).
 
+## [0.6.0] - 2026-10-27
+
+### Toegevoegd
+- Opnemen. Ingangsapparaat kiezen in de instellingen (alle kanalen van de interface) en per spoor de ingang.
+- REC FUNCTION per spoor (knippert klaar, brandt tijdens opname) en een REC-toets bij het transport, met R als sneltoets. REC vanuit stop start ook de band, zoals REC en PLAY samen op de 388.
+- Punch-in met REC tijdens het afspelen, of met REC FUNCTION in record-ready. Punch-out met PLAY (speelt door), STOP of de spoeltoetsen, of automatisch bij het CUE-punt.
+- INSERT: klaargezette sporen spelen de band tot de punch-in en schakelen dan naar de ingang.
+- AUTO PUNCH: opnemen van het nulpunt tot het CUE-punt, met REPEAT bij elke doorgang opnieuw.
+- Meeluisteren via DAW 388 (standaard) of via de interface (direct monitoring).
+- Latencycompensatie op basis van de gemeten apparaatlatency, met een handmatige correctie in milliseconden.
+- Opnames worden 24-bit WAV in de projectmap. Een punch-in vervangt alleen het opgenomen stuk, zoals op band.
+- Menu Bewerken met Opname ongedaan maken (Cmd+Z), tot 10 opnames terug.
+
+### Gewijzigd
+- Het venster is iets groter om ruimte te maken voor de opnameknoppen.
+
 ## [0.5.0] - 2026-10-27
 
 ### Toegevoegd

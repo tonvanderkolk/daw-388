@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.5.0
+Versie: 0.6.0
 Laatst bijgewerkt: 26-10-2026
 
 ## Doel
@@ -74,6 +74,22 @@ Naar de handleiding van de 388 (Memory/Transport Controls):
 - REPEAT loopt van het nulpunt tot het CUE-punt. In de 388-modus spoelt de band terug en speelt opnieuw, en zet elke transporttoets behalve PLAY en RTZ REPEAT uit. In de cycle-modus springt de positie direct terug (ook bij RTZ en STC) en blijft REPEAT aan.
 - Nulpunt, CUE-punt, REPEAT-modus, pitch en VARI/FIX worden in `project.json` bewaard onder `transport`.
 
+## Opnemen
+
+Naar de handleiding van de 388 (REC FUNCTION, REC, INSERT, Punch-in):
+
+- REC FUNCTION maakt een spoor klaar (lampje knippert); tijdens de opname brandt het. REC start de opname op de klaargezette sporen, vanuit stop samen met PLAY. Zonder klaargezette sporen gaat de machine record-ready (REC knippert) en start REC FUNCTION de opname op dat spoor; nogmaals drukken punch-out.
+- Punch-out met PLAY (speelt door), STOP, REW, F FWD, RTZ of STC, of automatisch bij het CUE-punt (de band stopt, of spoelt terug met REPEAT).
+- INSERT: klaargezette sporen spelen de band tot de punch-in en schakelen dan naar de ingang. Zonder INSERT hoort een klaargezet spoor altijd de ingang. Meeluisteren via DAW 388 kan uit (direct monitoring van de interface); een spoor dat opneemt speelt dan niets.
+- AUTO PUNCH: na REC wordt alleen tussen nulpunt en CUE-punt opgenomen, bij elke doorgang met REPEAT opnieuw.
+- De ingang draait op de samplerate van de uitvoer. De input-callback vult een lock-free ring, de output-callback leest per uitvoerframe een invoerframe, zodat band en ingang op dezelfde klok lopen. Bij twee apparaten met een eigen klok stuurt de engine bij door af en toe een frame over te slaan.
+- Latencycompensatie: de tijd van opname tot callback (ingang) plus van callback tot weergave (uitgang), gemeten met de tijdstempels van cpal, plus de vulling van de ring, plus een handmatige correctie in milliseconden. Een opname wordt zoveel eerder op de band gelegd.
+- De engine stuurt per spoor een stroom `Start(positie)`, samples en `Stop` naar een schrijver op een eigen thread, die elke take als 32-bit float WAV in een tijdelijke map zet. Daarna legt een achtergrondtaak de take over het spoor (alleen het opgenomen stuk wordt vervangen, zoals op band) en schrijft het resultaat als 24-bit WAV `NN_Naam_opnameN.wav` in `audio/`. Takes van hetzelfde spoor worden op volgorde verwerkt.
+- Cmd+Z (Bewerken, Opname ongedaan maken) zet tot 10 opnames terug; de bestanden blijven in `audio/` staan.
+- Opnemen gaat op normale snelheid; met de pitch-knop op VARI en niet op 0% weigert REC met een melding.
+- Een project zonder map vraagt bij REC eerst om op te slaan.
+- Ingangsapparaat, meeluisteren en latencycorrectie zijn app-voorkeuren; de ingang per spoor, INSERT en AUTO PUNCH worden per project bewaard.
+
 ## Laden
 
 Audio wordt op een achtergrondthread gedecodeerd en naar de samplerate van het apparaat omgezet (via `Platform::spawn`). Elk verzoek krijgt een volgnummer; een resultaat voor een spoor dat intussen gewist of opnieuw geladen is, wordt genegeerd. Bij een apparaatwissel worden de sporen op de achtergrond opnieuw omgezet.
@@ -90,6 +106,7 @@ Audio wordt op een achtergrondthread gedecodeerd en naar de samplerate van het a
 - Import van WAV en AIFF (ongecomprimeerd). Nog geen FLAC, MP3 of andere formaten.
 - Samplerate-conversie gebruikt Hermite-interpolatie: prima voor afluisteren, voor export komt een betere resampler.
 - Geen opname, EQ, sends, effecten of tape-model. Zie de roadmap.
+- Op macOS vraagt het systeem bij het eerste gebruik van een ingang om toegang tot de microfoon. Zolang de app als los programma vanuit de terminal draait, hoort die toestemming bij de terminal.
 - Op macOS is het standaard app-menu uitgezet, zodat Cmd+Q via de opslaan-vraag loopt. Afsluiten door uitloggen of herstarten van de Mac gaat nog wel buiten die vraag om; autosave beperkt dan het verlies tot de laatste 30 seconden.
 
 ## Versiebeheer

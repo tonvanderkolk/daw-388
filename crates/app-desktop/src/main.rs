@@ -25,7 +25,11 @@ impl Desktop {
 
 impl Platform for Desktop {
     fn output_devices(&mut self) -> Vec<DeviceInfo> {
-        self.host.output_devices().map(|ds| ds.filter_map(|d| audio::describe(&d)).collect()).unwrap_or_default()
+        self.host.output_devices().map(|ds| ds.filter_map(|d| audio::describe(&d, true)).collect()).unwrap_or_default()
+    }
+
+    fn input_devices(&mut self) -> Vec<DeviceInfo> {
+        self.host.input_devices().map(|ds| ds.filter_map(|d| audio::describe(&d, false)).collect()).unwrap_or_default()
     }
 
     fn default_output_device(&mut self) -> Option<String> {
@@ -75,6 +79,16 @@ impl Platform for Desktop {
             log::error!("cannot start a loader thread: {e}");
         }
     }
+
+    fn spawn_service(&mut self, job: Box<dyn FnOnce() + Send>) {
+        if let Err(e) = std::thread::Builder::new().name("daw388-recorder".into()).spawn(job) {
+            log::error!("cannot start the recording writer: {e}");
+        }
+    }
+
+    fn temp_dir(&self) -> PathBuf {
+        std::env::temp_dir().join("daw388-opnames")
+    }
 }
 
 struct DesktopApp(DawApp);
@@ -98,7 +112,7 @@ fn main() -> eframe::Result {
         })),
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("DAW 388")
-            .with_inner_size([1560.0, 660.0])
+            .with_inner_size([1600.0, 700.0])
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };

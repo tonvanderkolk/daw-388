@@ -16,10 +16,13 @@
 - [x] REPEAT-modus 388 (spoelt terug) of cycle (springt direct terug), per project (0.4.0)
 
 ## Fase 3: Opnemen
-- [ ] Ingangsapparaat kiezen, REC FUNCTION per spoor (arm-knoppen met lampje)
-- [ ] Opnemen naar WAV in de projectmap
-- [ ] Punch in/out, metronoom
-- [ ] Input monitoring en latencycompensatie
+- [x] Ingangsapparaat kiezen, ingang per spoor, REC FUNCTION per spoor (lampje knippert klaar, brandt tijdens opname) (0.6.0)
+- [x] REC, record-ready, punch-in en punch-out zoals op de 388, INSERT, uitpunchen bij het CUE-punt (0.6.0)
+- [x] AUTO PUNCH van nulpunt tot CUE-punt, ook herhaald met REPEAT (0.6.0)
+- [x] Opnemen naar 24-bit WAV in de projectmap, destructief zoals band maar terug te draaien met Cmd+Z (0.6.0)
+- [x] Meeluisteren via DAW 388 of via de interface, latencycompensatie met handmatige fijnafstemming (0.6.0)
+- [ ] Metronoom: klik, tempo, maatsoort, aftellen
+- [ ] Opnemen met de pitch-knop op VARI
 
 ## Fase 4: Mixer 8:8:2
 - [ ] Ingangskeuze MIC / LINE / TAPE, trim

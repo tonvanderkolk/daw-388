@@ -8,9 +8,9 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use daw388_engine::{Engine, EngineHandle};
-use daw388_ui::{DeviceInfo, OutputInfo, OutputRequest};
+use daw388_ui::{DeviceInfo, InputInfo, OutputInfo, OutputRequest};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -36,10 +36,15 @@ fn format_rank(format: cpal::SampleFormat) -> Option<u8> {
     }
 }
 
-/// What a device offers, for the settings window.
-pub fn describe(device: &cpal::Device) -> Option<DeviceInfo> {
+/// What a device offers (for output, or for input), for the settings window.
+pub fn describe(device: &cpal::Device, output: bool) -> Option<DeviceInfo> {
     let name = device_name(device)?;
-    let ranges: Vec<_> = device.supported_output_configs().ok()?.filter(|c| format_rank(c.sample_format()).is_some()).collect();
+    let ranges: Vec<_> = if output {
+        device.supported_output_configs().ok()?.filter(|c| format_rank(c.sample_format()).is_some()).collect()
+    } else {
+        device.supported_input_configs().ok()?.filter(|c| format_rank(c.sample_format()).is_some()).collect()
+    };
+    let channels = ranges.iter().map(cpal::SupportedStreamConfigRange::channels).max().unwrap_or(0);
     let sample_rates = STANDARD_RATES.iter().copied().filter(|&r| ranges.iter().any(|c| c.contains_rate(r))).collect();
     let mut buffer_range: Option<(u32, u32)> = None;
     for range in &ranges {
@@ -47,7 +52,7 @@ pub fn describe(device: &cpal::Device) -> Option<DeviceInfo> {
             buffer_range = Some(buffer_range.map_or((min, max), |(a, b)| (a.min(min), b.max(max))));
         }
     }
-    Some(DeviceInfo { name, sample_rates, buffer_range })
+    Some(DeviceInfo { name, sample_rates, buffer_range, channels })
 }
 
 /// The stream configuration for a requested sample rate: a usable format at that rate with the
@@ -81,8 +86,9 @@ pub fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSize) -> 
 /// What keeps sound coming: a cpal stream or the silent clock. Dropping it stops it.
 pub enum Output {
     Stream {
-        // Held only to keep the stream running.
+        // Held only to keep the streams running.
         _stream: cpal::Stream,
+        _input: Option<cpal::Stream>,
         lost: Arc<AtomicBool>,
     },
     Silent {
@@ -101,12 +107,36 @@ impl Output {
     }
 }
 
+/// Device latency as the callbacks see it: the input's capture-to-callback time (written by the
+/// input callback) and the sum with the output's callback-to-playback time (written by the output
+/// callback, read by the engine). Seconds as `f64` bits.
+#[derive(Default)]
+struct Latency {
+    input: AtomicU64,
+    total: Arc<AtomicU64>,
+}
+
+fn store_seconds(cell: &AtomicU64, seconds: f64) {
+    cell.store(seconds.to_bits(), Ordering::Relaxed);
+}
+
+fn mark_lost(lost: &AtomicBool, e: &cpal::Error) {
+    // A device that is gone, or a stream the system says must be rebuilt, needs a new stream; a
+    // rerouted default device and an xrun keep playing.
+    let kind = e.kind();
+    if kind == cpal::ErrorKind::DeviceNotAvailable || kind == cpal::ErrorKind::StreamInvalidated {
+        lost.store(true, Ordering::Relaxed);
+    }
+    log::warn!("audio stream error: {e}");
+}
+
 /// Build an output stream that renders the engine's mix as f32 and converts it to `T`.
 fn build_stream<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     mut engine: Engine,
     lost: Arc<AtomicBool>,
+    latency: Arc<Latency>,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
@@ -115,7 +145,11 @@ where
     let mut scratch = vec![0.0f32; SCRATCH_FRAMES * channels];
     device.build_output_stream(
         config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            let stamp = info.timestamp();
+            let output = stamp.playback.duration_since(stamp.callback).as_secs_f64();
+            let input = f64::from_bits(latency.input.load(Ordering::Relaxed));
+            store_seconds(&latency.total, input + output);
             for out in data.chunks_mut(scratch.len()) {
                 let buffer = &mut scratch[..out.len()];
                 engine.render(buffer, channels);
@@ -124,17 +158,91 @@ where
                 }
             }
         },
-        move |e: cpal::Error| {
-            // A device that is gone, or a stream the system says must be rebuilt, needs a new
-            // stream; a rerouted default device and an xrun keep playing.
-            let kind = e.kind();
-            if kind == cpal::ErrorKind::DeviceNotAvailable || kind == cpal::ErrorKind::StreamInvalidated {
-                lost.store(true, Ordering::Relaxed);
-            }
-            log::warn!("audio stream error: {e}");
-        },
+        move |e: cpal::Error| mark_lost(&lost, &e),
         None,
     )
+}
+
+/// Build an input stream that pushes interleaved f32 frames into the engine's input ring.
+fn build_input<T>(
+    device: &cpal::Device,
+    config: cpal::StreamConfig,
+    mut tx: rtrb::Producer<f32>,
+    lost: Arc<AtomicBool>,
+    latency: Arc<Latency>,
+) -> Result<cpal::Stream, cpal::Error>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let channels = usize::from(config.channels.max(1));
+    device.build_input_stream(
+        config,
+        move |data: &[T], info: &cpal::InputCallbackInfo| {
+            let stamp = info.timestamp();
+            store_seconds(&latency.input, stamp.callback.duration_since(stamp.capture).as_secs_f64());
+            // When the engine stops reading (it fell behind), drop input rather than block; whole
+            // frames only, so the channels stay in place.
+            let room = tx.slots().min(data.len()) / channels * channels;
+            if let Ok(mut chunk) = tx.write_chunk(room) {
+                let (a, b) = chunk.as_mut_slices();
+                for (slot, value) in a.iter_mut().chain(b.iter_mut()).zip(data.iter()) {
+                    *slot = <f32 as cpal::FromSample<T>>::from_sample_(*value);
+                }
+                chunk.commit_all();
+            }
+        },
+        move |e: cpal::Error| mark_lost(&lost, &e),
+        None,
+    )
+}
+
+/// The input configuration at `rate`: the most channels in the best format.
+fn pick_input_config(ranges: &[cpal::SupportedStreamConfigRange], rate: u32) -> Option<cpal::SupportedStreamConfig> {
+    ranges
+        .iter()
+        .filter(|c| c.contains_rate(rate))
+        .filter_map(|c| format_rank(c.sample_format()).map(|rank| (rank, c)))
+        .min_by_key(|(rank, c)| (std::cmp::Reverse(c.channels()), *rank))
+        .and_then(|(_, c)| (*c).try_with_sample_rate(rate))
+}
+
+/// Open the input device at the engine's rate and connect it to the engine.
+fn open_input(
+    host: &cpal::Host,
+    name: &str,
+    rate: u32,
+    buffer: Option<u32>,
+    engine: &mut Engine,
+    lost: &Arc<AtomicBool>,
+    latency: &Arc<Latency>,
+) -> Result<(cpal::Stream, InputInfo), String> {
+    let device = host
+        .input_devices()
+        .ok()
+        .and_then(|mut ds| ds.find(|d| device_name(d).as_deref() == Some(name)))
+        .ok_or_else(|| format!("ingang {name} niet gevonden"))?;
+    let ranges: Vec<_> = device.supported_input_configs().map(Iterator::collect).unwrap_or_default();
+    let supported = pick_input_config(&ranges, rate)
+        .ok_or_else(|| format!("ingang {name} werkt niet op {:.1} kHz; kies dezelfde samplerate", f64::from(rate) / 1000.0))?;
+    let channels = supported.channels();
+    let mut config = supported.config();
+    config.buffer_size = buffer_size(buffer, supported.buffer_size());
+    let (tx, rx) = daw388_engine::input_ring(rate, usize::from(channels));
+    let stream = match supported.sample_format() {
+        cpal::SampleFormat::F32 => build_input::<f32>(&device, config, tx, Arc::clone(lost), Arc::clone(latency)),
+        cpal::SampleFormat::I32 => build_input::<i32>(&device, config, tx, Arc::clone(lost), Arc::clone(latency)),
+        cpal::SampleFormat::I16 => build_input::<i16>(&device, config, tx, Arc::clone(lost), Arc::clone(latency)),
+        cpal::SampleFormat::U16 => build_input::<u16>(&device, config, tx, Arc::clone(lost), Arc::clone(latency)),
+        other => return Err(format!("sampleformaat {other} van de ingang wordt nog niet ondersteund")),
+    }
+    .map_err(|e| e.to_string())?;
+    stream.play().map_err(|e| e.to_string())?;
+    // Keep room for one input and one output callback in the ring.
+    let fill = 2 * buffer.unwrap_or(512) as usize;
+    engine.attach_input(rx, usize::from(channels), fill);
+    log::info!("audio input: {name}, {rate} Hz, {channels} channels");
+    Ok((stream, InputInfo { device: name.to_string(), channels }))
 }
 
 /// The named output device, else the default one.
@@ -168,20 +276,32 @@ pub fn open(host: &cpal::Host, request: &OutputRequest) -> Result<(EngineHandle,
         cpal::BufferSize::Fixed(n) => Some(n),
         cpal::BufferSize::Default => None,
     };
-    let (handle, engine) = daw388_engine::create(config.sample_rate);
+    let (handle, mut engine) = daw388_engine::create(config.sample_rate);
     let lost = Arc::new(AtomicBool::new(false));
+    let latency = Arc::new(Latency::default());
+    engine.set_latency_source(Arc::clone(&latency.total));
+    let (input_stream, input, input_error) = match &request.input_device {
+        Some(input_name) => match open_input(host, input_name, config.sample_rate, buffer_frames, &mut engine, &lost, &latency) {
+            Ok((stream, info)) => (Some(stream), Some(info), None),
+            Err(e) => {
+                log::warn!("audio input: {e}");
+                (None, None, Some(e))
+            }
+        },
+        None => (None, None, None),
+    };
     let built = match format {
-        cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, engine, Arc::clone(&lost)),
-        cpal::SampleFormat::I32 => build_stream::<i32>(&device, config, engine, Arc::clone(&lost)),
-        cpal::SampleFormat::I16 => build_stream::<i16>(&device, config, engine, Arc::clone(&lost)),
-        cpal::SampleFormat::U16 => build_stream::<u16>(&device, config, engine, Arc::clone(&lost)),
+        cpal::SampleFormat::F32 => build_stream::<f32>(&device, config, engine, Arc::clone(&lost), Arc::clone(&latency)),
+        cpal::SampleFormat::I32 => build_stream::<i32>(&device, config, engine, Arc::clone(&lost), Arc::clone(&latency)),
+        cpal::SampleFormat::I16 => build_stream::<i16>(&device, config, engine, Arc::clone(&lost), Arc::clone(&latency)),
+        cpal::SampleFormat::U16 => build_stream::<u16>(&device, config, engine, Arc::clone(&lost), Arc::clone(&latency)),
         other => return Err(format!("sampleformaat {other} wordt nog niet ondersteund")),
     };
     let stream = built.map_err(|e| e.to_string())?;
     stream.play().map_err(|e| e.to_string())?;
     log::info!("audio output: {name}, {} Hz, buffer {:?}, {} channels, {format}", handle.sample_rate(), buffer_frames, config.channels);
-    let info = OutputInfo { device: name, sample_rate: handle.sample_rate(), buffer_frames };
-    Ok((handle, info, Output::Stream { _stream: stream, lost }))
+    let info = OutputInfo { device: name, sample_rate: handle.sample_rate(), buffer_frames, input, input_error };
+    Ok((handle, info, Output::Stream { _stream: stream, _input: input_stream, lost }))
 }
 
 /// Runs the engine in real time without a sound card, so the transport, counter and meters keep

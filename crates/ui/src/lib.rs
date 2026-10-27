@@ -1,11 +1,15 @@
 //! The egui interface of DAW 388. Platform-specific parts (audio devices, file dialogs) come in
 //! through the [`Platform`] trait, so the same UI can later run in the browser.
 
-use daw388_engine::{Command, EngineHandle, Motion, PITCH_RANGE, TRACKS, TrackAudio, TransportStyle};
+mod recording;
+
+use daw388_engine::{Command, EngineHandle, Motion, PITCH_RANGE, RecMode, TRACKS, TrackAudio, TransportStyle};
 use daw388_project::preferences::{self, Preferences};
 use daw388_project::session::{self, PROJECT_FILE};
 use daw388_project::{Backup, MonoClip, ProjectSettings, RepeatMode, TrackToSave, TransportSettings};
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
+use recording::{Composed, TakeDone, Underneath};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 pub use daw388_project::AUDIO_EXTENSIONS;
@@ -20,6 +24,8 @@ pub struct DeviceInfo {
     pub sample_rates: Vec<u32>,
     /// Smallest and largest buffer size in frames, when the device says.
     pub buffer_range: Option<(u32, u32)>,
+    /// Most channels the device offers.
+    pub channels: u16,
 }
 
 /// Which output to open and how.
@@ -31,6 +37,15 @@ pub struct OutputRequest {
     pub sample_rate: Option<u32>,
     /// `None`: the device's default buffer.
     pub buffer_frames: Option<u32>,
+    /// The input device to record from, opened at the output's rate; `None`: no input.
+    pub input_device: Option<String>,
+}
+
+/// The input that was opened with the output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputInfo {
+    pub device: String,
+    pub channels: u16,
 }
 
 /// The output that was actually opened.
@@ -40,6 +55,27 @@ pub struct OutputInfo {
     pub sample_rate: u32,
     /// `None` when the device chose the buffer size itself.
     pub buffer_frames: Option<u32>,
+    pub input: Option<InputInfo>,
+    /// Why the requested input could not be opened.
+    pub input_error: Option<String>,
+}
+
+/// Recordings that can be undone with Cmd+Z.
+const UNDO_STEPS: usize = 10;
+
+/// What a track held before a recording, so the recording can be undone.
+struct UndoEntry {
+    track: usize,
+    source: Option<PathBuf>,
+    clip: Option<Arc<MonoClip>>,
+    audio: Option<(Arc<TrackAudio>, u32)>,
+}
+
+/// A take laid over its track, back from the background job.
+struct ComposeResult {
+    track: usize,
+    generation: u64,
+    outcome: Result<Composed, String>,
 }
 
 /// Buffer sizes offered in the settings, when the device allows them.
@@ -53,6 +89,8 @@ const SILENT_RATE: u32 = 48_000;
 pub trait Platform {
     /// The available audio output devices.
     fn output_devices(&mut self) -> Vec<DeviceInfo>;
+    /// The available audio input devices.
+    fn input_devices(&mut self) -> Vec<DeviceInfo>;
     /// Name of the default output device, if there is one.
     fn default_output_device(&mut self) -> Option<String>;
     /// Open an output and return the engine that now feeds it. A named device that is missing is
@@ -72,6 +110,10 @@ pub trait Platform {
     fn pick_project_location(&mut self, suggested_name: &str) -> Option<PathBuf>;
     /// Run slow work (decoding and resampling audio) away from the UI thread.
     fn spawn(&mut self, job: Box<dyn FnOnce() + Send>);
+    /// Run work that lasts as long as an engine (the recording writer) on its own thread.
+    fn spawn_service(&mut self, job: Box<dyn FnOnce() + Send>);
+    /// A folder for temporary files (takes while they are being recorded).
+    fn temp_dir(&self) -> PathBuf;
 }
 
 /// A finished background load or resample for one track.
@@ -162,6 +204,15 @@ struct TrackState {
     mute: bool,
     /// Displayed meter level in dB, with a slow fall.
     meter_db: f32,
+    /// REC FUNCTION: the track is ready to record.
+    armed: bool,
+    /// The input channel it records from, counted from 1.
+    input: Option<u16>,
+    /// What the engine plays for this track, and at which rate (a take is laid over this).
+    audio: Option<(Arc<TrackAudio>, u32)>,
+    /// Changes whenever the track gets other content (load, Wis, undo), but not on a resample;
+    /// a take finished for older content is not laid over newer content.
+    version: u64,
 }
 
 pub struct DawApp {
@@ -205,6 +256,23 @@ pub struct DawApp {
     pitch_percent: f32,
     vari: bool,
     show_settings: bool,
+    input_devices: Vec<DeviceInfo>,
+    insert: bool,
+    auto_punch: bool,
+    /// Finished takes from the writer, and the jobs that lay them over their tracks.
+    takes_tx: Sender<TakeDone>,
+    takes_rx: Receiver<TakeDone>,
+    composed_tx: Sender<ComposeResult>,
+    composed_rx: Receiver<ComposeResult>,
+    /// Takes waiting for their track's previous take to be laid down.
+    queued_takes: [VecDeque<TakeDone>; TRACKS],
+    composing: [bool; TRACKS],
+    undo: Vec<UndoEntry>,
+}
+
+/// Track `index` records from input `index + 1` until the user chooses otherwise.
+fn default_input(index: usize) -> Option<u16> {
+    u16::try_from(index + 1).ok()
 }
 
 impl DawApp {
@@ -213,6 +281,9 @@ impl DawApp {
         let devices = platform.output_devices();
         let preferences = platform.preferences_path().map(|path| preferences::load(&path)).unwrap_or_default();
         let (loads_tx, loads_rx) = channel();
+        let (takes_tx, takes_rx) = channel();
+        let (composed_tx, composed_rx) = channel();
+        let input_devices = platform.input_devices();
         let mut app = Self {
             platform,
             engine: None,
@@ -244,9 +315,20 @@ impl DawApp {
             pitch_percent: 0.0,
             vari: false,
             show_settings: false,
+            input_devices,
+            insert: false,
+            auto_punch: false,
+            takes_tx,
+            takes_rx,
+            composed_tx,
+            composed_rx,
+            queued_takes: Default::default(),
+            composing: [false; TRACKS],
+            undo: Vec::new(),
         };
-        for track in &mut app.tracks {
+        for (index, track) in app.tracks.iter_mut().enumerate() {
             track.meter_db = MIN_DB;
+            track.input = default_input(index);
         }
         app.open_output();
         app
@@ -264,10 +346,14 @@ impl DawApp {
             device: self.preferences.output_device.clone(),
             sample_rate: self.preferences.sample_rate,
             buffer_frames: self.preferences.buffer_frames,
+            input_device: self.preferences.input_device.clone(),
         };
         let (engine, output, status) = match self.platform.open_output(&request) {
             Ok((engine, info)) => {
-                let status = format!("{}, {}", info.device, describe_output(&info));
+                let mut status = format!("{}, {}", info.device, describe_output(&info));
+                if let Some(error) = &info.input_error {
+                    status = format!("{status}. Ingang: {error}");
+                }
                 (engine, Some(info), status)
             }
             Err(first) => {
@@ -298,6 +384,11 @@ impl DawApp {
         }
         engine.send(Command::SetMaster(db_to_gain(self.master_db)));
         engine.locate_seconds(position);
+        // The recorded audio leaves the engine through a writer of its own.
+        if let Some(recorder) = engine.take_recorder() {
+            let (dir, rate, tx, ctx) = (self.platform.temp_dir(), engine.sample_rate(), self.takes_tx.clone(), self.ctx.clone());
+            self.platform.spawn_service(Box::new(move || recording::run_writer(recorder, dir, rate, tx, ctx)));
+        }
         self.engine = Some(engine);
         self.send_transport();
         if was_playing {
@@ -349,13 +440,22 @@ impl DawApp {
         if preferences == self.preferences {
             return;
         }
+        let reopen = preferences.output_device != self.preferences.output_device
+            || preferences.sample_rate != self.preferences.sample_rate
+            || preferences.buffer_frames != self.preferences.buffer_frames
+            || preferences.input_device != self.preferences.input_device;
         self.preferences = preferences;
         if let Some(path) = self.platform.preferences_path()
             && let Err(e) = preferences::save(&path, &self.preferences)
         {
             log::warn!("cannot save the preferences: {e}");
         }
-        self.open_output();
+        if reopen {
+            self.open_output();
+        } else {
+            // Monitoring and latency offset only need telling the engine.
+            self.send_transport();
+        }
     }
 
     /// What the chosen device offers, if it is in the list.
@@ -375,6 +475,7 @@ impl DawApp {
         self.next_generation += 1;
         let track = &mut self.tracks[index];
         track.generation = generation;
+        track.version = generation;
         track.loading = true;
         track.missing = false;
         track.source = Some(path.to_path_buf());
@@ -420,6 +521,7 @@ impl DawApp {
                     }
                     self.tracks[index].clip = Some(clip);
                     if result.rate == self.engine_rate() {
+                        self.tracks[index].audio = Some((Arc::clone(&audio), result.rate));
                         self.engine_send(Command::SetTrack(index, Some(audio)));
                     } else {
                         // The device changed while this was loading.
@@ -479,11 +581,13 @@ impl DawApp {
         self.next_generation += 1;
         let track = &mut self.tracks[index];
         track.clip = None;
+        track.audio = None;
         track.source = None;
         track.missing = false;
         track.loading = false;
         // A load still running for this track is dropped when it arrives.
         track.generation = generation;
+        track.version = generation;
         if let Some(engine) = &mut self.engine {
             engine.send(Command::SetTrack(index, None));
         }
@@ -508,7 +612,8 @@ impl DawApp {
             // A fresh generation drops any load still running for the old project.
             let generation = self.next_generation;
             self.next_generation += 1;
-            self.tracks[index] = TrackState { meter_db, generation, ..TrackState::default() };
+            self.tracks[index] =
+                TrackState { meter_db, generation, version: generation, input: default_input(index), ..TrackState::default() };
             if let Some(engine) = &mut self.engine {
                 engine.send(Command::SetTrack(index, None));
                 engine.send(Command::SetGain(index, 1.0));
@@ -524,6 +629,9 @@ impl DawApp {
         self.repeat_mode = RepeatMode::Tape;
         self.pitch_percent = 0.0;
         self.vari = false;
+        self.insert = false;
+        self.auto_punch = false;
+        self.undo.clear();
         if let Some(engine) = &mut self.engine {
             engine.stop();
             engine.send(Command::Locate(0.0));
@@ -559,6 +667,7 @@ impl DawApp {
             track.fader_db = entry.fader_db.clamp(MIN_DB, MAX_DB);
             track.pan = entry.pan.clamp(-1.0, 1.0);
             track.mute = entry.mute;
+            track.input = entry.input;
             if let Some(engine) = &mut self.engine {
                 engine.send(Command::SetGain(index, db_to_gain(track.fader_db)));
                 engine.send(Command::SetPan(index, track.pan));
@@ -576,6 +685,8 @@ impl DawApp {
         self.repeat_mode = transport.repeat_mode;
         self.pitch_percent = transport.pitch_percent.clamp(-PITCH_PERCENT, PITCH_PERCENT);
         self.vari = transport.vari;
+        self.insert = transport.insert;
+        self.auto_punch = transport.auto_punch;
         self.engine_send(Command::SetMaster(db_to_gain(self.master_db)));
         self.send_transport();
         self.project_dir = Some(opened.dir);
@@ -593,12 +704,24 @@ impl DawApp {
     fn send_transport(&mut self) {
         let (zero, cue, repeat, style, pitch) =
             (self.zero_seconds, self.cue_seconds, self.repeat, style_of(self.repeat_mode), self.pitch_ratio());
+        let (insert, auto_punch, monitoring) = (self.insert, self.auto_punch, self.preferences.software_monitoring);
+        let offset = f64::from(self.preferences.latency_offset_ms) / 1000.0;
+        let tracks: Vec<(bool, Option<u16>)> = self.tracks.iter().map(|t| (t.armed, t.input)).collect();
         if let Some(engine) = &mut self.engine {
             engine.set_zero_seconds(zero);
             engine.set_cue_seconds(cue);
             engine.send(Command::SetRepeat(repeat));
             engine.send(Command::SetStyle(style));
             engine.send(Command::SetPitch(pitch));
+            engine.send(Command::SetInsert(insert));
+            engine.send(Command::SetAutoPunch(auto_punch));
+            engine.send(Command::SetMonitoring(monitoring));
+            engine.send(Command::SetLatencyOffset(offset));
+            for (index, (armed, input)) in tracks.into_iter().enumerate() {
+                // The engine counts channels from 0.
+                engine.send(Command::SetInputChannel(index, input.and_then(|c| c.checked_sub(1))));
+                engine.send(Command::SetArmed(index, armed));
+            }
         }
     }
 
@@ -620,14 +743,19 @@ impl DawApp {
     /// Save to the project folder, asking for one first when there is none. Returns `true` when saved.
     fn save(&mut self, backup: Backup) -> bool {
         let Some(dir) = self.project_dir.clone() else { return self.save_as() };
-        let tracks: Vec<TrackToSave> =
-            self.tracks.iter().map(|t| TrackToSave { source: t.source.clone(), fader_db: t.fader_db, pan: t.pan, mute: t.mute }).collect();
+        let tracks: Vec<TrackToSave> = self
+            .tracks
+            .iter()
+            .map(|t| TrackToSave { source: t.source.clone(), fader_db: t.fader_db, pan: t.pan, mute: t.mute, input: t.input })
+            .collect();
         let transport = TransportSettings {
             zero_seconds: self.zero_seconds,
             cue_seconds: self.cue_seconds,
             repeat_mode: self.repeat_mode,
             pitch_percent: self.pitch_percent,
             vari: self.vari,
+            insert: self.insert,
+            auto_punch: self.auto_punch,
         };
         let settings = ProjectSettings { master_db: self.master_db, meter_post: self.meter_post, transport };
         match session::save(&dir, &settings, &tracks, backup) {
@@ -751,6 +879,22 @@ impl DawApp {
         if new {
             self.request(Pending::New);
         }
+        if ui.input_mut(|i| i.consume_shortcut(&shortcut(Key::Z))) {
+            self.undo_recording();
+        }
+    }
+
+    fn edit_menu(&mut self, ui: &mut Ui) {
+        let undo = ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
+        ui.menu_button("Bewerken", |ui| {
+            let label = match self.undo.last() {
+                Some(entry) => format!("Opname op spoor {} ongedaan maken", entry.track + 1),
+                None => "Opname ongedaan maken".to_string(),
+            };
+            if ui.add_enabled(!self.undo.is_empty(), egui::Button::new(label).shortcut_text(undo)).clicked() {
+                self.undo_recording();
+            }
+        });
     }
 
     fn file_menu(&mut self, ui: &mut Ui) {
@@ -859,6 +1003,165 @@ impl DawApp {
         self.mark_dirty();
     }
 
+    /// REC FUNCTION for a track: ready to record, or safe.
+    fn toggle_arm(&mut self, index: usize) {
+        let armed = !self.tracks[index].armed;
+        self.tracks[index].armed = armed;
+        self.engine_send(Command::SetArmed(index, armed));
+        if armed && self.tracks[index].input.is_none() {
+            self.status = format!("Spoor {} heeft geen ingang: kies er een in Instellingen, Audio", index + 1);
+        }
+    }
+
+    /// REC: check what recording needs, then start it.
+    fn record(&mut self) {
+        let channels = self.engine.as_ref().map_or(0, EngineHandle::input_channels);
+        if channels == 0 {
+            self.status = "Kies eerst een ingang: Bestand, Instellingen, Audio".into();
+            return;
+        }
+        if self.vari && self.pitch_percent.abs() > 0.001 {
+            self.status = "Opnemen gaat op normale snelheid: zet PITCH op FIX of op 0%".into();
+            return;
+        }
+        if self.project_dir.is_none() {
+            self.status = "Sla het project eerst op: de opname komt in de projectmap".into();
+            if !self.save_as() {
+                return;
+            }
+        }
+        self.engine_send(Command::Record);
+    }
+
+    fn set_insert(&mut self, insert: bool) {
+        self.insert = insert;
+        self.engine_send(Command::SetInsert(insert));
+        self.mark_dirty();
+    }
+
+    fn set_auto_punch(&mut self, auto: bool) {
+        self.auto_punch = auto;
+        self.engine_send(Command::SetAutoPunch(auto));
+        self.mark_dirty();
+        if auto && self.cue_seconds.is_none_or(|cue| cue <= self.zero_seconds) {
+            self.status = "AUTO PUNCH neemt op van het nulpunt tot het CUE-punt: zet eerst een CUE-punt na het nulpunt".into();
+        }
+    }
+
+    /// Pick up takes the writer finished and queue them for their tracks.
+    fn poll_takes(&mut self) {
+        while let Ok(take) = self.takes_rx.try_recv() {
+            if take.frames == 0 {
+                let _ = std::fs::remove_file(&take.path);
+                continue;
+            }
+            let track = take.track;
+            if track < TRACKS {
+                self.queued_takes[track].push_back(take);
+                self.start_compose(track);
+            }
+        }
+        if self.engine.as_ref().is_some_and(EngineHandle::take_overflow) {
+            self.status = "Let op: de opname haperde, er is audio verloren gegaan".into();
+        }
+    }
+
+    /// Lay the next queued take over its track in the background (one at a time per track, so a
+    /// take is always laid over the one before it).
+    fn start_compose(&mut self, track: usize) {
+        if self.composing[track] {
+            return;
+        }
+        let Some(take) = self.queued_takes[track].pop_front() else { return };
+        let Some(dir) = self.project_dir.clone() else {
+            self.status = format!("Opname op spoor {} niet bewaard: het project heeft nog geen map", track + 1);
+            return;
+        };
+        let audio_dir = dir.join(session::AUDIO_DIR);
+        if let Err(e) = std::fs::create_dir_all(&audio_dir) {
+            self.status = format!("{}: {e}", audio_dir.display());
+            return;
+        }
+        let state = &self.tracks[track];
+        let dest = daw388_project::take::take_path(&audio_dir, track + 1, state.clip.as_ref().map(|c| c.name.as_str()));
+        let underneath = match (&state.audio, &state.clip) {
+            (Some((audio, rate)), _) if *rate == take.rate => Underneath::Audio(Arc::clone(audio)),
+            (_, Some(clip)) => Underneath::Clip(Arc::clone(clip)),
+            _ => Underneath::Nothing,
+        };
+        let (generation, tx, ctx) = (state.version, self.composed_tx.clone(), self.ctx.clone());
+        self.composing[track] = true;
+        self.platform.spawn(Box::new(move || {
+            let outcome = recording::compose(&take, &underneath, &dest);
+            let _ = tx.send(ComposeResult { track, generation, outcome });
+            ctx.request_repaint();
+        }));
+    }
+
+    /// Put laid-down takes on their tracks.
+    pub fn poll_composed(&mut self) {
+        while let Ok(result) = self.composed_rx.try_recv() {
+            let track = result.track;
+            self.composing[track] = false;
+            match result.outcome {
+                Ok(composed) if self.tracks[track].version == result.generation => {
+                    let state = &mut self.tracks[track];
+                    self.undo.push(UndoEntry { track, source: state.source.clone(), clip: state.clip.clone(), audio: state.audio.clone() });
+                    if self.undo.len() > UNDO_STEPS {
+                        self.undo.remove(0);
+                    }
+                    let seconds = composed.clip.duration_seconds();
+                    state.source = Some(composed.path);
+                    state.clip = Some(composed.clip);
+                    state.missing = false;
+                    state.audio = Some((Arc::clone(&composed.audio), composed.rate));
+                    if composed.rate == self.engine_rate() {
+                        self.engine_send(Command::SetTrack(track, Some(composed.audio)));
+                    } else {
+                        self.request_resample(track);
+                    }
+                    self.status = format!("Spoor {}: opname vastgelegd ({seconds:.1} s)", track + 1);
+                    self.mark_dirty();
+                }
+                Ok(composed) => {
+                    self.status =
+                        format!("Spoor {} kreeg intussen andere audio; de opname staat in {}", track + 1, composed.path.display());
+                }
+                Err(e) => self.status = format!("Opname op spoor {} niet bewaard: {e}", track + 1),
+            }
+            self.start_compose(track);
+        }
+    }
+
+    /// Cmd+Z: put back what a track held before its last recording.
+    fn undo_recording(&mut self) {
+        let Some(entry) = self.undo.pop() else {
+            self.status = "Er is geen opname om ongedaan te maken".into();
+            return;
+        };
+        let track = entry.track;
+        let version = self.next_generation;
+        self.next_generation += 1;
+        let rate = self.engine_rate();
+        let state = &mut self.tracks[track];
+        state.source = entry.source;
+        state.clip = entry.clip;
+        state.audio = entry.audio.clone();
+        state.missing = false;
+        state.version = version;
+        match entry.audio {
+            Some((audio, audio_rate)) if audio_rate == rate => {
+                self.engine_send(Command::SetTrack(track, Some(audio)));
+            }
+            _ if self.tracks[track].clip.is_some() => self.request_resample(track),
+            _ => {
+                self.engine_send(Command::SetTrack(track, None));
+            }
+        }
+        self.status = format!("Opname op spoor {} ongedaan gemaakt", track + 1);
+        self.mark_dirty();
+    }
+
     fn update_meters(&mut self, dt: f32) {
         let Some(engine) = &mut self.engine else { return };
         engine.collect_garbage();
@@ -879,9 +1182,12 @@ impl DawApp {
         if ui.memory(|m| m.focused().is_some()) {
             return;
         }
-        let keys =
-            ui.input(|i| [Key::Space, Key::Home, Key::C, Key::Comma, Key::Period].map(|k| i.key_pressed(k) && i.modifiers.is_none()));
-        let [space, home, c, comma, period] = keys;
+        let keys = ui
+            .input(|i| [Key::Space, Key::Home, Key::C, Key::Comma, Key::Period, Key::R].map(|k| i.key_pressed(k) && i.modifiers.is_none()));
+        let [space, home, c, comma, period, r] = keys;
+        if r {
+            self.record();
+        }
         if space {
             if self.engine.as_ref().is_some_and(|e| e.motion() != Motion::Stopped) { self.stop() } else { self.play() }
         }
@@ -902,6 +1208,7 @@ impl DawApp {
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             self.file_menu(ui);
+            self.edit_menu(ui);
             let name = format!("{}{}", self.project_name(), if self.dirty { " (gewijzigd)" } else { "" });
             ui.label(RichText::new(name).color(palette::TEXT_DIM).size(13.0));
             ui.separator();
@@ -928,7 +1235,10 @@ impl DawApp {
     fn channel_strip(&mut self, ui: &mut Ui, index: usize) {
         let mut load = false;
         let mut clear = false;
+        let mut arm = false;
         let mut commands = Vec::new();
+        let recording = self.engine.as_ref().is_some_and(|e| e.is_recording(index));
+        let blink = (self.now * 2.0).fract() < 0.5;
         let track = &mut self.tracks[index];
         column(ui, 88.0, |ui| {
             ui.label(RichText::new(format!("{}", index + 1)).strong().size(18.0).color(palette::CREAM));
@@ -963,14 +1273,27 @@ impl DawApp {
             if pan.changed() || pan.double_clicked() {
                 commands.push(Command::SetPan(index, track.pan));
             }
-            let mute = ui.add(
-                egui::Button::new(RichText::new("MUTE").size(11.0).color(if track.mute { Color32::BLACK } else { palette::TEXT }))
-                    .fill(if track.mute { palette::ORANGE } else { palette::PANEL_DARK }),
-            );
-            if mute.clicked() {
-                track.mute = !track.mute;
-                commands.push(Command::SetMute(index, track.mute));
-            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                // REC FUNCTION: blinks when ready, lit while recording, as on the 388.
+                let lit = recording || (track.armed && blink);
+                let text = RichText::new("REC").size(11.0).strong().color(if lit { Color32::WHITE } else { palette::LED });
+                let input = track.input.map_or("geen ingang".to_string(), |c| format!("ingang {c}"));
+                let rec =
+                    ui.add(egui::Button::new(text).fill(if lit { palette::RED } else { palette::PANEL_DARK }).min_size(vec2(38.0, 18.0)));
+                if rec.on_hover_text(format!("REC FUNCTION: spoor klaar voor opname ({input})")).clicked() {
+                    arm = true;
+                }
+                let mute = ui.add(
+                    egui::Button::new(RichText::new("MUTE").size(11.0).color(if track.mute { Color32::BLACK } else { palette::TEXT }))
+                        .fill(if track.mute { palette::ORANGE } else { palette::PANEL_DARK })
+                        .min_size(vec2(38.0, 18.0)),
+                );
+                if mute.clicked() {
+                    track.mute = !track.mute;
+                    commands.push(Command::SetMute(index, track.mute));
+                }
+            });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let fader = fader(ui, &mut track.fader_db, palette::CREAM);
@@ -981,6 +1304,9 @@ impl DawApp {
             });
             ui.label(RichText::new(format_db(track.fader_db)).size(11.0).color(palette::TEXT_DIM));
         });
+        if arm {
+            self.toggle_arm(index);
+        }
         if !commands.is_empty() {
             self.mark_dirty();
         }
@@ -1034,8 +1360,10 @@ impl DawApp {
 
     fn transport(&mut self, ui: &mut Ui) {
         let (counter, motion) = self.engine.as_ref().map_or((0.0, Motion::Stopped), |e| (e.counter_seconds(), e.motion()));
+        let rec_mode = self.engine.as_ref().map_or(RecMode::Off, EngineHandle::rec_mode);
+        let blink = (self.now * 2.0).fract() < 0.5;
         let cue_counter = self.cue_seconds.map(|cue| cue - self.zero_seconds);
-        column(ui, 236.0, |ui| {
+        column(ui, 262.0, |ui| {
             Frame::new()
                 .fill(Color32::from_rgb(0x12, 0x08, 0x07))
                 .corner_radius(CornerRadius::same(4))
@@ -1074,7 +1402,7 @@ impl DawApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                let size = vec2(53.0, 40.0);
+                let size = vec2(48.0, 40.0);
                 if transport_key(ui, "REW", motion == Motion::Rewinding, size).on_hover_text("Terugspoelen (,)").clicked() {
                     self.rewind();
                 }
@@ -1084,8 +1412,38 @@ impl DawApp {
                 if transport_key(ui, "STOP", motion == Motion::Stopped, size).on_hover_text("Stop (spatie)").clicked() {
                     self.stop();
                 }
-                if transport_key(ui, "PLAY", motion == Motion::Playing, size).on_hover_text("Afspelen (spatie)").clicked() {
+                if transport_key(ui, "PLAY", motion == Motion::Playing, size)
+                    .on_hover_text("Afspelen; tijdens opnemen: punch-out (spatie)")
+                    .clicked()
+                {
                     self.play();
+                }
+                // REC: blinks when record-ready, lit while recording.
+                let lit = rec_mode == RecMode::Recording || (rec_mode == RecMode::Ready && blink);
+                let text = RichText::new("REC").strong().size(12.0).color(if lit { Color32::WHITE } else { palette::RED });
+                let rec = egui::Button::new(text)
+                    .fill(if lit { palette::RED } else { palette::KEY })
+                    .min_size(size)
+                    .corner_radius(CornerRadius::same(3));
+                if ui.add(rec).on_hover_text("Opnemen op de sporen met REC FUNCTION (R); tijdens het afspelen: punch-in").clicked() {
+                    self.record();
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let size = vec2(78.0, 22.0);
+                if small_key(ui, "INSERT", self.insert, size)
+                    .on_hover_text("Klaargezette sporen spelen de band tot de punch-in en schakelen dan naar de ingang")
+                    .clicked()
+                {
+                    self.set_insert(!self.insert);
+                }
+                if small_key(ui, "AUTO PUNCH", self.auto_punch, size)
+                    .on_hover_text("Na REC alleen opnemen van het nulpunt tot het CUE-punt (met REPEAT steeds opnieuw)")
+                    .clicked()
+                {
+                    self.set_auto_punch(!self.auto_punch);
                 }
             });
             ui.add_space(4.0);
@@ -1175,9 +1533,70 @@ impl DawApp {
                 }
             });
             ui.end_row();
+
+            ui.label("Ingang");
+            let input_text = |name: &Option<String>| name.clone().unwrap_or_else(|| "Geen (niet opnemen)".into());
+            egui::ComboBox::from_id_salt("input-device").selected_text(input_text(&wanted.input_device)).width(260.0).show_ui(ui, |ui| {
+                ui.selectable_value(&mut wanted.input_device, None, input_text(&None));
+                for device in &self.input_devices {
+                    let label = format!("{} ({} ingangen)", device.name, device.channels);
+                    ui.selectable_value(&mut wanted.input_device, Some(device.name.clone()), label);
+                }
+            });
+            ui.end_row();
+
+            ui.label("Meeluisteren");
+            ui.checkbox(&mut wanted.software_monitoring, "Via DAW 388 (uit: direct monitoring van de interface)");
+            ui.end_row();
+
+            ui.label("Latency");
+            ui.horizontal(|ui| {
+                let automatic =
+                    self.engine.as_ref().map_or(0.0, |e| e.compensation_seconds() * 1000.0) - f64::from(wanted.latency_offset_ms);
+                ui.label(format!("automatisch {automatic:.1} ms, plus"));
+                ui.add(egui::DragValue::new(&mut wanted.latency_offset_ms).range(-100.0..=100.0).speed(0.1).suffix(" ms"));
+            });
+            ui.end_row();
         });
+        let channels = self.output.as_ref().and_then(|o| o.input.as_ref()).map_or(0, |i| i.channels);
+        if channels > 0 {
+            ui.add_space(4.0);
+            ui.label(RichText::new("Ingang per spoor").size(12.0));
+            let mut changed = Vec::new();
+            egui::Grid::new("track-inputs").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
+                for (index, track) in self.tracks.iter().enumerate() {
+                    let mut input = track.input;
+                    let text = |c: Option<u16>| c.map_or("geen".to_string(), |c| format!("in {c}"));
+                    ui.label(format!("Spoor {}", index + 1));
+                    egui::ComboBox::from_id_salt(("track-input", index)).selected_text(text(input)).width(70.0).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut input, None, text(None));
+                        for c in 1..=channels {
+                            ui.selectable_value(&mut input, Some(c), text(Some(c)));
+                        }
+                    });
+                    if input != track.input {
+                        changed.push((index, input));
+                    }
+                    if index % 2 == 1 {
+                        ui.end_row();
+                    }
+                }
+            });
+            for (index, input) in changed {
+                self.tracks[index].input = input;
+                self.engine_send(Command::SetInputChannel(index, input.and_then(|c| c.checked_sub(1))));
+                self.mark_dirty();
+            }
+        }
         let now = match &self.output {
-            Some(output) => format!("Nu: {}, {}", output.device, describe_output(output)),
+            Some(output) => {
+                let input = match (&output.input, &output.input_error) {
+                    (Some(input), _) => format!("; ingang {} ({} kanalen)", input.device, input.channels),
+                    (None, Some(error)) => format!("; ingang: {error}"),
+                    (None, None) => String::new(),
+                };
+                format!("Nu: {}, {}{input}", output.device, describe_output(output))
+            }
             None => "Nu: geen audio-uitvoer, het transport loopt door zonder geluid".into(),
         };
         ui.label(RichText::new(now).size(11.0).color(palette::TEXT_DIM));
@@ -1220,6 +1639,7 @@ impl DawApp {
         if open && !self.show_settings {
             // Just opened: show the devices as they are now.
             self.devices = self.platform.output_devices();
+            self.input_devices = self.platform.input_devices();
         }
         self.show_settings = open;
     }
@@ -1452,6 +1872,8 @@ impl DawApp {
         self.now = ui.input(|i| i.time);
         self.watch_output();
         self.poll_loads();
+        self.poll_takes();
+        self.poll_composed();
         self.sync_transport();
         self.update_meters(dt);
         self.handle_file_shortcuts(ui);
@@ -1560,7 +1982,12 @@ mod tests {
             self.devices
                 .borrow()
                 .iter()
-                .map(|name| DeviceInfo { name: name.clone(), sample_rates: vec![44_100, 48_000], buffer_range: Some((32, 4096)) })
+                .map(|name| DeviceInfo {
+                    name: name.clone(),
+                    sample_rates: vec![44_100, 48_000],
+                    buffer_range: Some((32, 4096)),
+                    channels: 2,
+                })
                 .collect()
         }
         fn default_output_device(&mut self) -> Option<String> {
@@ -1578,7 +2005,10 @@ mod tests {
             let rate = request.sample_rate.unwrap_or(48_000);
             let (handle, engine) = daw388_engine::create(rate);
             self.engines.borrow_mut().push(engine);
-            Ok((handle, OutputInfo { device: name, sample_rate: rate, buffer_frames: request.buffer_frames }))
+            Ok((
+                handle,
+                OutputInfo { device: name, sample_rate: rate, buffer_frames: request.buffer_frames, input: None, input_error: None },
+            ))
         }
         fn open_silent(&mut self, sample_rate: u32) -> EngineHandle {
             let (handle, engine) = daw388_engine::create(sample_rate);
@@ -1604,6 +2034,15 @@ mod tests {
             // Run at once, so the tests only need to poll.
             job();
         }
+        fn spawn_service(&mut self, _job: Box<dyn FnOnce() + Send>) {
+            // The writer would run for as long as the engine: the tests drive takes directly.
+        }
+        fn temp_dir(&self) -> PathBuf {
+            std::env::temp_dir().join("daw388-test-opnames")
+        }
+        fn input_devices(&mut self) -> Vec<DeviceInfo> {
+            Vec::new()
+        }
     }
 
     /// Let the engine that feeds the current output process one block.
@@ -1622,7 +2061,12 @@ mod tests {
         let engines = std::rc::Rc::clone(&platform.engines);
         devices.borrow_mut().push("Scarlett".into());
         let mut app = DawApp::new(&ctx, Box::new(platform));
-        app.set_output(Preferences { output_device: Some("Scarlett".into()), sample_rate: Some(44_100), buffer_frames: Some(128) });
+        app.set_output(Preferences {
+            output_device: Some("Scarlett".into()),
+            sample_rate: Some(44_100),
+            buffer_frames: Some(128),
+            ..Preferences::default()
+        });
         assert_eq!(app.output.as_ref().map(|o| o.device.as_str()), Some("Scarlett"));
         assert_eq!(app.engine_rate(), 44_100);
 
@@ -1795,6 +2239,87 @@ mod tests {
         app.poll_loads();
         assert!(app.tracks[0].clip.is_none(), "the old load must not come back after Wis");
         assert!(!app.is_loading());
+    }
+
+    fn write_take(path: &Path, value: f32, frames: usize) {
+        let spec = hound::WavSpec { channels: 1, sample_rate: 48_000, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap_or_else(|e| panic!("{e}"));
+        for _ in 0..frames {
+            writer.write_sample(value).unwrap_or_else(|e| panic!("{e}"));
+        }
+        writer.finalize().unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    #[test]
+    fn a_take_is_laid_over_the_track_saved_in_the_project_and_can_be_undone() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let kick = files.path().join("01_Kick.wav");
+        write_wav(&kick);
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("Demo");
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(dir.clone()))));
+        app.load_paths(vec![kick]);
+        app.poll_loads();
+        assert!(app.save(Backup::Always));
+        let before = app.tracks[0].source.clone();
+        let length = app.tracks[0].audio.as_ref().map_or(0, |(a, _)| a.samples.len());
+
+        let take = files.path().join("take.wav");
+        write_take(&take, 0.5, 100);
+        let _ = app.takes_tx.send(TakeDone { track: 0, start: 10.0, path: take.clone(), frames: 100, rate: 48_000 });
+        app.poll_takes();
+        app.poll_composed();
+        let state = &app.tracks[0];
+        let source = state.source.clone().unwrap_or_default();
+        assert!(source.starts_with(dir.join("audio")), "{}", source.display());
+        assert_eq!(source.file_name().and_then(|n| n.to_str()), Some("01_Kick_opname1.wav"));
+        assert!(source.exists() && !take.exists());
+        let samples = &state.audio.as_ref().unwrap_or_else(|| panic!("no audio")).0.samples;
+        assert_eq!(samples.len(), length);
+        assert!((samples[10] - 0.5).abs() < 1e-5 && (samples[109] - 0.5).abs() < 1e-5);
+        assert!((samples[110] - 0.5).abs() > 1e-3, "after the punch-out the old take plays");
+        assert!(app.dirty);
+
+        app.undo_recording();
+        assert_eq!(app.tracks[0].source, before);
+        assert!(app.undo.is_empty());
+        assert!(source.exists(), "undo keeps the take's file in audio/");
+    }
+
+    #[test]
+    fn takes_on_one_track_are_laid_down_in_order() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(root.path().join("Demo")))));
+        assert!(app.save(Backup::Always));
+        for (n, value) in [(1, 0.25f32), (2, 0.75)] {
+            let take = files.path().join(format!("take{n}.wav"));
+            write_take(&take, value, 50);
+            let _ = app.takes_tx.send(TakeDone { track: 2, start: f64::from(n) * 100.0, path: take, frames: 50, rate: 48_000 });
+        }
+        app.poll_takes();
+        app.poll_composed();
+        app.poll_composed();
+        let samples = &app.tracks[2].audio.as_ref().unwrap_or_else(|| panic!("no audio")).0.samples;
+        assert_eq!(samples.len(), 250);
+        assert!((samples[120] - 0.25).abs() < 1e-5, "the first take stays");
+        assert!((samples[220] - 0.75).abs() < 1e-5, "the second is laid over it");
+        assert_eq!(app.undo.len(), 2);
+    }
+
+    #[test]
+    fn rec_explains_what_is_missing() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.record();
+        assert!(app.status.contains("Kies eerst een ingang"), "{}", app.status);
+        app.toggle_arm(3);
+        assert!(app.tracks[3].armed);
+        app.tracks[4].input = None;
+        app.toggle_arm(4);
+        assert!(app.status.contains("geen ingang"), "{}", app.status);
     }
 
     #[test]

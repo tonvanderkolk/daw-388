@@ -6,7 +6,7 @@ Hobbyproject van Ton van der Kolk. Gratis te delen, niet te verkopen. Geen relat
 
 ## Status
 
-Versie 0.2.1: 8 WAV- of AIFF-bestanden laden (8 tot 32 bit, float, elke samplerate) en synchroon afspelen via een eenvoudige stereomix, met keuze van het audio-uitvoerapparaat. Projecten opslaan en openen, met autosave en backups. Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
+Versie 0.6.0: 8 sporen laden (WAV en AIFF) en afspelen, transport naar het voorbeeld van de 388, opnemen met REC FUNCTION, punch-in en AUTO PUNCH, projecten met autosave en backups, en keuze van audio-interface, samplerate en buffer. Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
 
 ## Bouwen en starten
 
@@ -28,7 +28,7 @@ Een projectmap open je op dezelfde manier:
 cargo run --release -- "pad/naar/Mijn liedje"
 ```
 
-Bediening: Cmd+N, Cmd+O, Cmd+S, Shift+Cmd+S, Cmd+W en Cmd+Q voor nieuw, openen, opslaan, opslaan als, project sluiten en stoppen (Ctrl op Windows). Spatie is afspelen/stoppen, Home is RTZ (terug naar het nulpunt), komma is REW, punt is F FWD en C zet REPEAT aan of uit. Cmd+, opent de instellingen. Dubbelklik op een fader zet hem op 0 dB, dubbelklik op een panknop zet hem in het midden. Shift tijdens het slepen van een fader geeft fijne regeling.
+Bediening: Cmd+N, Cmd+O, Cmd+S, Shift+Cmd+S, Cmd+W en Cmd+Q voor nieuw, openen, opslaan, opslaan als, project sluiten en stoppen (Ctrl op Windows). Spatie is afspelen/stoppen, Home is RTZ (terug naar het nulpunt), komma is REW, punt is F FWD, C zet REPEAT aan of uit en R is REC. Cmd+Z zet de laatste opname terug. Cmd+, opent de instellingen. Dubbelklik op een fader zet hem op 0 dB, dubbelklik op een panknop zet hem in het midden. Shift tijdens het slepen van een fader geeft fijne regeling.
 
 ## Opbouw
 

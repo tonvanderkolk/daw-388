@@ -6,6 +6,7 @@
 mod aiff;
 pub mod preferences;
 pub mod session;
+pub mod take;
 
 pub use session::{Backup, OpenedProject, ProjectError, ProjectSettings, RepeatMode, Saved, TrackToSave, TransportSettings};
 

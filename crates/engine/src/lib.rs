@@ -14,9 +14,14 @@
 //! [`TransportStyle::Tape`] searches wind through the tape in time, as on the machine; in
 //! [`TransportStyle::Cycle`] they jump straight there, as in a modern DAW.
 
+mod record;
+
+pub use record::{RecItem, RecMode, Recorder, input_ring};
+
+use record::{Input, RecordOut};
 use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 /// Number of tape tracks, as on the 388.
 pub const TRACKS: usize = 8;
@@ -92,6 +97,22 @@ pub enum Command {
     SetMute(usize, bool),
     /// Linear gain of the stereo master.
     SetMaster(f32),
+    /// REC FUNCTION: make a track ready to record (or safe).
+    SetArmed(usize, bool),
+    /// The input channel a track records from (counted from 0), or none.
+    SetInputChannel(usize, Option<u16>),
+    /// REC: start recording the armed tracks (from stop it also starts the tape, as REC and
+    /// PLAY together do on the 388). Without armed tracks the machine goes record-ready.
+    Record,
+    /// INSERT: armed tracks play the tape until the punch-in, then the input.
+    SetInsert(bool),
+    /// Hear armed and recording tracks' input through the app (off: use the interface's own
+    /// direct monitoring).
+    SetMonitoring(bool),
+    /// AUTO PUNCH: after REC, record only between the zero point and the CUE point.
+    SetAutoPunch(bool),
+    /// Extra latency compensation in seconds on top of what the device reports.
+    SetLatencyOffset(f64),
 }
 
 const NO_CUE: u64 = u64::MAX;
@@ -109,6 +130,15 @@ struct Shared {
     track_peaks: [AtomicU32; TRACKS],
     track_peaks_post: [AtomicU32; TRACKS],
     master_peaks: [AtomicU32; 2],
+    rec_mode: AtomicU8,
+    /// Bit per track that is recording.
+    recording: AtomicU8,
+    /// Input channels attached (0: no input).
+    input_channels: AtomicU32,
+    /// Recorded audio was lost because the writer fell behind.
+    overflow: AtomicBool,
+    /// Latency compensation in use, in seconds, as `f64` bits.
+    compensation: AtomicU64,
 }
 
 impl Default for Shared {
@@ -121,7 +151,28 @@ impl Default for Shared {
             track_peaks: Default::default(),
             track_peaks_post: Default::default(),
             master_peaks: Default::default(),
+            rec_mode: AtomicU8::new(0),
+            recording: AtomicU8::new(0),
+            input_channels: AtomicU32::new(0),
+            overflow: AtomicBool::new(false),
+            compensation: AtomicU64::new(0f64.to_bits()),
         }
+    }
+}
+
+fn rec_mode_code(mode: RecMode) -> u8 {
+    match mode {
+        RecMode::Off => 0,
+        RecMode::Ready => 1,
+        RecMode::Recording => 2,
+    }
+}
+
+fn rec_mode_from(code: u8) -> RecMode {
+    match code {
+        1 => RecMode::Ready,
+        2 => RecMode::Recording,
+        _ => RecMode::Off,
     }
 }
 
@@ -198,7 +249,8 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
     let (commands, command_rx) = rtrb::RingBuffer::new(COMMANDS);
     let (garbage_tx, garbage) = rtrb::RingBuffer::new(GARBAGE);
     let shared = Arc::new(Shared::default());
-    let handle = EngineHandle { sample_rate, commands, garbage, shared: Arc::clone(&shared) };
+    let (rec_out, recorder) = record::recorder(sample_rate);
+    let handle = EngineHandle { sample_rate, commands, garbage, shared: Arc::clone(&shared), recorder: Some(recorder) };
     let engine = Engine {
         commands: command_rx,
         garbage: garbage_tx,
@@ -214,6 +266,20 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         style: TransportStyle::Tape,
         pitch: 1.0,
         end: 0.0,
+        sample_rate,
+        input: None,
+        latency_source: None,
+        latency_offset: 0.0,
+        armed: [false; TRACKS],
+        input_channel: [None; TRACKS],
+        recording: [false; TRACKS],
+        rec_mode: RecMode::Off,
+        auto_record: false,
+        insert: false,
+        monitoring: true,
+        auto_punch: false,
+        rec_out,
+        compensation: 0.0,
     };
     (handle, engine)
 }
@@ -224,9 +290,38 @@ pub struct EngineHandle {
     commands: rtrb::Producer<Command>,
     garbage: rtrb::Consumer<Arc<TrackAudio>>,
     shared: Arc<Shared>,
+    recorder: Option<Recorder>,
 }
 
 impl EngineHandle {
+    /// The recorded audio's way out, for a writer on another thread. Can be taken once.
+    pub fn take_recorder(&mut self) -> Option<Recorder> {
+        self.recorder.take()
+    }
+
+    pub fn rec_mode(&self) -> RecMode {
+        rec_mode_from(self.shared.rec_mode.load(Ordering::Relaxed))
+    }
+
+    pub fn is_recording(&self, track: usize) -> bool {
+        track < TRACKS && self.shared.recording.load(Ordering::Relaxed) & (1 << track) != 0
+    }
+
+    /// Number of input channels attached; 0 when there is no input.
+    pub fn input_channels(&self) -> usize {
+        self.shared.input_channels.load(Ordering::Relaxed) as usize
+    }
+
+    /// Whether recorded audio was lost since the last call (the writer fell behind).
+    pub fn take_overflow(&self) -> bool {
+        self.shared.overflow.swap(false, Ordering::Relaxed)
+    }
+
+    /// The latency compensation in use, in seconds.
+    pub fn compensation_seconds(&self) -> f64 {
+        f64::from_bits(self.shared.compensation.load(Ordering::Relaxed))
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
@@ -383,9 +478,118 @@ pub struct Engine {
     pitch: f64,
     /// Length of the longest track in samples; playback and winding stop there.
     end: f64,
+    sample_rate: u32,
+    input: Option<Input>,
+    /// Device latency (input plus output) in seconds as `f64` bits, measured by the platform.
+    latency_source: Option<Arc<AtomicU64>>,
+    latency_offset: f64,
+    armed: [bool; TRACKS],
+    input_channel: [Option<usize>; TRACKS],
+    recording: [bool; TRACKS],
+    rec_mode: RecMode,
+    /// REC was pressed with AUTO PUNCH on: recording follows the zero and CUE points.
+    auto_record: bool,
+    insert: bool,
+    monitoring: bool,
+    auto_punch: bool,
+    rec_out: RecordOut,
+    /// Latency compensation in samples for this block.
+    compensation: f64,
 }
 
 impl Engine {
+    /// Connect the input: the consumer of [`input_ring`], fed by the platform's input callback
+    /// with interleaved frames of `channels` channels. `fill` is how many frames to keep in the
+    /// ring (at least one input and one output buffer).
+    pub fn attach_input(&mut self, rx: rtrb::Consumer<f32>, channels: usize, fill: usize) {
+        self.shared.input_channels.store(channels as u32, Ordering::Relaxed);
+        self.input = Some(Input::new(rx, channels, fill));
+    }
+
+    /// Where the platform publishes the device latency (input plus output, seconds as `f64`
+    /// bits), used to place recordings exactly under the tape.
+    pub fn set_latency_source(&mut self, latency: Arc<AtomicU64>) {
+        self.latency_source = Some(latency);
+    }
+
+    fn update_compensation(&mut self) {
+        let device = self.latency_source.as_ref().map_or(0.0, |l| f64::from_bits(l.load(Ordering::Relaxed)));
+        let fill = self.input.as_ref().map_or(0, |i| i.target) as f64;
+        self.compensation = ((device + self.latency_offset) * f64::from(self.sample_rate) + fill).max(0.0);
+    }
+
+    fn can_record(&self, track: usize) -> bool {
+        let channels = self.input.as_ref().map_or(0, |i| i.channels);
+        self.armed[track] && self.input_channel[track].is_some_and(|c| c < channels)
+    }
+
+    fn punch_in(&mut self, track: usize) {
+        if self.recording[track] || !self.can_record(track) {
+            return;
+        }
+        let start = self.position - self.compensation;
+        if self.rec_out.tracks[track].push(RecItem::Start(start)).is_err() {
+            self.shared.overflow.store(true, Ordering::Relaxed);
+            return;
+        }
+        self.recording[track] = true;
+        self.rec_mode = RecMode::Recording;
+    }
+
+    fn punch_in_armed(&mut self) {
+        for track in 0..TRACKS {
+            self.punch_in(track);
+        }
+    }
+
+    fn punch_out(&mut self, track: usize) {
+        if !self.recording[track] {
+            return;
+        }
+        self.recording[track] = false;
+        // The writer drains continuously; a full ring here means it is gone, and the take with it.
+        if self.rec_out.tracks[track].push(RecItem::Stop).is_err() {
+            self.shared.overflow.store(true, Ordering::Relaxed);
+        }
+        if self.rec_mode == RecMode::Recording && !self.recording.iter().any(|r| *r) {
+            self.rec_mode = RecMode::Ready;
+        }
+    }
+
+    fn punch_out_all(&mut self) {
+        for track in 0..TRACKS {
+            self.punch_out(track);
+        }
+    }
+
+    /// Leave record mode: punch out everything (STOP, PLAY, REW and the other transport keys).
+    fn end_recording(&mut self) {
+        self.punch_out_all();
+        self.rec_mode = RecMode::Off;
+        self.auto_record = false;
+    }
+
+    /// The span AUTO PUNCH records: zero point to CUE point.
+    fn punch_span(&self) -> Option<(f64, f64)> {
+        self.cue.filter(|&cue| cue > self.zero + 1.0).map(|cue| (self.zero, cue))
+    }
+
+    fn record(&mut self) {
+        if (self.pitch - 1.0).abs() > 1e-9 || matches!(self.state, State::Winding { .. }) {
+            return;
+        }
+        self.update_compensation();
+        self.state = State::Playing;
+        if self.rec_mode == RecMode::Off {
+            self.rec_mode = RecMode::Ready;
+        }
+        if self.auto_punch && self.punch_span().is_some() {
+            self.auto_record = true;
+        } else {
+            self.punch_in_armed();
+        }
+    }
+
     /// Go to a point: wind there in tape style, jump there in cycle style (keeping the motion).
     fn search(&mut self, target: f64, then_play: bool) {
         let target = target.max(0.0);
@@ -416,30 +620,75 @@ impl Engine {
             }
             let Ok(command) = self.commands.pop() else { break };
             match command {
-                Command::Play => match &mut self.state {
-                    State::Winding { target: Some(_), then_play, .. } => *then_play = true,
-                    state => *state = State::Playing,
-                },
-                Command::Stop => self.state = State::Stopped,
-                Command::Rewind => self.state = State::Winding { speed: -WIND_SPEED, target: None, then_play: false },
-                Command::FastForward => self.state = State::Winding { speed: WIND_SPEED, target: None, then_play: false },
+                Command::Play => {
+                    // PLAY while recording punches out and plays on.
+                    self.end_recording();
+                    match &mut self.state {
+                        State::Winding { target: Some(_), then_play, .. } => *then_play = true,
+                        state => *state = State::Playing,
+                    }
+                }
+                Command::Stop => {
+                    self.end_recording();
+                    self.state = State::Stopped;
+                }
+                Command::Rewind => {
+                    self.end_recording();
+                    self.state = State::Winding { speed: -WIND_SPEED, target: None, then_play: false };
+                }
+                Command::FastForward => {
+                    self.end_recording();
+                    self.state = State::Winding { speed: WIND_SPEED, target: None, then_play: false };
+                }
+                Command::Record => self.record(),
+                Command::SetArmed(track, armed) => {
+                    if track < TRACKS {
+                        self.armed[track] = armed;
+                        if !armed {
+                            self.punch_out(track);
+                        } else if self.rec_mode != RecMode::Off && !self.auto_record && self.state == State::Playing {
+                            // Record-ready: pressing REC FUNCTION punches that track in.
+                            self.punch_in(track);
+                        }
+                    }
+                }
+                Command::SetInputChannel(track, channel) => {
+                    if track < TRACKS {
+                        self.punch_out(track);
+                        self.input_channel[track] = channel.map(usize::from);
+                    }
+                }
+                Command::SetInsert(insert) => self.insert = insert,
+                Command::SetMonitoring(monitoring) => self.monitoring = monitoring,
+                Command::SetAutoPunch(auto) => self.auto_punch = auto,
+                Command::SetLatencyOffset(seconds) => self.latency_offset = seconds,
                 Command::ReturnToZero => {
+                    self.end_recording();
                     // In cycle style RTZ keeps playing, as "go to start" does in a DAW.
                     let keep_playing = self.style == TransportStyle::Cycle && self.state == State::Playing;
                     self.search(self.zero, keep_playing);
                 }
                 Command::SearchToCue => {
+                    self.end_recording();
                     let keep_playing = self.style == TransportStyle::Cycle && self.state == State::Playing;
                     self.search(self.cue.unwrap_or(0.0), keep_playing);
                 }
-                Command::Locate(position) => self.position = position.max(0.0),
+                Command::Locate(position) => {
+                    self.end_recording();
+                    self.position = position.max(0.0);
+                }
                 Command::ResetZero => self.zero = self.position,
                 Command::SetZero(zero) => self.zero = zero.max(0.0),
                 Command::MarkCue => self.cue = Some(self.position),
                 Command::SetCue(cue) => self.cue = cue.map(|c| c.max(0.0)),
                 Command::SetRepeat(repeat) => self.repeat = repeat,
                 Command::SetStyle(style) => self.style = style,
-                Command::SetPitch(pitch) => self.pitch = pitch.clamp(1.0 - PITCH_RANGE, 1.0 + PITCH_RANGE),
+                Command::SetPitch(pitch) => {
+                    // Recording runs at normal speed only.
+                    if self.rec_mode == RecMode::Off {
+                        self.pitch = pitch.clamp(1.0 - PITCH_RANGE, 1.0 + PITCH_RANGE);
+                    }
+                }
                 Command::SetTrack(index, audio) => {
                     if let Some(track) = self.tracks.get_mut(index) {
                         let old = std::mem::replace(&mut track.audio, audio);
@@ -480,12 +729,40 @@ impl Engine {
         match self.state {
             State::Stopped => {}
             State::Playing => {
+                let previous = self.position;
                 self.position += self.pitch;
+                if self.rec_mode != RecMode::Off {
+                    if self.auto_record {
+                        if let Some((zero, cue)) = self.punch_span() {
+                            if self.position >= zero && self.position < cue {
+                                self.punch_in_armed();
+                            } else {
+                                self.punch_out_all();
+                            }
+                        }
+                    } else if let Some(cue) = self.cue
+                        && self.recording.iter().any(|r| *r)
+                        && previous < cue
+                        && self.position >= cue
+                    {
+                        // The CUE point punches out; the transport stops, or winds back with REPEAT.
+                        self.end_recording();
+                        if self.loop_end().is_none() {
+                            self.state = State::Stopped;
+                            return;
+                        }
+                    }
+                }
                 if let Some(end) = self.loop_end()
                     && self.position >= end
                 {
+                    if self.auto_record {
+                        // A new pass: the next take starts at the zero point again.
+                        self.punch_out_all();
+                    }
                     self.search(self.zero, true);
-                } else if self.end > 0.0 && self.position >= self.end {
+                } else if self.rec_mode == RecMode::Off && self.end > 0.0 && self.position >= self.end {
+                    // While recording the tape runs on past the end of the longest track.
                     self.state = State::Stopped;
                 }
             }
@@ -521,6 +798,7 @@ impl Engine {
     /// is silent, as on the 388.
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
         self.apply_commands();
+        self.update_compensation();
         let channels = channels.max(1);
         let mut track_peaks = [0.0f32; TRACKS];
         let mut track_peaks_post = [0.0f32; TRACKS];
@@ -529,14 +807,33 @@ impl Engine {
         for frame in out.chunks_mut(channels) {
             let mut mix = [0.0f32; 2];
             let playing = self.state == State::Playing;
-            for ((track, peak), peak_post) in self.tracks.iter_mut().zip(track_peaks.iter_mut()).zip(track_peaks_post.iter_mut()) {
+            if let Some(input) = &mut self.input {
+                input.next_frame();
+            }
+            for (index, ((track, peak), peak_post)) in
+                self.tracks.iter_mut().zip(track_peaks.iter_mut()).zip(track_peaks_post.iter_mut()).enumerate()
+            {
                 let target = track.target();
                 smooth(&mut track.current[0], target[0]);
                 smooth(&mut track.current[1], target[1]);
-                if !playing {
-                    continue;
+                let input = self.input.as_ref().zip(self.input_channel[index]).map(|(input, channel)| input.sample(channel));
+                if self.recording[index] {
+                    let value = input.unwrap_or(0.0);
+                    if self.rec_out.tracks[index].push(RecItem::Sample(value)).is_err() {
+                        self.shared.overflow.store(true, Ordering::Relaxed);
+                    }
                 }
-                let sample = track.audio.as_ref().map_or(0.0, |a| sample_at(&a.samples, self.position));
+                // What the channel hears, as the 388's switching logic decides: an armed track
+                // hears its input, except with INSERT while the tape plays and it is not (yet)
+                // recording; a recording track never hears the old take.
+                let hears_input = input.is_some() && self.armed[index] && (self.recording[index] || !self.insert || !playing);
+                let sample = if hears_input {
+                    if self.monitoring { input.unwrap_or(0.0) } else { 0.0 }
+                } else if playing {
+                    track.audio.as_ref().map_or(0.0, |a| sample_at(&a.samples, self.position))
+                } else {
+                    continue;
+                };
                 *peak = peak.max(sample.abs());
                 // Constant-power pan keeps left² + right² equal to the fader gain squared.
                 let gain = track.current[0].hypot(track.current[1]);
@@ -565,6 +862,10 @@ impl Engine {
         self.shared.zero.store(self.zero.to_bits(), Ordering::Relaxed);
         self.shared.cue.store(self.cue.map_or(NO_CUE, f64::to_bits), Ordering::Relaxed);
         self.shared.motion.store(motion_code(self.motion()), Ordering::Relaxed);
+        self.shared.rec_mode.store(rec_mode_code(self.rec_mode), Ordering::Relaxed);
+        let mask = self.recording.iter().enumerate().fold(0u8, |m, (i, r)| if *r { m | (1 << i) } else { m });
+        self.shared.recording.store(mask, Ordering::Relaxed);
+        self.shared.compensation.store((self.compensation / f64::from(self.sample_rate)).to_bits(), Ordering::Relaxed);
         for (cell, peak) in self.shared.track_peaks.iter().zip(track_peaks) {
             store_peak(cell, peak);
         }
@@ -813,6 +1114,152 @@ mod tests {
         handle.send(Command::SetPitch(2.0));
         run(&mut engine, 100);
         assert!((handle.position_samples() - (1_100.0 + 100.0 * (1.0 + PITCH_RANGE))).abs() < 1e-6, "limited to +15%");
+    }
+
+    /// An engine with a two-channel input; returns the input producer and the recorder.
+    fn with_input() -> (EngineHandle, Engine, rtrb::Producer<f32>, Recorder) {
+        let (mut handle, mut engine) = create(48_000);
+        let (tx, rx) = input_ring(48_000, 2);
+        engine.attach_input(rx, 2, 1);
+        let recorder = handle.take_recorder().unwrap_or_else(|| unreachable!());
+        (handle, engine, tx, recorder)
+    }
+
+    /// Feed `frames` input frames: channel 0 counts up from `from`, channel 1 is constant.
+    fn feed(tx: &mut rtrb::Producer<f32>, from: usize, frames: usize) {
+        for n in from..from + frames {
+            let _ = tx.push(n as f32);
+            let _ = tx.push(-1.0);
+        }
+    }
+
+    fn takes(recorder: &mut Recorder, track: usize) -> Vec<RecItem> {
+        let mut items = Vec::new();
+        recorder.drain(track, |item| items.push(item));
+        items
+    }
+
+    #[test]
+    fn rec_records_the_armed_track_from_its_input_and_play_punches_out() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        handle.send(Command::SetInputChannel(2, Some(0)));
+        handle.send(Command::SetArmed(2, true));
+        handle.send(Command::Locate(1_000.0));
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 11);
+        run(&mut engine, 10);
+        assert_eq!(handle.rec_mode(), RecMode::Recording);
+        assert!(handle.is_recording(2) && !handle.is_recording(1));
+        assert!(handle.is_playing(), "REC from stop rolls the tape, as REC and PLAY together");
+        handle.play();
+        run(&mut engine, 0);
+        assert_eq!(handle.rec_mode(), RecMode::Off);
+        assert!(handle.is_playing(), "PLAY punches out and plays on");
+        let items = takes(&mut recorder, 2);
+        // Compensation here is the one-frame input fill.
+        assert_eq!(items.first(), Some(&RecItem::Start(999.0)));
+        assert_eq!(items.last(), Some(&RecItem::Stop));
+        let samples: Vec<f32> = items.iter().filter_map(|i| if let RecItem::Sample(v) = i { Some(*v) } else { None }).collect();
+        assert_eq!(samples.len(), 10);
+        assert_eq!(samples[0] + 1.0, samples[1], "consecutive input frames");
+        assert!(takes(&mut recorder, 1).is_empty(), "safe tracks record nothing");
+    }
+
+    #[test]
+    fn record_ready_and_rec_function_punch_in_and_out() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        handle.send(Command::SetInputChannel(0, Some(1)));
+        handle.play();
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 100);
+        run(&mut engine, 10);
+        assert_eq!(handle.rec_mode(), RecMode::Ready, "REC without armed tracks: record-ready");
+        handle.send(Command::SetArmed(0, true));
+        run(&mut engine, 20);
+        assert!(handle.is_recording(0), "REC FUNCTION punches in");
+        handle.send(Command::SetArmed(0, false));
+        run(&mut engine, 10);
+        assert!(!handle.is_recording(0) && handle.rec_mode() == RecMode::Ready, "and out again");
+        let items = takes(&mut recorder, 0);
+        assert_eq!(items.iter().filter(|i| matches!(i, RecItem::Sample(v) if *v == -1.0)).count(), 20, "channel 1 recorded");
+        handle.stop();
+        run(&mut engine, 0);
+        assert_eq!(handle.rec_mode(), RecMode::Off);
+    }
+
+    #[test]
+    fn the_cue_point_punches_out_and_stops() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetArmed(0, true));
+        handle.send(Command::SetCue(Some(50.0)));
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 200);
+        run(&mut engine, 100);
+        assert_eq!(handle.rec_mode(), RecMode::Off);
+        assert_eq!(handle.motion(), Motion::Stopped);
+        let items = takes(&mut recorder, 0);
+        assert_eq!(items.iter().filter(|i| matches!(i, RecItem::Sample(_))).count(), 50);
+        assert_eq!(items.last(), Some(&RecItem::Stop));
+    }
+
+    #[test]
+    fn auto_punch_records_between_zero_and_cue_on_every_pass() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetArmed(0, true));
+        handle.send(Command::SetStyle(TransportStyle::Cycle));
+        handle.send(Command::SetZero(100.0));
+        handle.send(Command::SetCue(Some(200.0)));
+        handle.send(Command::SetRepeat(true));
+        handle.send(Command::SetAutoPunch(true));
+        handle.send(Command::Locate(50.0));
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 500);
+        run(&mut engine, 40);
+        assert_eq!(handle.rec_mode(), RecMode::Ready, "before the zero point nothing records");
+        run(&mut engine, 280);
+        let items = takes(&mut recorder, 0);
+        let starts = items.iter().filter(|i| matches!(i, RecItem::Start(_))).count();
+        let stops = items.iter().filter(|i| matches!(i, RecItem::Stop)).count();
+        // 10 frames to the zero point, two passes of 100, then the third under way.
+        assert_eq!((starts, stops), (3, 2), "a take on every pass");
+        assert_eq!(items.iter().take_while(|i| !matches!(i, RecItem::Stop)).filter(|i| matches!(i, RecItem::Sample(_))).count(), 100);
+    }
+
+    #[test]
+    fn monitoring_follows_the_388_switching_logic() {
+        let (mut handle, mut engine, mut tx, _recorder) = with_input();
+        handle.send(Command::SetTrack(0, audio(vec![0.25; 10_000])));
+        handle.send(Command::SetPan(0, -1.0));
+        handle.send(Command::SetInputChannel(0, Some(1)));
+        settle(&mut engine);
+        let left = |engine: &mut Engine, tx: &mut rtrb::Producer<f32>| {
+            feed(tx, 0, 4);
+            run(engine, 2)[2]
+        };
+        handle.play();
+        assert!((left(&mut engine, &mut tx) - 0.25).abs() < 1e-4, "a safe track plays the tape");
+        handle.send(Command::SetArmed(0, true));
+        assert!((left(&mut engine, &mut tx) + 1.0).abs() < 1e-4, "armed, INSERT off: the input");
+        handle.send(Command::SetInsert(true));
+        assert!((left(&mut engine, &mut tx) - 0.25).abs() < 1e-4, "INSERT on: the tape until the punch-in");
+        handle.send(Command::Record);
+        assert!((left(&mut engine, &mut tx) + 1.0).abs() < 1e-4, "recording: the input");
+        handle.send(Command::SetMonitoring(false));
+        assert!(left(&mut engine, &mut tx).abs() < 1e-4, "direct monitoring: the app plays nothing for it");
+    }
+
+    #[test]
+    fn no_recording_at_varispeed() {
+        let (mut handle, mut engine, mut tx, _recorder) = with_input();
+        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetArmed(0, true));
+        handle.send(Command::SetPitch(1.05));
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 10);
+        run(&mut engine, 5);
+        assert_eq!(handle.rec_mode(), RecMode::Off);
     }
 
     #[test]

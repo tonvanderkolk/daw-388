@@ -53,6 +53,9 @@ pub struct TrackEntry {
     pub pan: f32,
     #[serde(default)]
     pub mute: bool,
+    /// The input channel this track records from (counted from 1, as interfaces label them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<u16>,
 }
 
 /// How REPEAT (and RTZ and STC) reach their point.
@@ -83,6 +86,12 @@ pub struct TransportSettings {
     /// VARI (true): the pitch control works; FIX (false): normal speed.
     #[serde(default)]
     pub vari: bool,
+    /// INSERT: armed tracks play the tape until the punch-in.
+    #[serde(default)]
+    pub insert: bool,
+    /// AUTO PUNCH: record between the zero point and the CUE point.
+    #[serde(default)]
+    pub auto_punch: bool,
 }
 
 /// Project-wide settings saved with the tracks.
@@ -101,6 +110,8 @@ pub struct TrackToSave {
     pub fader_db: f32,
     pub pan: f32,
     pub mute: bool,
+    /// Input channel, counted from 1.
+    pub input: Option<u16>,
 }
 
 /// The result of a save.
@@ -191,7 +202,7 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
             None => None,
         };
         let file = source.as_ref().and_then(|s| relative(dir, s));
-        entries.push(TrackEntry { number, file, fader_db: track.fader_db, pan: track.pan, mute: track.mute });
+        entries.push(TrackEntry { number, file, fader_db: track.fader_db, pan: track.pan, mute: track.mute, input: track.input });
         sources.push(source);
     }
 
@@ -325,7 +336,7 @@ mod tests {
         sources
             .into_iter()
             .enumerate()
-            .map(|(i, source)| TrackToSave { source, fader_db: -3.0 * i as f32, pan: 0.5, mute: i == 1 })
+            .map(|(i, source)| TrackToSave { source, fader_db: -3.0 * i as f32, pan: 0.5, mute: i == 1, input: Some(i as u16 + 1) })
             .collect()
     }
 
@@ -348,6 +359,8 @@ mod tests {
                     repeat_mode: RepeatMode::Cycle,
                     pitch_percent: -2.5,
                     vari: true,
+                    insert: true,
+                    auto_punch: true,
                 },
             },
             &tracks([Some(kick.clone()), None]),
@@ -367,12 +380,13 @@ mod tests {
         assert_eq!(transport.cue_seconds, Some(30.5));
         assert_eq!(transport.repeat_mode, RepeatMode::Cycle);
         assert_eq!(transport.pitch_percent, -2.5);
-        assert!(transport.vari);
+        assert!(transport.vari && transport.insert && transport.auto_punch);
         assert_eq!(opened.file.tracks.len(), 2);
         assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/01_Kick.wav"));
         assert_eq!(opened.file.tracks[1].file, None);
         assert!(opened.file.tracks[1].mute);
         assert_eq!(opened.file.tracks[1].fader_db, -3.0);
+        assert_eq!(opened.file.tracks[1].input, Some(2));
         assert!(crate::load_wav(&opened.track_source(&opened.file.tracks[0]).unwrap_or_default()).is_ok());
         assert_eq!(project_name(&dir), "Mijn liedje");
 
