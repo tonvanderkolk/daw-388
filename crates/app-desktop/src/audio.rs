@@ -86,9 +86,10 @@ pub fn buffer_size(want: Option<u32>, supported: &cpal::SupportedBufferSize) -> 
 /// What keeps sound coming: a cpal stream or the silent clock. Dropping it stops it.
 pub enum Output {
     Stream {
-        // Held only to keep the streams running.
-        _stream: cpal::Stream,
-        _input: Option<cpal::Stream>,
+        // Held only to keep the streams running. Boxed: a stream is large on some systems
+        // (WASAPI), which would make every `Output` as large.
+        _stream: Box<cpal::Stream>,
+        _input: Option<Box<cpal::Stream>>,
         lost: Arc<AtomicBool>,
     },
     Silent {
@@ -301,7 +302,7 @@ pub fn open(host: &cpal::Host, request: &OutputRequest) -> Result<(EngineHandle,
     stream.play().map_err(|e| e.to_string())?;
     log::info!("audio output: {name}, {} Hz, buffer {:?}, {} channels, {format}", handle.sample_rate(), buffer_frames, config.channels);
     let info = OutputInfo { device: name, sample_rate: handle.sample_rate(), buffer_frames, input, input_error };
-    Ok((handle, info, Output::Stream { _stream: stream, _input: input_stream, lost }))
+    Ok((handle, info, Output::Stream { _stream: Box::new(stream), _input: input_stream.map(Box::new), lost }))
 }
 
 /// Runs the engine in real time without a sound card, so the transport, counter and meters keep

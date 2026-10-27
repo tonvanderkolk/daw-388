@@ -2,6 +2,11 @@
 
 Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Versioning](https://semver.org/lang/nl/).
 
+## [0.6.1] - 2026-10-27
+
+### Opgelost
+- De Windows-build faalde op de codecontrole (Clippy): de audiostreams zijn nu zo opgeslagen dat ze ook onder Windows klein blijven.
+
 ## [0.6.0] - 2026-10-27
 
 ### Toegevoegd
