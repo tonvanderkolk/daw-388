@@ -8,7 +8,9 @@ pub mod preferences;
 pub mod session;
 pub mod take;
 
-pub use session::{Backup, OpenedProject, ProjectError, ProjectSettings, RepeatMode, Saved, TrackToSave, TransportSettings};
+pub use session::{
+    Backup, MetronomeSettings, OpenedProject, ProjectError, ProjectSettings, RepeatMode, Saved, TrackToSave, TransportSettings,
+};
 
 use std::fmt;
 use std::path::Path;

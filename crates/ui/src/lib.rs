@@ -3,10 +3,10 @@
 
 mod recording;
 
-use daw388_engine::{Command, EngineHandle, Motion, PITCH_RANGE, RecMode, TRACKS, TrackAudio, TransportStyle};
+use daw388_engine::{Command, EngineHandle, Meter, Motion, PITCH_RANGE, RecMode, TRACKS, TrackAudio, TransportStyle};
 use daw388_project::preferences::{self, Preferences};
 use daw388_project::session::{self, PROJECT_FILE};
-use daw388_project::{Backup, MonoClip, ProjectSettings, RepeatMode, TrackToSave, TransportSettings};
+use daw388_project::{Backup, MetronomeSettings, MonoClip, ProjectSettings, RepeatMode, TrackToSave, TransportSettings};
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 use recording::{Composed, TakeDone, Underneath};
 use std::collections::VecDeque;
@@ -268,6 +268,16 @@ pub struct DawApp {
     queued_takes: [VecDeque<TakeDone>; TRACKS],
     composing: [bool; TRACKS],
     undo: Vec<UndoEntry>,
+    metronome: MetronomeSettings,
+    /// Times of the last TAP presses, for tap tempo.
+    taps: Vec<f64>,
+}
+
+/// Time signatures offered: beats per bar and the note value of a beat.
+const TIME_SIGNATURES: [(u8, u8); 9] = [(2, 4), (3, 4), (4, 4), (5, 4), (6, 4), (7, 4), (3, 8), (6, 8), (7, 8)];
+
+fn meter_of(metronome: &MetronomeSettings) -> Meter {
+    Meter { bpm: metronome.bpm, beats: metronome.beats, unit: metronome.unit }
 }
 
 /// Track `index` records from input `index + 1` until the user chooses otherwise.
@@ -325,6 +335,8 @@ impl DawApp {
             queued_takes: Default::default(),
             composing: [false; TRACKS],
             undo: Vec::new(),
+            metronome: MetronomeSettings::default(),
+            taps: Vec::new(),
         };
         for (index, track) in app.tracks.iter_mut().enumerate() {
             track.meter_db = MIN_DB;
@@ -631,6 +643,7 @@ impl DawApp {
         self.vari = false;
         self.insert = false;
         self.auto_punch = false;
+        self.metronome = MetronomeSettings::default();
         self.undo.clear();
         if let Some(engine) = &mut self.engine {
             engine.stop();
@@ -687,6 +700,12 @@ impl DawApp {
         self.vari = transport.vari;
         self.insert = transport.insert;
         self.auto_punch = transport.auto_punch;
+        let mut metronome = opened.file.metronome;
+        metronome.bpm = metronome.bpm.clamp(20.0, 400.0);
+        if !TIME_SIGNATURES.contains(&(metronome.beats, metronome.unit)) {
+            (metronome.beats, metronome.unit) = (4, 4);
+        }
+        self.metronome = metronome;
         self.engine_send(Command::SetMaster(db_to_gain(self.master_db)));
         self.send_transport();
         self.project_dir = Some(opened.dir);
@@ -706,6 +725,7 @@ impl DawApp {
             (self.zero_seconds, self.cue_seconds, self.repeat, style_of(self.repeat_mode), self.pitch_ratio());
         let (insert, auto_punch, monitoring) = (self.insert, self.auto_punch, self.preferences.software_monitoring);
         let offset = f64::from(self.preferences.latency_offset_ms) / 1000.0;
+        let metronome = self.metronome;
         let tracks: Vec<(bool, Option<u16>)> = self.tracks.iter().map(|t| (t.armed, t.input)).collect();
         if let Some(engine) = &mut self.engine {
             engine.set_zero_seconds(zero);
@@ -717,6 +737,11 @@ impl DawApp {
             engine.send(Command::SetAutoPunch(auto_punch));
             engine.send(Command::SetMonitoring(monitoring));
             engine.send(Command::SetLatencyOffset(offset));
+            engine.send(Command::SetClick(metronome.click));
+            engine.send(Command::SetClickAlways(metronome.always));
+            engine.send(Command::SetMeter(meter_of(&metronome)));
+            engine.send(Command::SetClickVolume(db_to_gain(metronome.volume_db)));
+            engine.send(Command::SetCountIn(metronome.count_in));
             for (index, (armed, input)) in tracks.into_iter().enumerate() {
                 // The engine counts channels from 0.
                 engine.send(Command::SetInputChannel(index, input.and_then(|c| c.checked_sub(1))));
@@ -757,7 +782,7 @@ impl DawApp {
             insert: self.insert,
             auto_punch: self.auto_punch,
         };
-        let settings = ProjectSettings { master_db: self.master_db, meter_post: self.meter_post, transport };
+        let settings = ProjectSettings { master_db: self.master_db, meter_post: self.meter_post, transport, metronome: self.metronome };
         match session::save(&dir, &settings, &tracks, backup) {
             Ok(saved) => {
                 for (track, source) in self.tracks.iter_mut().zip(saved.sources) {
@@ -1162,6 +1187,78 @@ impl DawApp {
         self.mark_dirty();
     }
 
+    /// Change the metronome and tell the engine.
+    fn set_metronome(&mut self, metronome: MetronomeSettings) {
+        if metronome == self.metronome {
+            return;
+        }
+        self.metronome = metronome;
+        self.engine_send(Command::SetClick(metronome.click));
+        self.engine_send(Command::SetClickAlways(metronome.always));
+        self.engine_send(Command::SetMeter(meter_of(&metronome)));
+        self.engine_send(Command::SetClickVolume(db_to_gain(metronome.volume_db)));
+        self.engine_send(Command::SetCountIn(metronome.count_in));
+        self.mark_dirty();
+    }
+
+    /// TAP: the tempo of the last presses, once there are at least two close enough together.
+    fn tap(&mut self) -> Option<f64> {
+        let now = self.now;
+        // A pause of more than two seconds starts a new count.
+        if self.taps.last().is_some_and(|last| now - last > 2.0) {
+            self.taps.clear();
+        }
+        self.taps.push(now);
+        if self.taps.len() > 5 {
+            self.taps.remove(0);
+        }
+        let (first, last) = (self.taps.first()?, self.taps.last()?);
+        let intervals = self.taps.len() - 1;
+        if intervals == 0 {
+            return None;
+        }
+        let beat = (last - first) / intervals as f64;
+        // A tap is a beat of the time signature; the tempo counts quarter notes.
+        let quarter = beat * f64::from(self.metronome.unit) / 4.0;
+        Some((60.0 / quarter).clamp(20.0, 400.0))
+    }
+
+    fn metronome_settings(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new("Metronoom").strong());
+        ui.add_space(4.0);
+        let mut metronome = self.metronome;
+        egui::Grid::new("metronome-settings").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Volume");
+            ui.add(egui::Slider::new(&mut metronome.volume_db, -40.0..=6.0).suffix(" dB").fixed_decimals(1));
+            ui.end_row();
+            ui.label("Aftellen");
+            let text = |bars: u8| match bars {
+                0 => "Uit".to_string(),
+                1 => "1 maat".to_string(),
+                n => format!("{n} maten"),
+            };
+            egui::ComboBox::from_id_salt("count-in").selected_text(text(metronome.count_in)).width(120.0).show_ui(ui, |ui| {
+                for bars in [0, 1, 2] {
+                    ui.selectable_value(&mut metronome.count_in, bars, text(bars));
+                }
+            });
+            ui.end_row();
+            ui.label("Klikken");
+            ui.checkbox(&mut metronome.always, "Ook tijdens gewoon afspelen (anders alleen bij opnemen)");
+            ui.end_row();
+        });
+        ui.label(
+            RichText::new(
+                "Maat 1 begint aan het begin van de band, dus RESET verschuift het ritme niet. De klik is alleen te horen \
+                 en komt nooit in een opname. Aftellen gebeurt bij REC vanuit stop; de band wacht en start dan op de tel. \
+                 Tempo, maatsoort en deze instellingen worden per project bewaard.",
+            )
+            .size(11.0)
+            .color(palette::TEXT_DIM),
+        );
+        self.set_metronome(metronome);
+    }
+
     fn update_meters(&mut self, dt: f32) {
         let Some(engine) = &mut self.engine else { return };
         engine.collect_garbage();
@@ -1182,9 +1279,15 @@ impl DawApp {
         if ui.memory(|m| m.focused().is_some()) {
             return;
         }
-        let keys = ui
-            .input(|i| [Key::Space, Key::Home, Key::C, Key::Comma, Key::Period, Key::R].map(|k| i.key_pressed(k) && i.modifiers.is_none()));
-        let [space, home, c, comma, period, r] = keys;
+        let keys = ui.input(|i| {
+            [Key::Space, Key::Home, Key::C, Key::Comma, Key::Period, Key::R, Key::K].map(|k| i.key_pressed(k) && i.modifiers.is_none())
+        });
+        let [space, home, c, comma, period, r, k] = keys;
+        if k {
+            let mut metronome = self.metronome;
+            metronome.click = !metronome.click;
+            self.set_metronome(metronome);
+        }
         if r {
             self.record();
         }
@@ -1363,6 +1466,13 @@ impl DawApp {
         let rec_mode = self.engine.as_ref().map_or(RecMode::Off, EngineHandle::rec_mode);
         let blink = (self.now * 2.0).fract() < 0.5;
         let cue_counter = self.cue_seconds.map(|cue| cue - self.zero_seconds);
+        let (tape, count_in) = self.engine.as_ref().map_or((0.0, 0.0), |e| (e.position_seconds(), e.count_in_seconds()));
+        let meter = meter_of(&self.metronome);
+        // The tape's bar grid; during the count-in it runs ahead of the waiting tape.
+        let grid = tape - count_in;
+        let (bar, beat) = meter.bar_and_beat(grid);
+        let on_beat = (grid / meter.beat_seconds()).fract() < 0.15
+            && (motion == Motion::CountingIn || (motion == Motion::Playing && self.metronome.click));
         column(ui, 262.0, |ui| {
             Frame::new()
                 .fill(Color32::from_rgb(0x12, 0x08, 0x07))
@@ -1376,6 +1486,12 @@ impl DawApp {
                         let cue = cue_counter.map_or("CUE  --:--.-".to_string(), |c| format!("CUE  {}", format_counter(c)));
                         let pitch = if self.vari { format!("   PITCH {:+.1}%", self.pitch_percent) } else { String::new() };
                         ui.label(RichText::new(format!("{cue}{pitch}")).monospace().size(11.0).color(Color32::from_rgb(0xc8, 0x55, 0x3c)));
+                        let bars = if motion == Motion::CountingIn {
+                            format!("AFTELLEN  {}.{}", bar, beat)
+                        } else {
+                            format!("MAAT  {bar}.{beat}   {}/{}", self.metronome.beats, self.metronome.unit)
+                        };
+                        ui.label(RichText::new(bars).monospace().size(11.0).color(Color32::from_rgb(0xc8, 0x55, 0x3c)));
                     });
                 });
             ui.add_space(8.0);
@@ -1445,6 +1561,34 @@ impl DawApp {
                 {
                     self.set_auto_punch(!self.auto_punch);
                 }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let mut metronome = self.metronome;
+                // Flashes on the beat while the tape runs or counts in; steady while stopped.
+                let lit = if matches!(motion, Motion::Playing | Motion::CountingIn) { on_beat } else { metronome.click };
+                let click = small_key(ui, "CLICK", lit, vec2(52.0, 22.0));
+                if click.on_hover_text("Metronoom aan of uit (K); het lampje tikt mee").clicked() {
+                    metronome.click = !metronome.click;
+                }
+                ui.add(egui::DragValue::new(&mut metronome.bpm).range(20.0..=400.0).speed(0.2).fixed_decimals(1).suffix(" BPM"))
+                    .on_hover_text("Tempo in kwartnoten per minuut (slepen of klikken en typen)");
+                if small_key(ui, "TAP", false, vec2(36.0, 22.0)).on_hover_text("Tik een paar keer in het tempo").clicked()
+                    && let Some(bpm) = self.tap()
+                {
+                    metronome.bpm = bpm;
+                }
+                let signature = format!("{}/{}", metronome.beats, metronome.unit);
+                egui::ComboBox::from_id_salt("time-signature").selected_text(signature).width(48.0).show_ui(ui, |ui| {
+                    for (beats, unit) in TIME_SIGNATURES {
+                        let chosen = (metronome.beats, metronome.unit) == (beats, unit);
+                        if ui.selectable_label(chosen, format!("{beats}/{unit}")).clicked() {
+                            (metronome.beats, metronome.unit) = (beats, unit);
+                        }
+                    }
+                });
+                self.set_metronome(metronome);
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -1617,6 +1761,10 @@ impl DawApp {
         egui::Window::new("Instellingen").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.set_width(440.0);
             self.audio_settings(ui);
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            self.metronome_settings(ui);
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(4.0);
@@ -2320,6 +2468,42 @@ mod tests {
         app.tracks[4].input = None;
         app.toggle_arm(4);
         assert!(app.status.contains("geen ingang"), "{}", app.status);
+    }
+
+    #[test]
+    fn tap_tempo_follows_the_presses() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.now = 10.0;
+        assert_eq!(app.tap(), None, "one press is not a tempo yet");
+        app.now = 10.5;
+        assert_eq!(app.tap(), Some(120.0));
+        app.now = 11.0;
+        app.tap();
+        app.now = 11.6;
+        let bpm = app.tap().unwrap_or_default();
+        assert!((bpm - 112.5).abs() < 0.01, "the average of the presses: {bpm}");
+        app.now = 20.0;
+        assert_eq!(app.tap(), None, "after a pause the count starts again");
+        app.metronome.unit = 8;
+        app.now = 20.25;
+        assert_eq!(app.tap(), Some(120.0), "in 6/8 a tap is an eighth note");
+    }
+
+    #[test]
+    fn the_metronome_is_saved_with_the_project() {
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("Demo");
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(dir.clone()))));
+        let metronome = MetronomeSettings { click: true, always: false, bpm: 87.0, beats: 3, unit: 4, volume_db: -10.0, count_in: 1 };
+        app.set_metronome(metronome);
+        assert!(app.dirty);
+        assert!(app.save(Backup::Always));
+        app.new_project();
+        assert_eq!(app.metronome, MetronomeSettings::default());
+        app.open_project(&dir);
+        assert_eq!(app.metronome, metronome);
     }
 
     #[test]

@@ -21,7 +21,7 @@
 - [x] AUTO PUNCH van nulpunt tot CUE-punt, ook herhaald met REPEAT (0.6.0)
 - [x] Opnemen naar 24-bit WAV in de projectmap, destructief zoals band maar terug te draaien met Cmd+Z (0.6.0)
 - [x] Meeluisteren via DAW 388 of via de interface, latencycompensatie met handmatige fijnafstemming (0.6.0)
-- [ ] Metronoom: klik, tempo, maatsoort, aftellen
+- [x] Metronoom: klik, tempo, tap tempo, maatsoort, aftellen, maat en tel in de teller (0.7.0)
 - [ ] Opnemen met de pitch-knop op VARI
 
 ## Fase 4: Mixer 8:8:2

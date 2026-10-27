@@ -28,7 +28,7 @@ Een projectmap open je op dezelfde manier:
 cargo run --release -- "pad/naar/Mijn liedje"
 ```
 
-Bediening: Cmd+N, Cmd+O, Cmd+S, Shift+Cmd+S, Cmd+W en Cmd+Q voor nieuw, openen, opslaan, opslaan als, project sluiten en stoppen (Ctrl op Windows). Spatie is afspelen/stoppen, Home is RTZ (terug naar het nulpunt), komma is REW, punt is F FWD, C zet REPEAT aan of uit en R is REC. Cmd+Z zet de laatste opname terug. Cmd+, opent de instellingen. Dubbelklik op een fader zet hem op 0 dB, dubbelklik op een panknop zet hem in het midden. Shift tijdens het slepen van een fader geeft fijne regeling.
+Bediening: Cmd+N, Cmd+O, Cmd+S, Shift+Cmd+S, Cmd+W en Cmd+Q voor nieuw, openen, opslaan, opslaan als, project sluiten en stoppen (Ctrl op Windows). Spatie is afspelen/stoppen, Home is RTZ (terug naar het nulpunt), komma is REW, punt is F FWD, C zet REPEAT aan of uit, R is REC en K zet de metronoom aan of uit. Cmd+Z zet de laatste opname terug. Cmd+, opent de instellingen. Dubbelklik op een fader zet hem op 0 dB, dubbelklik op een panknop zet hem in het midden. Shift tijdens het slepen van een fader geeft fijne regeling.
 
 ## Opbouw
 

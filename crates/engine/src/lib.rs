@@ -14,9 +14,13 @@
 //! [`TransportStyle::Tape`] searches wind through the tape in time, as on the machine; in
 //! [`TransportStyle::Cycle`] they jump straight there, as in a modern DAW.
 
+mod click;
 mod record;
 
+pub use click::Meter;
 pub use record::{RecItem, RecMode, Recorder, input_ring};
+
+use click::Click;
 
 use record::{Input, RecordOut};
 use std::f32::consts::FRAC_PI_4;
@@ -60,6 +64,8 @@ pub enum Motion {
     Playing,
     Rewinding,
     Forwarding,
+    /// Counting in before a recording: the tape waits.
+    CountingIn,
 }
 
 /// A request from the UI to the audio thread.
@@ -113,6 +119,15 @@ pub enum Command {
     SetAutoPunch(bool),
     /// Extra latency compensation in seconds on top of what the device reports.
     SetLatencyOffset(f64),
+    /// The metronome on or off.
+    SetClick(bool),
+    /// Click during plain playback too (otherwise only while recording or counting in).
+    SetClickAlways(bool),
+    SetMeter(Meter),
+    /// Linear level of the click.
+    SetClickVolume(f32),
+    /// Bars to count in before a recording from stop (0: none).
+    SetCountIn(u8),
 }
 
 const NO_CUE: u64 = u64::MAX;
@@ -139,6 +154,8 @@ struct Shared {
     overflow: AtomicBool,
     /// Latency compensation in use, in seconds, as `f64` bits.
     compensation: AtomicU64,
+    /// Seconds of count-in left, as `f64` bits.
+    count_in: AtomicU64,
 }
 
 impl Default for Shared {
@@ -156,6 +173,7 @@ impl Default for Shared {
             input_channels: AtomicU32::new(0),
             overflow: AtomicBool::new(false),
             compensation: AtomicU64::new(0f64.to_bits()),
+            count_in: AtomicU64::new(0f64.to_bits()),
         }
     }
 }
@@ -182,6 +200,7 @@ fn motion_code(motion: Motion) -> u8 {
         Motion::Playing => 1,
         Motion::Rewinding => 2,
         Motion::Forwarding => 3,
+        Motion::CountingIn => 4,
     }
 }
 
@@ -190,6 +209,7 @@ fn motion_from(code: u8) -> Motion {
         1 => Motion::Playing,
         2 => Motion::Rewinding,
         3 => Motion::Forwarding,
+        4 => Motion::CountingIn,
         _ => Motion::Stopped,
     }
 }
@@ -280,6 +300,7 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         auto_punch: false,
         rec_out,
         compensation: 0.0,
+        click: Click::new(sample_rate),
     };
     (handle, engine)
 }
@@ -315,6 +336,11 @@ impl EngineHandle {
     /// Whether recorded audio was lost since the last call (the writer fell behind).
     pub fn take_overflow(&self) -> bool {
         self.shared.overflow.swap(false, Ordering::Relaxed)
+    }
+
+    /// Seconds of count-in left (0 when not counting in).
+    pub fn count_in_seconds(&self) -> f64 {
+        f64::from_bits(self.shared.count_in.load(Ordering::Relaxed))
     }
 
     /// The latency compensation in use, in seconds.
@@ -458,6 +484,10 @@ enum State {
         target: Option<f64>,
         then_play: bool,
     },
+    /// Counting in before recording; `left` samples to go.
+    CountIn {
+        left: f64,
+    },
 }
 
 /// The audio-thread side of the engine.
@@ -495,6 +525,7 @@ pub struct Engine {
     rec_out: RecordOut,
     /// Latency compensation in samples for this block.
     compensation: f64,
+    click: Click,
 }
 
 impl Engine {
@@ -575,9 +606,18 @@ impl Engine {
     }
 
     fn record(&mut self) {
-        if (self.pitch - 1.0).abs() > 1e-9 || matches!(self.state, State::Winding { .. }) {
+        if (self.pitch - 1.0).abs() > 1e-9 || matches!(self.state, State::Winding { .. } | State::CountIn { .. }) {
             return;
         }
+        if self.state == State::Stopped && self.click.count_in > 0 {
+            // Count in first; the clicks line up with the bar grid before this position.
+            self.state = State::CountIn { left: self.click.count_in_samples() };
+            return;
+        }
+        self.begin_recording();
+    }
+
+    fn begin_recording(&mut self) {
         self.update_compensation();
         self.state = State::Playing;
         if self.rec_mode == RecMode::Off {
@@ -625,6 +665,7 @@ impl Engine {
                     self.end_recording();
                     match &mut self.state {
                         State::Winding { target: Some(_), then_play, .. } => *then_play = true,
+                        // PLAY during the count-in plays without recording.
                         state => *state = State::Playing,
                     }
                 }
@@ -662,6 +703,11 @@ impl Engine {
                 Command::SetMonitoring(monitoring) => self.monitoring = monitoring,
                 Command::SetAutoPunch(auto) => self.auto_punch = auto,
                 Command::SetLatencyOffset(seconds) => self.latency_offset = seconds,
+                Command::SetClick(on) => self.click.enabled = on,
+                Command::SetClickAlways(always) => self.click.always = always,
+                Command::SetMeter(meter) => self.click.meter = meter,
+                Command::SetClickVolume(volume) => self.click.volume = volume.clamp(0.0, 2.0),
+                Command::SetCountIn(bars) => self.click.count_in = bars,
                 Command::ReturnToZero => {
                     self.end_recording();
                     // In cycle style RTZ keeps playing, as "go to start" does in a DAW.
@@ -728,6 +774,13 @@ impl Engine {
     fn advance(&mut self) {
         match self.state {
             State::Stopped => {}
+            State::CountIn { left } => {
+                if left <= 1.0 {
+                    self.begin_recording();
+                } else {
+                    self.state = State::CountIn { left: left - 1.0 };
+                }
+            }
             State::Playing => {
                 let previous = self.position;
                 self.position += self.pitch;
@@ -790,6 +843,7 @@ impl Engine {
             State::Playing => Motion::Playing,
             State::Winding { speed, .. } if speed < 0.0 => Motion::Rewinding,
             State::Winding { .. } => Motion::Forwarding,
+            State::CountIn { .. } => Motion::CountingIn,
         }
     }
 
@@ -841,12 +895,23 @@ impl Engine {
                 mix[0] += sample * track.current[0];
                 mix[1] += sample * track.current[1];
             }
+            // The click follows the tape's bar grid; during the count-in the grid runs ahead of the
+            // waiting tape, so the beats carry on into the recording without a jump.
+            let (click_at, sounding) = match self.state {
+                State::Playing => (self.position, self.click.enabled && (self.click.always || self.rec_mode != RecMode::Off)),
+                State::CountIn { left } => (self.position - left, true),
+                _ => (0.0, false),
+            };
+            self.click.follow(click_at, sounding);
             self.advance();
             smooth(&mut self.master_current, self.master);
             let left = mix[0] * self.master_current;
             let right = mix[1] * self.master_current;
             master_peaks[0] = master_peaks[0].max(left.abs());
             master_peaks[1] = master_peaks[1].max(right.abs());
+            // The click goes to the output only: not into the master meters or a recording.
+            let click = self.click.next();
+            let (left, right) = (left + click, right + click);
             match frame {
                 [mono] => *mono = 0.5 * (left + right),
                 [l, r, rest @ ..] => {
@@ -866,6 +931,8 @@ impl Engine {
         let mask = self.recording.iter().enumerate().fold(0u8, |m, (i, r)| if *r { m | (1 << i) } else { m });
         self.shared.recording.store(mask, Ordering::Relaxed);
         self.shared.compensation.store((self.compensation / f64::from(self.sample_rate)).to_bits(), Ordering::Relaxed);
+        let count_in = if let State::CountIn { left } = self.state { left / f64::from(self.sample_rate) } else { 0.0 };
+        self.shared.count_in.store(count_in.to_bits(), Ordering::Relaxed);
         for (cell, peak) in self.shared.track_peaks.iter().zip(track_peaks) {
             store_peak(cell, peak);
         }
@@ -1260,6 +1327,77 @@ mod tests {
         feed(&mut tx, 0, 10);
         run(&mut engine, 5);
         assert_eq!(handle.rec_mode(), RecMode::Off);
+    }
+
+    /// Frames in `out` (stereo) where a click starts after silence.
+    fn click_starts(out: &[f32]) -> Vec<usize> {
+        let left: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
+        (1..left.len()).filter(|&n| left[n] != 0.0 && left[n - 1] == 0.0 && left[..n].iter().rev().take(100).all(|s| *s == 0.0)).collect()
+    }
+
+    #[test]
+    fn the_click_sounds_when_recording_or_always_but_not_into_the_meters() {
+        let (mut handle, mut engine, mut tx, _recorder) = with_input();
+        handle.send(Command::SetClick(true));
+        handle.play();
+        let quiet = run(&mut engine, 48_000);
+        assert!(quiet.iter().all(|s| *s == 0.0), "plain playback: no click unless asked");
+        handle.send(Command::SetClickAlways(true));
+        handle.locate_seconds(0.0);
+        let out = run(&mut engine, 48_000);
+        // 120 BPM: a beat every half second.
+        assert_eq!(click_starts(&out), vec![24_000]);
+        assert_eq!(handle.take_master_peaks(), [0.0, 0.0], "the click stays out of the mix meters");
+        handle.send(Command::SetClickAlways(false));
+        handle.stop();
+        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetArmed(0, true));
+        handle.locate_seconds(0.0);
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 1_000);
+        let out = run(&mut engine, 30_000);
+        assert!(!click_starts(&out).is_empty() || out[0] != 0.0, "recording: the click sounds");
+    }
+
+    #[test]
+    fn count_in_waits_and_then_records_on_the_beat() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetArmed(0, true));
+        handle.send(Command::SetCountIn(1));
+        // The count-in clicks either way; the metronome during the take needs CLICK on.
+        handle.send(Command::SetClick(true));
+        handle.send(Command::SetMeter(Meter { bpm: 120.0, beats: 4, unit: 4 }));
+        handle.locate_seconds(2.0);
+        handle.send(Command::Record);
+        let out = run(&mut engine, 48_000);
+        assert_eq!(handle.motion(), Motion::CountingIn);
+        assert_eq!(handle.position_samples(), 96_000.0, "the tape waits during the count-in");
+        assert!((handle.count_in_seconds() - 1.0).abs() < 0.01);
+        // A bar of four at 120 BPM: clicks at 0, 0.5, 1.0 and 1.5 s (the first one at frame 0).
+        assert!(out[0] != 0.0);
+        assert_eq!(click_starts(&out), vec![24_000]);
+        feed(&mut tx, 0, 4_000);
+        let out = run(&mut engine, 48_100);
+        assert_eq!(handle.rec_mode(), RecMode::Recording, "then the recording starts");
+        assert!((handle.position_samples() - 96_100.0).abs() < 2.0);
+        assert!(click_starts(&out).contains(&48_000), "the click carries on: bar 2 of the tape is on the beat");
+        let first = takes(&mut recorder, 0).into_iter().next();
+        assert_eq!(first, Some(RecItem::Start(96_000.0 - 1.0)), "the take starts where the tape stood");
+    }
+
+    #[test]
+    fn stop_during_the_count_in_records_nothing() {
+        let (mut handle, mut engine, _tx, mut recorder) = with_input();
+        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetArmed(0, true));
+        handle.send(Command::SetCountIn(2));
+        handle.send(Command::Record);
+        run(&mut engine, 1_000);
+        handle.stop();
+        run(&mut engine, 200_000);
+        assert_eq!(handle.motion(), Motion::Stopped);
+        assert!(takes(&mut recorder, 0).is_empty());
     }
 
     #[test]

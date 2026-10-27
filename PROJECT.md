@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.6.1
+Versie: 0.7.0
 Laatst bijgewerkt: 26-10-2026
 
 ## Doel
@@ -89,6 +89,14 @@ Naar de handleiding van de 388 (REC FUNCTION, REC, INSERT, Punch-in):
 - Opnemen gaat op normale snelheid; met de pitch-knop op VARI en niet op 0% weigert REC met een melding.
 - Een project zonder map vraagt bij REC eerst om op te slaan.
 - Ingangsapparaat, meeluisteren en latencycorrectie zijn app-voorkeuren; de ingang per spoor, INSERT en AUTO PUNCH worden per project bewaard.
+
+## Metronoom
+
+- De klik wordt in de engine gemaakt (een korte sinus met snelle uitsterving, hoger op tel 1) en gaat alleen naar de uitvoer: niet in de mixmeters en nooit in een opname.
+- Maat 1 begint aan het begin van de band, zodat RESET het ritme niet verschuift. Het tempo telt kwartnoten per minuut, ook in x/8; een tel is dan een achtste.
+- De klik klinkt tijdens opnemen en aftellen, en tijdens gewoon afspelen alleen als dat is aangezet.
+- Aftellen (1 of 2 maten) gebeurt bij REC vanuit stop. De band wacht; het maatraster loopt voor de band uit, zodat de klik na het aftellen zonder sprong doorloopt en de opname begint waar de band stond.
+- Tempo, maatsoort, CLICK, volume, aftellen en "ook bij afspelen" worden per project bewaard onder `metronome`.
 
 ## Laden
 

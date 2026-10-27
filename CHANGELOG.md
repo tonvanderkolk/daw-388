@@ -2,6 +2,16 @@
 
 Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Versioning](https://semver.org/lang/nl/).
 
+## [0.7.0] - 2026-10-27
+
+### Toegevoegd
+- Metronoom: CLICK-knop met een lampje dat op de tel meeknippert (sneltoets K), tempo in BPM, TAP voor tap tempo en een keuze uit maatsoorten (2/4 tot 7/4, 3/8, 6/8 en 7/8).
+- Een hogere klik op tel 1 van elke maat. De klik is alleen te horen: hij komt niet in de mixmeters en nooit in een opname.
+- Aftellen van 1 of 2 maten bij REC vanuit stop; de band wacht en de opname begint daarna precies op de tel.
+- In de instellingen: klikvolume, aftellen en of de klik ook tijdens gewoon afspelen klinkt.
+- De teller toont maat en tel, en tijdens het aftellen "AFTELLEN".
+- Alle metronoominstellingen worden per project bewaard.
+
 ## [0.6.1] - 2026-10-27
 
 ### Opgelost

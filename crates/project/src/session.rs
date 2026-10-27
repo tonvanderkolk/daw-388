@@ -36,6 +36,8 @@ pub struct ProjectFile {
     #[serde(default)]
     pub transport: TransportSettings,
     #[serde(default)]
+    pub metronome: MetronomeSettings,
+    #[serde(default)]
     pub tracks: Vec<TrackEntry>,
 }
 
@@ -94,12 +96,38 @@ pub struct TransportSettings {
     pub auto_punch: bool,
 }
 
+/// The metronome in `project.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MetronomeSettings {
+    /// CLICK on.
+    pub click: bool,
+    /// Click during plain playback too, not only while recording.
+    pub always: bool,
+    /// Quarter notes per minute.
+    pub bpm: f64,
+    /// Time signature: beats per bar and the note value of a beat (4 or 8).
+    pub beats: u8,
+    pub unit: u8,
+    /// Click level in dB.
+    pub volume_db: f32,
+    /// Bars to count in before recording.
+    pub count_in: u8,
+}
+
+impl Default for MetronomeSettings {
+    fn default() -> Self {
+        Self { click: false, always: false, bpm: 120.0, beats: 4, unit: 4, volume_db: -6.0, count_in: 0 }
+    }
+}
+
 /// Project-wide settings saved with the tracks.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ProjectSettings {
     pub master_db: f32,
     pub meter_post: bool,
     pub transport: TransportSettings,
+    pub metronome: MetronomeSettings,
 }
 
 /// What the UI hands over for one track when saving.
@@ -213,6 +241,7 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
         master_db: settings.master_db,
         meter_post: settings.meter_post,
         transport: settings.transport,
+        metronome: settings.metronome,
         tracks: entries,
     };
     let path = dir.join(PROJECT_FILE);
@@ -362,6 +391,7 @@ mod tests {
                     insert: true,
                     auto_punch: true,
                 },
+                metronome: MetronomeSettings { click: true, always: true, bpm: 96.5, beats: 6, unit: 8, volume_db: -12.0, count_in: 2 },
             },
             &tracks([Some(kick.clone()), None]),
             Backup::Always,
@@ -381,6 +411,10 @@ mod tests {
         assert_eq!(transport.repeat_mode, RepeatMode::Cycle);
         assert_eq!(transport.pitch_percent, -2.5);
         assert!(transport.vari && transport.insert && transport.auto_punch);
+        assert_eq!(
+            opened.file.metronome,
+            MetronomeSettings { click: true, always: true, bpm: 96.5, beats: 6, unit: 8, volume_db: -12.0, count_in: 2 }
+        );
         assert_eq!(opened.file.tracks.len(), 2);
         assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/01_Kick.wav"));
         assert_eq!(opened.file.tracks[1].file, None);
@@ -454,6 +488,7 @@ mod tests {
         let old = open(&path).unwrap_or_else(|e| panic!("{e}"));
         assert!(!old.file.meter_post && old.file.master_db == -3.0);
         assert_eq!(old.file.transport, TransportSettings::default(), "older projects: zero at the start, no cue, 388 mode, FIX");
+        assert_eq!(old.file.metronome.bpm, 120.0, "and 120 BPM in 4/4");
         fs::write(&path, r#"{"format":"iets-anders","version":1,"app_version":"x"}"#).unwrap_or_else(|e| panic!("{e}"));
         assert!(matches!(open(&path), Err(ProjectError::NotAProject(_))));
         fs::write(&path, r#"{"format":"daw388-project","version":99,"app_version":"x"}"#).unwrap_or_else(|e| panic!("{e}"));
