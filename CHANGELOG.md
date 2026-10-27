@@ -2,6 +2,18 @@
 
 Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Versioning](https://semver.org/lang/nl/).
 
+## [0.5.0] - 2026-10-27
+
+### Toegevoegd
+- Audio-instellingen in het instellingenvenster: uitvoerapparaat, samplerate (44,1 tot 192 kHz, voor zover het apparaat die biedt) en buffergrootte (32 tot 2048 samples), met de latency in milliseconden.
+- De app onthoudt de gekozen uitvoer tussen het opstarten (`settings.json` in de configuratiemap).
+- Valt het apparaat weg, dan schakelt de app meteen over op het standaardapparaat, op dezelfde plek, en terug zodra het gekozen apparaat er weer is.
+- Speelde de band, dan speelt hij na het omschakelen van apparaat, samplerate of buffer gewoon door.
+- Stille klok: zonder enige audio-uitvoer blijven transport, teller en meters gewoon werken.
+
+### Gewijzigd
+- Een gekozen apparaat dat ontbreekt geeft nu een duidelijke melding ("... niet gevonden, nu via ...") in plaats van stil het standaardapparaat te gebruiken.
+
 ## [0.4.0] - 2026-10-27
 
 ### Toegevoegd

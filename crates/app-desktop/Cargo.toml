@@ -19,6 +19,7 @@ eframe.workspace = true
 rfd.workspace = true
 log.workspace = true
 env_logger.workspace = true
+dirs = "7"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Same version eframe uses; needed to switch off winit's default macOS menu.

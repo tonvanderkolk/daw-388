@@ -9,9 +9,9 @@
 
 ## Fase 2: Audio-engine
 - [x] Laden en samplerate-conversie op een achtergrondthread (0.4.0)
-- [ ] Stille klok als er geen apparaat is
-- [ ] Herstel na het wegvallen van het apparaat
-- [ ] Keuze van samplerate en buffergrootte
+- [x] Stille klok als er geen apparaat is (0.5.0)
+- [x] Herstel na het wegvallen van het apparaat (0.5.0)
+- [x] Keuze van samplerate en buffergrootte (0.5.0)
 - [x] Transport compleet: RESET, CUE, STC, REPEAT, REW, F FWD, teller in min:sec, pitch/varispeed (0.4.0)
 - [x] REPEAT-modus 388 (spoelt terug) of cycle (springt direct terug), per project (0.4.0)
 

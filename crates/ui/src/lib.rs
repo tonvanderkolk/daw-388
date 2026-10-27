@@ -2,6 +2,7 @@
 //! through the [`Platform`] trait, so the same UI can later run in the browser.
 
 use daw388_engine::{Command, EngineHandle, Motion, PITCH_RANGE, TRACKS, TrackAudio, TransportStyle};
+use daw388_project::preferences::{self, Preferences};
 use daw388_project::session::{self, PROJECT_FILE};
 use daw388_project::{Backup, MonoClip, ProjectSettings, RepeatMode, TrackToSave, TransportSettings};
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
@@ -11,15 +12,58 @@ pub use daw388_project::AUDIO_EXTENSIONS;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+/// An audio output device and what it offers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceInfo {
+    pub name: String,
+    /// Standard sample rates the device can run at.
+    pub sample_rates: Vec<u32>,
+    /// Smallest and largest buffer size in frames, when the device says.
+    pub buffer_range: Option<(u32, u32)>,
+}
+
+/// Which output to open and how.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutputRequest {
+    /// `None`: the system's default device.
+    pub device: Option<String>,
+    /// `None`: the device's own rate.
+    pub sample_rate: Option<u32>,
+    /// `None`: the device's default buffer.
+    pub buffer_frames: Option<u32>,
+}
+
+/// The output that was actually opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputInfo {
+    pub device: String,
+    pub sample_rate: u32,
+    /// `None` when the device chose the buffer size itself.
+    pub buffer_frames: Option<u32>,
+}
+
+/// Buffer sizes offered in the settings, when the device allows them.
+const BUFFER_SIZES: [u32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
+/// Seconds between checks whether the chosen device is back.
+const DEVICE_CHECK_EVERY: f64 = 2.0;
+/// Sample rate of the silent clock when no rate was chosen.
+const SILENT_RATE: u32 = 48_000;
+
 /// What the UI needs from the platform it runs on.
 pub trait Platform {
-    /// Names of the available audio output devices.
-    fn output_devices(&mut self) -> Vec<String>;
+    /// The available audio output devices.
+    fn output_devices(&mut self) -> Vec<DeviceInfo>;
     /// Name of the default output device, if there is one.
     fn default_output_device(&mut self) -> Option<String>;
-    /// Open an output device (`None`: the default one) and return the engine that now feeds it,
-    /// plus the name of the device that was actually opened.
-    fn open_output(&mut self, device: Option<&str>) -> Result<(EngineHandle, String), String>;
+    /// Open an output and return the engine that now feeds it. A named device that is missing is
+    /// an error; the UI chooses the fallback.
+    fn open_output(&mut self, request: &OutputRequest) -> Result<(EngineHandle, OutputInfo), String>;
+    /// Run an engine in real time without any sound output, so the transport keeps working.
+    fn open_silent(&mut self, sample_rate: u32) -> EngineHandle;
+    /// The open output's device went away since it was opened.
+    fn output_lost(&mut self) -> bool;
+    /// Where app-wide preferences are kept, if anywhere.
+    fn preferences_path(&self) -> Option<PathBuf>;
     /// Ask the user for one or more audio files.
     fn pick_audio_files(&mut self, multiple: bool) -> Vec<PathBuf>;
     /// Ask the user for a project to open (its folder or its `project.json`).
@@ -123,8 +167,13 @@ struct TrackState {
 pub struct DawApp {
     platform: Box<dyn Platform>,
     engine: Option<EngineHandle>,
-    devices: Vec<String>,
-    device: Option<String>,
+    devices: Vec<DeviceInfo>,
+    /// The output that is open; `None` while the silent clock runs.
+    output: Option<OutputInfo>,
+    /// The audio output the user chose (kept between sessions).
+    preferences: Preferences,
+    /// When to look again whether the chosen device is available.
+    next_device_check: f64,
     tracks: [TrackState; TRACKS],
     master_db: f32,
     /// Track meters after the fader (POST) instead of the track's own level (PRE, as on the 388).
@@ -162,12 +211,15 @@ impl DawApp {
     pub fn new(ctx: &egui::Context, mut platform: Box<dyn Platform>) -> Self {
         apply_style(ctx);
         let devices = platform.output_devices();
+        let preferences = platform.preferences_path().map(|path| preferences::load(&path)).unwrap_or_default();
         let (loads_tx, loads_rx) = channel();
         let mut app = Self {
             platform,
             engine: None,
             devices,
-            device: None,
+            output: None,
+            preferences,
+            next_device_check: DEVICE_CHECK_EVERY,
             tracks: Default::default(),
             master_db: 0.0,
             meter_post: false,
@@ -196,38 +248,120 @@ impl DawApp {
         for track in &mut app.tracks {
             track.meter_db = MIN_DB;
         }
-        app.open_device(None);
+        app.open_output();
         app
     }
 
-    /// Open a device and bring the new engine up to date with the current tracks and mix.
-    fn open_device(&mut self, name: Option<String>) {
+    /// Open the chosen output, else the default device, else the silent clock, and bring the new
+    /// engine up to date with the tracks, the mix and the transport.
+    fn open_output(&mut self) {
         let position = self.engine.as_ref().map_or(0.0, EngineHandle::position_seconds);
-        // Drop the old stream first: some systems allow only one open stream per device.
+        // Carry on playing after a device change or a new rate or buffer.
+        let was_playing = self.engine.as_ref().is_some_and(EngineHandle::is_playing);
+        // Drop the old engine first: some systems allow only one open stream per device.
         self.engine = None;
-        match self.platform.open_output(name.as_deref()) {
-            Ok((mut engine, opened)) => {
-                self.status = format!("{opened}, {} Hz", engine.sample_rate());
-                for (index, track) in self.tracks.iter().enumerate() {
-                    engine.send(Command::SetGain(index, db_to_gain(track.fader_db)));
-                    engine.send(Command::SetPan(index, track.pan));
-                    engine.send(Command::SetMute(index, track.mute));
-                }
-                engine.send(Command::SetMaster(db_to_gain(self.master_db)));
-                engine.locate_seconds(position);
-                self.device = Some(opened);
-                self.engine = Some(engine);
-                self.send_transport();
-                // The audio has to be resampled for the new device's rate.
-                for index in 0..TRACKS {
-                    self.request_resample(index);
+        let request = OutputRequest {
+            device: self.preferences.output_device.clone(),
+            sample_rate: self.preferences.sample_rate,
+            buffer_frames: self.preferences.buffer_frames,
+        };
+        let (engine, output, status) = match self.platform.open_output(&request) {
+            Ok((engine, info)) => {
+                let status = format!("{}, {}", info.device, describe_output(&info));
+                (engine, Some(info), status)
+            }
+            Err(first) => {
+                let fallback = OutputRequest { device: None, ..request.clone() };
+                match request.device.is_some().then(|| self.platform.open_output(&fallback)) {
+                    Some(Ok((engine, info))) => {
+                        let status = format!("{first}, nu via {} ({})", info.device, describe_output(&info));
+                        (engine, Some(info), status)
+                    }
+                    other => {
+                        let reason = match other {
+                            Some(Err(second)) => second,
+                            _ => first,
+                        };
+                        let engine = self.platform.open_silent(request.sample_rate.unwrap_or(SILENT_RATE));
+                        (engine, None, format!("Geen audio-uitvoer ({reason}): het transport loopt door zonder geluid"))
+                    }
                 }
             }
-            Err(e) => {
-                self.status = format!("Geen audio-uitvoer: {e}");
-                self.device = name;
-            }
+        };
+        self.status = status;
+        self.output = output;
+        let mut engine = engine;
+        for (index, track) in self.tracks.iter().enumerate() {
+            engine.send(Command::SetGain(index, db_to_gain(track.fader_db)));
+            engine.send(Command::SetPan(index, track.pan));
+            engine.send(Command::SetMute(index, track.mute));
         }
+        engine.send(Command::SetMaster(db_to_gain(self.master_db)));
+        engine.locate_seconds(position);
+        self.engine = Some(engine);
+        self.send_transport();
+        if was_playing {
+            self.play();
+        }
+        // The audio has to be resampled for the new rate.
+        for index in 0..TRACKS {
+            self.request_resample(index);
+        }
+        self.next_device_check = self.now + DEVICE_CHECK_EVERY;
+    }
+
+    /// The output is not the one the user chose (it fell back, or nothing could be opened).
+    fn on_fallback(&self) -> bool {
+        match (&self.output, &self.preferences.output_device) {
+            (None, _) => true,
+            (Some(output), Some(chosen)) => &output.device != chosen,
+            (Some(_), None) => false,
+        }
+    }
+
+    /// Reopen the output when its device went away, and go back to the chosen device when it
+    /// returns.
+    fn watch_output(&mut self) {
+        if self.platform.output_lost() {
+            let gone = self.output.as_ref().map(|o| o.device.clone()).unwrap_or_default();
+            log::warn!("audio device {gone} went away");
+            self.devices = self.platform.output_devices();
+            self.open_output();
+            self.status = format!("{gone} is weggevallen. {}", self.status);
+            return;
+        }
+        if !self.on_fallback() || self.now < self.next_device_check {
+            return;
+        }
+        self.next_device_check = self.now + DEVICE_CHECK_EVERY;
+        self.devices = self.platform.output_devices();
+        let back = match &self.preferences.output_device {
+            Some(chosen) => self.devices.iter().any(|d| &d.name == chosen),
+            None => self.platform.default_output_device().is_some(),
+        };
+        if back {
+            self.open_output();
+        }
+    }
+
+    /// Change the audio output settings, remember them and reopen the output.
+    fn set_output(&mut self, preferences: Preferences) {
+        if preferences == self.preferences {
+            return;
+        }
+        self.preferences = preferences;
+        if let Some(path) = self.platform.preferences_path()
+            && let Err(e) = preferences::save(&path, &self.preferences)
+        {
+            log::warn!("cannot save the preferences: {e}");
+        }
+        self.open_output();
+    }
+
+    /// What the chosen device offers, if it is in the list.
+    fn chosen_device_info(&self) -> Option<&DeviceInfo> {
+        let name = self.output.as_ref().map(|o| o.device.as_str());
+        self.devices.iter().find(|d| Some(d.name.as_str()) == name)
     }
 
     fn engine_rate(&self) -> u32 {
@@ -772,23 +906,11 @@ impl DawApp {
             ui.label(RichText::new(name).color(palette::TEXT_DIM).size(13.0));
             ui.separator();
             ui.label(RichText::new("Uitvoer").color(palette::TEXT_DIM));
-            let selected = self.device.clone().unwrap_or_else(|| "Geen apparaat".into());
-            let mut choice: Option<Option<String>> = None;
-            egui::ComboBox::from_id_salt("output-device").selected_text(selected).width(260.0).show_ui(ui, |ui| {
-                if ui.selectable_label(false, "Standaardapparaat").clicked() {
-                    choice = Some(None);
-                }
-                for name in &self.devices {
-                    if ui.selectable_label(self.device.as_deref() == Some(name), name).clicked() {
-                        choice = Some(Some(name.clone()));
-                    }
-                }
-            });
+            if let Some(choice) = self.device_combo(ui, "output-device") {
+                self.set_output(Preferences { output_device: choice, ..self.preferences.clone() });
+            }
             if ui.button("Vernieuw").on_hover_text("Lijst met audioapparaten opnieuw ophalen").clicked() {
                 self.devices = self.platform.output_devices();
-            }
-            if let Some(choice) = choice {
-                self.open_device(choice);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if let Some(saved) = &self.saved_label
@@ -999,15 +1121,92 @@ impl DawApp {
         });
     }
 
+    /// The output device chooser. Returns the new choice (`Some(None)`: the default device).
+    fn device_combo(&self, ui: &mut Ui, id: &str) -> Option<Option<String>> {
+        let selected = match (&self.output, &self.preferences.output_device) {
+            (Some(output), None) => format!("Standaard ({})", output.device),
+            (Some(output), Some(_)) => output.device.clone(),
+            (None, _) => "Geen (stille klok)".into(),
+        };
+        let mut choice = None;
+        egui::ComboBox::from_id_salt(id).selected_text(selected).width(260.0).show_ui(ui, |ui| {
+            if ui.selectable_label(self.preferences.output_device.is_none(), "Standaardapparaat van het systeem").clicked() {
+                choice = Some(None);
+            }
+            for device in &self.devices {
+                let chosen = self.preferences.output_device.as_deref() == Some(device.name.as_str());
+                if ui.selectable_label(chosen, &device.name).clicked() {
+                    choice = Some(Some(device.name.clone()));
+                }
+            }
+        });
+        choice
+    }
+
+    fn audio_settings(&mut self, ui: &mut Ui) {
+        ui.label(RichText::new("Audio").strong());
+        ui.add_space(4.0);
+        let mut wanted = self.preferences.clone();
+        egui::Grid::new("audio-settings").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Uitvoer");
+            if let Some(choice) = self.device_combo(ui, "settings-output-device") {
+                wanted.output_device = choice;
+            }
+            ui.end_row();
+
+            let info = self.chosen_device_info().cloned().unwrap_or_default();
+            ui.label("Samplerate");
+            let rate_text =
+                |rate: Option<u32>| rate.map_or("Van het apparaat".to_string(), |r| format!("{:.1} kHz", f64::from(r) / 1000.0));
+            egui::ComboBox::from_id_salt("sample-rate").selected_text(rate_text(wanted.sample_rate)).width(260.0).show_ui(ui, |ui| {
+                ui.selectable_value(&mut wanted.sample_rate, None, rate_text(None));
+                for rate in &info.sample_rates {
+                    ui.selectable_value(&mut wanted.sample_rate, Some(*rate), rate_text(Some(*rate)));
+                }
+            });
+            ui.end_row();
+
+            ui.label("Buffer");
+            let buffer_text = |frames: Option<u32>| frames.map_or("Standaard van het apparaat".to_string(), |n| format!("{n} samples"));
+            egui::ComboBox::from_id_salt("buffer-size").selected_text(buffer_text(wanted.buffer_frames)).width(260.0).show_ui(ui, |ui| {
+                ui.selectable_value(&mut wanted.buffer_frames, None, buffer_text(None));
+                for frames in BUFFER_SIZES.iter().copied().filter(|n| info.buffer_range.is_none_or(|(min, max)| (min..=max).contains(n))) {
+                    ui.selectable_value(&mut wanted.buffer_frames, Some(frames), buffer_text(Some(frames)));
+                }
+            });
+            ui.end_row();
+        });
+        let now = match &self.output {
+            Some(output) => format!("Nu: {}, {}", output.device, describe_output(output)),
+            None => "Nu: geen audio-uitvoer, het transport loopt door zonder geluid".into(),
+        };
+        ui.label(RichText::new(now).size(11.0).color(palette::TEXT_DIM));
+        ui.label(
+            RichText::new(
+                "Een kleinere buffer geeft minder vertraging maar vraagt meer van de computer. Valt het apparaat weg, \
+                 dan schakelt DAW 388 over op het standaardapparaat en terug zodra het er weer is. Deze instellingen gelden \
+                 voor de app, niet per project.",
+            )
+            .size(11.0)
+            .color(palette::TEXT_DIM),
+        );
+        self.set_output(wanted);
+    }
+
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
-        let mut mode = self.repeat_mode;
         egui::Window::new("Instellingen").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.set_width(380.0);
+            ui.set_width(440.0);
+            self.audio_settings(ui);
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
             ui.label(RichText::new("REPEAT, RTZ en STC").strong());
             ui.add_space(4.0);
+            let mut mode = self.repeat_mode;
             ui.radio_value(&mut mode, RepeatMode::Tape, "388: de band spoelt in de tijd terug naar het nulpunt");
             ui.radio_value(&mut mode, RepeatMode::Cycle, "Cycle: springt direct terug, zoals in Logic");
+            self.set_repeat_mode(mode);
             ui.add_space(6.0);
             ui.label(
                 RichText::new(
@@ -1018,8 +1217,20 @@ impl DawApp {
                 .color(palette::TEXT_DIM),
             );
         });
+        if open && !self.show_settings {
+            // Just opened: show the devices as they are now.
+            self.devices = self.platform.output_devices();
+        }
         self.show_settings = open;
-        self.set_repeat_mode(mode);
+    }
+}
+
+/// Sample rate, buffer size and the latency that buffer gives.
+fn describe_output(output: &OutputInfo) -> String {
+    let rate = format!("{:.1} kHz", f64::from(output.sample_rate) / 1000.0);
+    match output.buffer_frames {
+        Some(frames) => format!("{rate}, buffer {frames} ({:.1} ms)", f64::from(frames) * 1000.0 / f64::from(output.sample_rate.max(1))),
+        None => format!("{rate}, standaardbuffer"),
     }
 }
 
@@ -1239,6 +1450,7 @@ impl DawApp {
     pub fn ui(&mut self, ui: &mut Ui) {
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         self.now = ui.input(|i| i.time);
+        self.watch_output();
         self.poll_loads();
         self.sync_transport();
         self.update_meters(dt);
@@ -1319,24 +1531,65 @@ impl DawApp {
 mod tests {
     use super::*;
 
-    /// A platform without audio hardware whose dialogs give fixed answers.
+    /// A platform without audio hardware whose dialogs give fixed answers. Its devices can be
+    /// plugged in, pulled out and made to fail.
     struct FakePlatform {
         save_location: Option<PathBuf>,
-        /// Keeps the audio side alive so commands are accepted.
-        engines: Vec<daw388_engine::Engine>,
+        /// Keeps the audio side alive so commands are accepted; tests can render the latest.
+        engines: std::rc::Rc<std::cell::RefCell<Vec<daw388_engine::Engine>>>,
+        /// Devices that can be opened; the first is the default.
+        devices: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+        lost: std::rc::Rc<std::cell::Cell<bool>>,
+        opened: std::rc::Rc<std::cell::RefCell<Vec<OutputRequest>>>,
+    }
+
+    impl FakePlatform {
+        fn new(save_location: Option<PathBuf>) -> Self {
+            Self {
+                save_location,
+                engines: std::rc::Rc::default(),
+                devices: std::rc::Rc::new(std::cell::RefCell::new(vec!["Ingebouwd".into()])),
+                lost: std::rc::Rc::default(),
+                opened: std::rc::Rc::default(),
+            }
+        }
     }
 
     impl Platform for FakePlatform {
-        fn output_devices(&mut self) -> Vec<String> {
-            vec!["Test".into()]
+        fn output_devices(&mut self) -> Vec<DeviceInfo> {
+            self.devices
+                .borrow()
+                .iter()
+                .map(|name| DeviceInfo { name: name.clone(), sample_rates: vec![44_100, 48_000], buffer_range: Some((32, 4096)) })
+                .collect()
         }
         fn default_output_device(&mut self) -> Option<String> {
-            Some("Test".into())
+            self.devices.borrow().first().cloned()
         }
-        fn open_output(&mut self, _: Option<&str>) -> Result<(EngineHandle, String), String> {
-            let (handle, engine) = daw388_engine::create(48_000);
-            self.engines.push(engine);
-            Ok((handle, "Test".into()))
+        fn open_output(&mut self, request: &OutputRequest) -> Result<(EngineHandle, OutputInfo), String> {
+            self.opened.borrow_mut().push(request.clone());
+            self.lost.set(false);
+            let devices = self.devices.borrow();
+            let name = match &request.device {
+                Some(name) if devices.contains(name) => name.clone(),
+                Some(name) => return Err(format!("{name} niet gevonden")),
+                None => devices.first().cloned().ok_or("geen uitvoerapparaat gevonden")?,
+            };
+            let rate = request.sample_rate.unwrap_or(48_000);
+            let (handle, engine) = daw388_engine::create(rate);
+            self.engines.borrow_mut().push(engine);
+            Ok((handle, OutputInfo { device: name, sample_rate: rate, buffer_frames: request.buffer_frames }))
+        }
+        fn open_silent(&mut self, sample_rate: u32) -> EngineHandle {
+            let (handle, engine) = daw388_engine::create(sample_rate);
+            self.engines.borrow_mut().push(engine);
+            handle
+        }
+        fn output_lost(&mut self) -> bool {
+            self.lost.get()
+        }
+        fn preferences_path(&self) -> Option<PathBuf> {
+            None
         }
         fn pick_audio_files(&mut self, _: bool) -> Vec<PathBuf> {
             Vec::new()
@@ -1351,6 +1604,63 @@ mod tests {
             // Run at once, so the tests only need to poll.
             job();
         }
+    }
+
+    /// Let the engine that feeds the current output process one block.
+    fn render_latest(engines: &std::cell::RefCell<Vec<daw388_engine::Engine>>) {
+        if let Some(engine) = engines.borrow_mut().last_mut() {
+            let mut out = vec![0.0; 2 * 64];
+            engine.render(&mut out, 2);
+        }
+    }
+
+    #[test]
+    fn a_missing_chosen_device_falls_back_and_comes_back() {
+        let ctx = egui::Context::default();
+        let platform = FakePlatform::new(None);
+        let (devices, lost) = (std::rc::Rc::clone(&platform.devices), std::rc::Rc::clone(&platform.lost));
+        let engines = std::rc::Rc::clone(&platform.engines);
+        devices.borrow_mut().push("Scarlett".into());
+        let mut app = DawApp::new(&ctx, Box::new(platform));
+        app.set_output(Preferences { output_device: Some("Scarlett".into()), sample_rate: Some(44_100), buffer_frames: Some(128) });
+        assert_eq!(app.output.as_ref().map(|o| o.device.as_str()), Some("Scarlett"));
+        assert_eq!(app.engine_rate(), 44_100);
+
+        // Pulled out while playing: straight to the default device, at the same place.
+        app.play();
+        render_latest(&engines);
+        assert!(app.engine.as_ref().is_some_and(EngineHandle::is_playing));
+        devices.borrow_mut().retain(|d| d != "Scarlett");
+        lost.set(true);
+        app.watch_output();
+        render_latest(&engines);
+        assert!(app.engine.as_ref().is_some_and(EngineHandle::is_playing), "it keeps playing on the new device");
+        assert_eq!(app.output.as_ref().map(|o| o.device.as_str()), Some("Ingebouwd"));
+        assert!(app.status.contains("weggevallen") && app.status.contains("nu via Ingebouwd"), "{}", app.status);
+        assert!(app.on_fallback());
+
+        // Plugged back in: the next check returns to it.
+        devices.borrow_mut().push("Scarlett".into());
+        app.now += DEVICE_CHECK_EVERY + 0.1;
+        app.watch_output();
+        assert_eq!(app.output.as_ref().map(|o| o.device.as_str()), Some("Scarlett"));
+        assert!(!app.on_fallback());
+    }
+
+    #[test]
+    fn without_any_device_the_silent_clock_runs_until_one_appears() {
+        let ctx = egui::Context::default();
+        let platform = FakePlatform::new(None);
+        let devices = std::rc::Rc::clone(&platform.devices);
+        devices.borrow_mut().clear();
+        let mut app = DawApp::new(&ctx, Box::new(platform));
+        assert!(app.output.is_none());
+        assert!(app.engine.is_some(), "the transport still has an engine");
+        assert!(app.status.contains("zonder geluid"), "{}", app.status);
+        devices.borrow_mut().push("Ingebouwd".into());
+        app.now += DEVICE_CHECK_EVERY + 0.1;
+        app.watch_output();
+        assert_eq!(app.output.as_ref().map(|o| o.device.as_str()), Some("Ingebouwd"));
     }
 
     fn write_wav(path: &Path) {
@@ -1373,8 +1683,7 @@ mod tests {
         let dir = root.path().join("Demo");
 
         let ctx = egui::Context::default();
-        let platform = FakePlatform { save_location: Some(dir.clone()), engines: Vec::new() };
-        let mut app = DawApp::new(&ctx, Box::new(platform));
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(dir.clone()))));
         app.load_paths(vec![kick, bass]);
         app.poll_loads();
         assert!(app.dirty);
@@ -1412,7 +1721,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let dir = root.path().join("Demo");
         let ctx = egui::Context::default();
-        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: Some(dir.clone()), engines: Vec::new() }));
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(dir.clone()))));
         app.load_paths(vec![kick]);
         app.poll_loads();
         assert!(app.save(Backup::Always));
@@ -1434,7 +1743,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let dir = root.path().join("Demo");
         let ctx = egui::Context::default();
-        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: Some(dir.clone()), engines: Vec::new() }));
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(dir.clone()))));
         app.zero_seconds = 2.0;
         app.cue_seconds = Some(12.5);
         app.repeat_mode = RepeatMode::Cycle;
@@ -1458,7 +1767,7 @@ mod tests {
     #[test]
     fn transport_keys_switch_repeat_off_in_388_mode_only() {
         let ctx = egui::Context::default();
-        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: None, engines: Vec::new() }));
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
         app.set_repeat(true);
         app.play();
         app.rtz();
@@ -1478,7 +1787,7 @@ mod tests {
         let kick = files.path().join("kick.wav");
         write_wav(&kick);
         let ctx = egui::Context::default();
-        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: None, engines: Vec::new() }));
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
         // The fake platform loads at once; the result waits until polled.
         app.load_paths(vec![kick]);
         assert!(app.is_loading());
@@ -1491,7 +1800,7 @@ mod tests {
     #[test]
     fn unsaved_changes_ask_before_new() {
         let ctx = egui::Context::default();
-        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: None, engines: Vec::new() }));
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
         app.request(Pending::New);
         assert!(app.pending.is_none(), "nothing to lose, so no question");
         app.mark_dirty();
@@ -1506,7 +1815,7 @@ mod tests {
         write_wav(&kick);
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let ctx = egui::Context::default();
-        let mut app = DawApp::new(&ctx, Box::new(FakePlatform { save_location: Some(root.path().join("Demo")), engines: Vec::new() }));
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(root.path().join("Demo")))));
         app.load_paths(vec![kick]);
         app.poll_loads();
         app.request(Pending::Quit);

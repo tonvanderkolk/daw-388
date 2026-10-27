@@ -4,6 +4,7 @@
 //! project folder (see [`session`]). Export follows in phase 7 (see ROADMAP.md).
 
 mod aiff;
+pub mod preferences;
 pub mod session;
 
 pub use session::{Backup, OpenedProject, ProjectError, ProjectSettings, RepeatMode, Saved, TrackToSave, TransportSettings};
