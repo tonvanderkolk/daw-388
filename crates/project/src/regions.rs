@@ -40,7 +40,8 @@ impl Region {
         long_enough(to - from).then(|| Region { start: from, offset: self.offset + (from - self.start), length: to - from, ..self.clone() })
     }
 
-    fn shifted(&self, by: f64) -> Region {
+    /// The same region `by` seconds later on the tape.
+    pub fn shifted(&self, by: f64) -> Region {
         Region { start: self.start + by, ..self.clone() }
     }
 }
@@ -114,6 +115,15 @@ pub fn split(track: &[Region], at: f64) -> Vec<Region> {
             _ => out.push(region.clone()),
         }
     }
+    out
+}
+
+/// Split only the region at `index` at `at`; elsewhere, or on an edge, nothing changes.
+pub fn split_at(track: &[Region], index: usize, at: f64) -> Vec<Region> {
+    let Some(region) = track.get(index) else { return track.to_vec() };
+    let (Some(first), Some(second)) = (region.slice(region.start, at), region.slice(at, region.end())) else { return track.to_vec() };
+    let mut out = track.to_vec();
+    out.splice(index..=index, [first, second]);
     out
 }
 
@@ -295,6 +305,13 @@ mod tests {
         for at in [0.0, 10.0, 0.0005] {
             assert_eq!(split(&whole, at), whole.to_vec(), "split at {at}");
         }
+    }
+
+    #[test]
+    fn split_at_splits_only_that_region() {
+        let track = [r(1, 0.0, 0.0, 4.0), r(2, 4.0, 0.0, 4.0)];
+        assert_eq!(shape(&split_at(&track, 1, 6.0)), vec![(1, 0, 0, 4 * S), (2, 4 * S, 0, 2 * S), (2, 6 * S, 2 * S, 2 * S)]);
+        assert_eq!(split_at(&track, 0, 6.0), track.to_vec(), "6 s is not in region 0");
     }
 
     #[test]

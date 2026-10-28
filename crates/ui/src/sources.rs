@@ -1,6 +1,7 @@
 //! The project's sources: every audio file the regions play, decoded once and shared.
 
 use daw388_project::MonoClip;
+use daw388_project::peaks::Peaks;
 use daw388_project::regions::SourceId;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,8 @@ pub(crate) struct Source {
     pub at_rate: Option<(u32, Arc<Vec<f32>>)>,
     /// Identifies the latest decode or resample, so a late result is ignored.
     pub generation: u64,
+    /// The waveform overview, for drawing.
+    pub peaks: Option<Arc<Peaks>>,
 }
 
 #[derive(Default)]
@@ -40,7 +43,7 @@ impl Sources {
     pub fn add(&mut self, path: PathBuf, state: SourceState) -> SourceId {
         let id = self.next;
         self.next += 1;
-        self.map.insert(id, Source { path, state, clip: None, at_rate: None, generation: 0 });
+        self.map.insert(id, Source { path, state, clip: None, at_rate: None, generation: 0, peaks: None });
         id
     }
 

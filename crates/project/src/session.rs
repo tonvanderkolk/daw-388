@@ -44,7 +44,30 @@ pub struct ProjectFile {
     #[serde(default)]
     pub tape: TapeSettings,
     #[serde(default)]
+    pub editor: EditorSettings,
+    #[serde(default)]
     pub tracks: Vec<TrackEntry>,
+}
+
+/// The drawer with the tracks, saved with the project (optional in format 3; missing: closed,
+/// 320 pixels high, the whole song in view, RASTER on).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditorSettings {
+    pub open: bool,
+    /// Height in pixels, the toolbar and the grip included.
+    pub height: f32,
+    /// Pixels per second; `None` shows the whole song.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<f64>,
+    /// RASTER: snap to the metronome's beats.
+    pub snap: bool,
+}
+
+impl Default for EditorSettings {
+    fn default() -> Self {
+        Self { open: false, height: 320.0, zoom: None, snap: true }
+    }
 }
 
 /// One track in `project.json`.
@@ -446,6 +469,7 @@ pub struct ProjectSettings {
     pub metronome: MetronomeSettings,
     pub mixer: MixerEntry,
     pub tape: TapeSettings,
+    pub editor: EditorSettings,
 }
 
 /// What the UI hands over for one track when saving.
@@ -657,6 +681,7 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
         metronome: settings.metronome,
         mixer: settings.mixer,
         tape: settings.tape,
+        editor: settings.editor,
         tracks: entries,
     };
     let path = dir.join(PROJECT_FILE);
@@ -841,6 +866,7 @@ mod tests {
                     auto_punch: true,
                 },
                 metronome: MetronomeSettings { click: true, always: true, bpm: 96.5, beats: 6, unit: 8, volume_db: -12.0, count_in: 2 },
+                editor: EditorSettings { open: true, height: 400.0, zoom: Some(80.0), snap: false },
                 tape: TapeSettings {
                     mode: TapeMode::Machine,
                     speed: SpeedEntry::Ips15,
@@ -947,6 +973,7 @@ mod tests {
                 },
             }
         );
+        assert_eq!(opened.file.editor, EditorSettings { open: true, height: 400.0, zoom: Some(80.0), snap: false });
         assert_eq!(opened.file.version, FORMAT_VERSION, "a format 3 file is not upgraded again");
         assert!(crate::load_wav(&opened.region_path(&opened.file.tracks[0].regions[0])).is_ok());
         assert_eq!(project_name(&dir), "Mijn liedje");
@@ -1030,6 +1057,7 @@ mod tests {
                 vec![RegionEntry { file: "audio/01_Kick.wav".into(), start: 0.0, offset: 0.0, length: None, name: "01_Kick".into() }]
             );
             assert!(opened.warnings.is_empty());
+            assert_eq!(opened.file.editor, EditorSettings::default(), "no editor block: the default");
         }
     }
 

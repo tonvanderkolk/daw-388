@@ -7,6 +7,18 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.18.0] - 2026-10-28
+
+### Toegevoegd
+- De la met de sporen: klik op de leren armsteun onder de mixer om hem uit of in te schuiven, sleep de armsteun voor de hoogte. Per spoor de regio's met hun golfvorm, een tijdlijnbalk met maten of minuten en de afspeelpositie; tijdens het afspelen bladert de la mee.
+- Regio's selecteren (Shift voor meer), verschuiven (ook naar een ander spoor), aan een rand inkorten of terugtrekken tot het einde van de opname, splitsen op de afspeelpositie (S), knippen, kopiëren, plakken en wissen.
+- Een tijdvak over alle sporen slepen in de tijdlijnbalk: knippen is een splice (de rest schuift aan), plakken voegt in.
+- RASTER: vastklikken op de tellen van de metronoom en op randen, nulpunt, CUE-punt en afspeelpositie; Alt ingedrukt is tijdelijk vrij.
+- Zoomen met Cmd en scrollen of met −, PAST en +; scrollen schuift door de tijd.
+- Bestanden uit de Finder in de la slepen: ze komen op het laatst aangeklikte spoor (en de sporen erna) vanaf de afspeelpositie, samen één undo-stap.
+- Dubbelklik op de naam van een spoor in de la om hem te wijzigen.
+- De stand van de la (open, hoogte, zoom en RASTER) wordt per project bewaard.
+
 ## [0.17.0] - 2026-10-28
 
 ### Toegevoegd

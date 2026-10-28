@@ -113,7 +113,8 @@ fn main() -> eframe::Result {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("DAW 388")
             .with_inner_size([1680.0, 950.0])
-            .with_min_inner_size([720.0, 480.0]),
+            .with_min_inner_size([720.0, 480.0])
+            .with_drag_and_drop(true),
         ..Default::default()
     };
     // A project folder or project.json on the command line opens it; audio files go onto tracks 1 to 8.

@@ -19,6 +19,8 @@ pub(crate) struct TrackContent {
 pub(crate) struct Step {
     pub name: String,
     pub tracks: Vec<(usize, TrackContent)>,
+    /// Steps of one group, such as files dropped together, are one step.
+    group: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -30,25 +32,45 @@ pub(crate) struct History {
 impl History {
     /// Remember a change; `tracks` holds the touched tracks as they were before it.
     pub fn push(&mut self, name: impl Into<String>, tracks: Vec<(usize, TrackContent)>) {
-        self.undo.push(Step { name: name.into(), tracks });
+        self.undo.push(Step { name: name.into(), tracks, group: None });
         if self.undo.len() > STEPS {
             self.undo.remove(0);
         }
         self.redo.clear();
     }
 
+    /// Like [`Self::push`], but a change in the same `group` as the last step joins that step
+    /// (files dropped together arrive one by one, and are still one step).
+    pub fn push_grouped(&mut self, name: impl Into<String>, group: u64, tracks: Vec<(usize, TrackContent)>) {
+        if let Some(last) = self.undo.last_mut().filter(|s| s.group == Some(group)) {
+            for (track, content) in tracks {
+                if !last.tracks.iter().any(|(t, _)| *t == track) {
+                    last.tracks.push((track, content));
+                }
+            }
+            self.redo.clear();
+            return;
+        }
+        self.push(name, tracks);
+        if let Some(last) = self.undo.last_mut() {
+            last.group = Some(group);
+        }
+    }
+
     /// Take back the last change. `current` gives a track's content now, which redo will need.
     /// Returns the step's name and what to put on the tracks.
     pub fn undo(&mut self, current: impl Fn(usize) -> TrackContent) -> Option<Step> {
         let step = self.undo.pop()?;
-        self.redo.push(Step { name: step.name.clone(), tracks: step.tracks.iter().map(|(t, _)| (*t, current(*t))).collect() });
+        let tracks = step.tracks.iter().map(|(t, _)| (*t, current(*t))).collect();
+        self.redo.push(Step { name: step.name.clone(), tracks, group: step.group });
         Some(step)
     }
 
     /// Do the last undone change again.
     pub fn redo(&mut self, current: impl Fn(usize) -> TrackContent) -> Option<Step> {
         let step = self.redo.pop()?;
-        self.undo.push(Step { name: step.name.clone(), tracks: step.tracks.iter().map(|(t, _)| (*t, current(*t))).collect() });
+        let tracks = step.tracks.iter().map(|(t, _)| (*t, current(*t))).collect();
+        self.undo.push(Step { name: step.name.clone(), tracks, group: step.group });
         Some(step)
     }
 
@@ -63,7 +85,6 @@ impl History {
     }
 
     /// How many steps can be undone now.
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.undo.len()
     }
@@ -152,6 +173,20 @@ mod tests {
         let _ = history.undo(|_| TrackContent::default());
         history.push("Importeren", vec![(0, TrackContent::default())]);
         assert_eq!(history.redo_name(), None);
+    }
+
+    #[test]
+    fn a_group_is_one_step() {
+        let (a, b, c) = (content(1, 1.0), content(2, 1.0), content(3, 1.0));
+        let mut history = History::default();
+        history.push_grouped("Importeren", 7, vec![(0, a.clone())]);
+        history.push_grouped("Importeren", 7, vec![(1, b.clone()), (0, c)]);
+        assert_eq!(history.len(), 1);
+        history.push_grouped("Importeren", 8, vec![(2, b.clone())]);
+        assert_eq!(history.len(), 2);
+        let _ = history.undo(|_| TrackContent::default());
+        let step = history.undo(|_| TrackContent::default()).unwrap_or_else(|| panic!("a step"));
+        assert_eq!(step.tracks, vec![(0, a), (1, b)]);
     }
 
     #[test]

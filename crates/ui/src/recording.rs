@@ -3,6 +3,7 @@
 
 use daw388_engine::{RecItem, Recorder, TRACKS};
 use daw388_project::MonoClip;
+use daw388_project::peaks::Peaks;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -123,6 +124,8 @@ pub struct StoredTake {
     pub clip: Arc<MonoClip>,
     /// The take at the engine's rate.
     pub at_rate: Arc<Vec<f32>>,
+    /// The waveform overview, for drawing.
+    pub peaks: Arc<Peaks>,
     pub engine_rate: u32,
 }
 
@@ -141,7 +144,8 @@ pub fn store_take(take: &TakeDone, dest: &Path, engine_rate: u32) -> Result<Stor
     let name = dest.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let clip = MonoClip { name, sample_rate: take.rate, samples };
     let at_rate = Arc::new(clip.at_rate(engine_rate));
-    Ok(StoredTake { path: dest.to_path_buf(), clip: Arc::new(clip), at_rate, engine_rate })
+    let peaks = Arc::new(Peaks::of(&clip.samples, clip.sample_rate));
+    Ok(StoredTake { path: dest.to_path_buf(), clip: Arc::new(clip), at_rate, peaks, engine_rate })
 }
 
 #[cfg(test)]

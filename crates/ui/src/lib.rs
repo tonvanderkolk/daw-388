@@ -2,10 +2,13 @@
 //! through the [`Platform`] trait, so the same UI can later run in the browser.
 
 mod content;
+mod drawer;
+mod edit;
 mod export;
 mod history;
 mod recording;
 mod sources;
+mod timeline;
 
 use daw388_engine::{
     ChannelParams, Command, EQ_DEFAULTS, EchoParams, EchoSync, EngineHandle, EqBand, Listen, Meter, MixerParams, MonitorMode,
@@ -13,13 +16,14 @@ use daw388_engine::{
     TransportStyle,
 };
 use daw388_project::export::{BitDepth, ExportFormat};
+use daw388_project::peaks::Peaks;
 use daw388_project::preferences::{self, Preferences};
-use daw388_project::regions::{Region, SourceId, Unresolved, track_end};
+use daw388_project::regions::{Clipboard, Region, SourceId, Unresolved, track_end};
 use daw388_project::session::{self, PROJECT_FILE};
 use daw388_project::{
-    Backup, BandEntry, ChannelEntry, ChannelSource, EchoSyncEntry, EqEntry, KindEntry, ListenSwitch, MeterSwitch, MetronomeSettings,
-    MixerEntry, MonSwitch, MonitorEntry, MonoClip, ProjectSettings, RegionToSave, RepeatMode, Routing, SpeedEntry, TapeMode, TapeSettings,
-    TrackToSave, TransportSettings,
+    Backup, BandEntry, ChannelEntry, ChannelSource, EchoSyncEntry, EditorSettings, EqEntry, KindEntry, ListenSwitch, MeterSwitch,
+    MetronomeSettings, MixerEntry, MonSwitch, MonitorEntry, MonoClip, ProjectSettings, RegionToSave, RepeatMode, Routing, SpeedEntry,
+    TapeMode, TapeSettings, TrackToSave, TransportSettings,
 };
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 use export::{ExportJob, ExportTrack, Progress, StemKind};
@@ -102,6 +106,8 @@ struct PendingImport {
     source: SourceId,
     track: usize,
     start: f64,
+    /// Files dropped together share a group: one undo step.
+    group: Option<u64>,
 }
 
 /// Buffer sizes offered in the settings, when the device allows them.
@@ -146,9 +152,41 @@ pub trait Platform {
 struct LoadResult {
     source: SourceId,
     generation: u64,
-    /// The file at its own rate and at `rate`.
-    outcome: Result<(Arc<MonoClip>, Arc<Vec<f32>>), String>,
+    outcome: Result<Loaded, String>,
+    /// The rate of `Loaded::at_rate`.
     rate: u32,
+}
+
+/// A source as loaded in the background.
+struct Loaded {
+    clip: Arc<MonoClip>,
+    /// The samples at the engine's rate.
+    at_rate: Arc<Vec<f32>>,
+    /// The overview for drawing; a resample keeps the one it has.
+    peaks: Option<Arc<Peaks>>,
+}
+
+/// The drawer: what is saved with the project, and what is not.
+#[derive(Default)]
+struct EditorState {
+    settings: EditorSettings,
+    /// The time at the left edge of the lanes, in seconds.
+    scroll: f64,
+    /// Selected regions as (track, index).
+    selection: Vec<(usize, usize)>,
+    /// A stretch over all tracks, from and to in seconds.
+    range: Option<(f64, f64)>,
+    clipboard: Option<Clipboard>,
+    /// What the mouse is doing.
+    drag: Option<drawer::Drag>,
+    /// The track whose name is being edited, the text so far, and whether to ask for focus.
+    renaming: Option<(usize, String, bool)>,
+    /// The track dropped files go to: the one clicked last.
+    target: usize,
+    /// The zoom drawn last, for − and + while the whole song is shown.
+    shown_zoom: f64,
+    /// The group of the last drop and its note about files that found no track.
+    drop_note: Option<(u64, String)>,
 }
 
 fn style_of(mode: RepeatMode) -> TransportStyle {
@@ -187,6 +225,14 @@ mod palette {
     pub const GREEN: Color32 = Color32::from_rgb(0x9f, 0xd3, 0x9a);
     pub const BLUE: Color32 = Color32::from_rgb(0x7f, 0xa8, 0xcc);
     pub const KEY: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9c);
+    pub const LEATHER: Color32 = Color32::from_rgb(0x4b, 0x23, 0x1d);
+    pub const LEATHER_EDGE: Color32 = Color32::from_rgb(0x2a, 0x12, 0x0f);
+    pub const LANE: Color32 = Color32::from_rgb(0x2b, 0x2b, 0x2d);
+    pub const LANE_ALT: Color32 = Color32::from_rgb(0x29, 0x29, 0x2b);
+    pub const REGION: Color32 = Color32::from_rgb(0xe9, 0xdf, 0xc8);
+    pub const REGION_PICKED: Color32 = Color32::from_rgb(0xf6, 0xee, 0xdb);
+    pub const REGION_INK: Color32 = Color32::from_rgb(0x1b, 0x17, 0x16);
+    pub const RANGE: Color32 = Color32::from_rgba_premultiplied(0x38, 0x14, 0x0d, 0x38);
 }
 
 /// The pitch control's range in percent (plus or minus).
@@ -318,6 +364,7 @@ pub struct DawApp {
     queued_takes: [VecDeque<TakeDone>; TRACKS],
     composing: [bool; TRACKS],
     history: History,
+    editor: EditorState,
     metronome: MetronomeSettings,
     /// Times of the last TAP presses, for tap tempo.
     taps: Vec<f64>,
@@ -597,6 +644,7 @@ impl DawApp {
             queued_takes: Default::default(),
             composing: [false; TRACKS],
             history: History::default(),
+            editor: EditorState::default(),
             metronome: MetronomeSettings::default(),
             taps: Vec::new(),
         };
@@ -798,6 +846,7 @@ impl DawApp {
         self.metronome = MetronomeSettings::default();
         self.tape = new_tape();
         self.history.clear();
+        self.editor = EditorState::default();
         // Loads still running belong to sources that no longer exist, and are dropped.
         self.sources.clear();
         self.pending_imports.clear();
@@ -889,6 +938,10 @@ impl DawApp {
             *amount = amount.clamp(0.0, 2.0);
         }
         self.tape = tape;
+        let mut editor = opened.file.editor;
+        editor.height = editor.height.clamp(160.0, 2000.0);
+        editor.zoom = editor.zoom.map(|z| z.clamp(timeline::ZOOM_MIN, timeline::ZOOM_MAX));
+        self.editor.settings = editor;
         self.send_mix();
         self.send_transport();
         self.project_dir = Some(opened.dir);
@@ -1004,6 +1057,7 @@ impl DawApp {
             metronome: self.metronome,
             mixer: self.mixer,
             tape: self.tape,
+            editor: self.editor.settings,
         };
         match session::save(&dir, &settings, &tracks, backup) {
             Ok(saved) => {
@@ -3067,6 +3121,7 @@ impl DawApp {
         self.handle_file_shortcuts(ui);
         if self.pending.is_none() {
             self.handle_keys(ui);
+            self.handle_drawer_keys(ui);
         }
         self.autosave();
         self.handle_close(ui);
@@ -3075,6 +3130,14 @@ impl DawApp {
         egui::Panel::top("header")
             .frame(Frame::new().fill(Color32::from_rgb(0x12, 0x10, 0x11)).inner_margin(Margin::symmetric(16, 8)))
             .show(ui, |ui| self.header(ui));
+        // The drawer slides out of the armrest under the mixer, over the bottom of the mixer
+        // (which scrolls, as before).
+        let height = if self.editor.settings.open { self.editor.settings.height } else { drawer::ARMREST };
+        egui::Panel::bottom("drawer")
+            .resizable(false) // the armrest is the grip; the panel's own handle would take its top pixels
+            .exact_size(height)
+            .frame(Frame::new().fill(palette::LEATHER))
+            .show(ui, |ui| self.drawer(ui));
         egui::CentralPanel::default().frame(Frame::new().fill(palette::BACKGROUND).inner_margin(Margin::same(16))).show(ui, |ui| {
             Frame::new().fill(palette::WOOD).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(18, 18)).show(ui, |ui| {
                 Frame::new()
@@ -3854,6 +3917,208 @@ mod tests {
         app.set_output(Preferences { sample_rate: Some(44_100), ..Preferences::default() });
         settle(&mut app);
         assert_eq!(app.tracks[0].rendered, Some((44_100, 44_100)));
+    }
+
+    #[test]
+    fn a_loaded_source_has_peaks_and_keeps_them_on_a_resample() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let kick = files.path().join("kick.wav");
+        write_wav_of(&kick, 1.0, 0.25);
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.load_paths(vec![kick]);
+        settle(&mut app);
+        let id = app.tracks[0].regions[0].source;
+        let peaks = app.sources.get(id).and_then(|s| s.peaks.clone()).unwrap_or_else(|| panic!("no peaks"));
+        assert_eq!(peaks.blocks.len(), 48_000usize.div_ceil(256));
+        app.set_output(Preferences { sample_rate: Some(44_100), ..Preferences::default() });
+        settle(&mut app);
+        assert!(app.sources.get(id).and_then(|s| s.peaks.as_ref()).is_some_and(|p| Arc::ptr_eq(p, &peaks)));
+    }
+
+    #[test]
+    fn the_length_of_a_missing_source_is_what_its_regions_reach() {
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("Weg");
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+        let json = r#"{"format":"daw388-project","version":3,"app_version":"0.17.0","tracks":[{"number":1,"regions":[
+            {"file":"audio/weg.wav","start":0.0,"offset":0.5,"length":1.0,"name":"a"},
+            {"file":"audio/weg.wav","start":2.0,"offset":1.5,"length":1.0,"name":"b"}]}]}"#;
+        std::fs::write(dir.join(PROJECT_FILE), json).unwrap_or_else(|e| panic!("{e}"));
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.open_project(&dir);
+        settle(&mut app);
+        let id = app.tracks[0].regions[0].source;
+        assert_eq!(app.source_length(id), 2.5);
+    }
+
+    /// An app with a 1 s file on each of the first `tracks` tracks.
+    fn app_with_tracks(files: &Path, tracks: usize) -> (DawApp, std::rc::Rc<std::cell::RefCell<Vec<daw388_engine::Engine>>>) {
+        let platform = FakePlatform::new(None);
+        let engines = std::rc::Rc::clone(&platform.engines);
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(platform));
+        let paths: Vec<PathBuf> = (0..tracks)
+            .map(|t| {
+                let path = files.join(format!("{:02}_spoor.wav", t + 1));
+                write_wav_of(&path, 1.0, 0.25);
+                path
+            })
+            .collect();
+        app.load_paths(paths);
+        settle(&mut app);
+        (app, engines)
+    }
+
+    /// Put the tape at `seconds` (48 kHz).
+    fn locate(app: &mut DawApp, engines: &std::cell::RefCell<Vec<daw388_engine::Engine>>, seconds: f64) {
+        app.engine_send(Command::Locate(seconds * 48_000.0));
+        render_latest(engines);
+    }
+
+    #[test]
+    fn split_selected_or_everything_at_the_playhead() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, engines) = app_with_tracks(files.path(), 2);
+        locate(&mut app, &engines, 0.5);
+        app.split();
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 500), (500, 500, 500)]);
+        assert_eq!(regions_ms(&app, 1).len(), 2);
+        assert_eq!(app.history.undo_name(), Some("Splitsen"));
+        app.undo();
+        app.select_region(0, 0, false);
+        app.split();
+        assert_eq!(regions_ms(&app, 0).len(), 2);
+        assert_eq!(regions_ms(&app, 1).len(), 1, "only the selected region");
+    }
+
+    #[test]
+    fn cut_and_paste_regions() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, engines) = app_with_tracks(files.path(), 1);
+        app.select_region(0, 0, false);
+        app.cut();
+        assert!(app.tracks[0].regions.is_empty());
+        assert_eq!(app.history.undo_name(), Some("Knippen"));
+        locate(&mut app, &engines, 2.0);
+        app.paste();
+        assert_eq!(regions_ms(&app, 0), vec![(2000, 0, 1000)]);
+        assert_eq!(app.history.undo_name(), Some("Plakken"));
+        assert_eq!(app.editor.selection, vec![(0, 0)], "the pasted region is selected");
+    }
+
+    #[test]
+    fn a_splice_and_an_insert() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, engines) = app_with_tracks(files.path(), 2);
+        app.select_range(0.25, 0.5);
+        app.cut();
+        for track in 0..2 {
+            assert_eq!(regions_ms(&app, track), vec![(0, 0, 250), (250, 500, 500)]);
+        }
+        assert_eq!(app.history.undo_name(), Some("Splice"));
+        assert!(app.editor.range.is_none());
+        locate(&mut app, &engines, 0.25);
+        app.paste();
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 250), (250, 250, 250), (500, 500, 500)]);
+        assert_eq!(app.history.undo_name(), Some("Invoegen"));
+    }
+
+    #[test]
+    fn delete_a_range_leaves_a_gap() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 1);
+        app.select_range(0.5, 0.25);
+        app.delete();
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 250), (500, 500, 500)]);
+        assert_eq!(app.history.undo_name(), Some("Wissen"));
+    }
+
+    #[test]
+    fn moving_onto_a_waiting_track_is_refused() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 1);
+        app.tracks[1].unresolved =
+            Some(Unresolved { source: app.sources.add(files.path().join("weg.wav"), sources::SourceState::Missing), name: "weg".into() });
+        app.select_region(0, 0, false);
+        app.move_selection(1, 0.0);
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)]);
+        assert!(app.status.contains("wis het spoor"), "{}", app.status);
+    }
+
+    #[test]
+    fn moving_keeps_the_selection() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 1);
+        app.select_region(0, 0, false);
+        app.move_selection(2, 0.5);
+        assert!(app.tracks[0].regions.is_empty());
+        assert_eq!(regions_ms(&app, 2), vec![(500, 0, 1000)]);
+        assert_eq!(app.editor.selection, vec![(2, 0)]);
+        assert_eq!(app.history.undo_name(), Some("Verschuiven"));
+        app.move_selection(0, -5.0);
+        assert_eq!(regions_ms(&app, 2), vec![(0, 0, 1000)], "not before 0:00");
+    }
+
+    #[test]
+    fn trimming_stops_at_the_source() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 1);
+        app.trim(0, 0, timeline::Edge::End, 5.0);
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)]);
+        app.trim(0, 0, timeline::Edge::Start, 0.25);
+        assert_eq!(regions_ms(&app, 0), vec![(250, 250, 750)]);
+        assert_eq!(app.history.undo_name(), Some("Inkorten"));
+        assert_eq!(app.editor.selection, vec![(0, 0)]);
+        app.trim(0, 0, timeline::Edge::Start, 0.0);
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)], "pulled back");
+    }
+
+    #[test]
+    fn renaming_is_a_step() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 1);
+        app.rename(0, " Kick ".into());
+        assert_eq!(app.tracks[0].name, "Kick");
+        assert_eq!(app.history.undo_name(), Some("Naam"));
+        app.undo();
+        assert_eq!(app.tracks[0].name, "01_spoor");
+    }
+
+    #[test]
+    fn dropped_files_are_one_step() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        let mut paths: Vec<PathBuf> = (0..3)
+            .map(|n| {
+                let path = files.path().join(format!("{n}.wav"));
+                write_wav_of(&path, 0.5, 0.25);
+                path
+            })
+            .collect();
+        let text = files.path().join("notities.txt");
+        std::fs::write(&text, "geen audio").unwrap_or_else(|e| panic!("{e}"));
+        paths.push(text);
+        app.drop_files(6, 1.0, paths);
+        settle(&mut app);
+        assert_eq!(regions_ms(&app, 6), vec![(1000, 0, 500)]);
+        assert_eq!(regions_ms(&app, 7), vec![(1000, 0, 500)]);
+        assert!(app.status.contains("2 bestand(en) niet geplaatst"), "{}", app.status);
+        assert_eq!(app.history.len(), 1);
+        app.undo();
+        assert!(app.tracks[6].regions.is_empty() && app.tracks[7].regions.is_empty());
+    }
+
+    #[test]
+    fn undo_clears_the_selection() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 2);
+        app.clear_track(1);
+        app.select_region(0, 0, false);
+        app.undo();
+        assert!(app.editor.selection.is_empty());
     }
 
     #[test]

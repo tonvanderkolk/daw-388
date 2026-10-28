@@ -36,7 +36,7 @@
 - [ ] Signaalroute controleren met het blokschema uit de handleiding
 
 ## Fase 5: Bewerken
-- [ ] Niet-destructieve regio's: verschuiven, knippen, kopiëren, plakken, splitsen (model en opnames als regio in 0.17.0; bewerken in 0.18.0)
+- [x] Niet-destructieve regio's: verschuiven, knippen, kopiëren, plakken, splitsen (0.17.0 en 0.18.0)
 - [x] Undo (maximaal 10 stappen) (0.17.0, met redo)
 - [ ] Ping-pong bounce naar een vrij spoor (kan via de bussen sinds 0.8.0)
 
@@ -54,7 +54,7 @@
 
 ## Fase 8: Vintage UI-skin volgens A2
 - [ ] Meterbrug met VU-meters, bandrecorder met spoelen, houten omlijsting
-- [ ] Bewerkingspaneel met 8 sporen en tijdlijn
+- [x] Bewerkingspaneel met 8 sporen en tijdlijn (0.18.0; de vintage vormgeving volgt)
 - [ ] Vensters voor tape-instellingen en export
 
 ## Fase 9: Browserversie (WASM)

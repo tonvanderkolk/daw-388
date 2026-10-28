@@ -14,7 +14,7 @@ fn stem(path: &Path) -> String {
 }
 
 impl DawApp {
-    fn next_generation(&mut self) -> u64 {
+    pub(crate) fn next_generation(&mut self) -> u64 {
         let generation = self.next_generation;
         self.next_generation += 1;
         generation
@@ -28,6 +28,11 @@ impl DawApp {
 
     /// Put `content` on a track (no undo step) and render it.
     fn set_content(&mut self, track: usize, content: TrackContent) {
+        if content != self.content(track) {
+            // Indices change: the selection and a drag no longer mean anything.
+            self.editor.selection.clear();
+            self.editor.drag = None;
+        }
         let t = &mut self.tracks[track];
         t.regions = content.regions;
         t.unresolved = content.unresolved;
@@ -37,10 +42,20 @@ impl DawApp {
 
     /// An undoable change to what is on `tracks`: `edit` changes them, the step keeps them as
     /// they were.
-    fn change(&mut self, name: &str, tracks: &[usize], edit: impl FnOnce(&mut Self)) {
+    pub(crate) fn change(&mut self, name: &str, tracks: &[usize], edit: impl FnOnce(&mut Self)) {
+        self.change_in(name, None, tracks, edit);
+    }
+
+    /// Like [`Self::change`], joining the last step when it has the same `group`.
+    fn change_in(&mut self, name: &str, group: Option<u64>, tracks: &[usize], edit: impl FnOnce(&mut Self)) {
         let before = tracks.iter().map(|&t| (t, self.content(t))).collect();
         edit(self);
-        self.history.push(name, before);
+        self.editor.selection.clear();
+        self.editor.drag = None;
+        match group {
+            Some(group) => self.history.push_grouped(name, group, before),
+            None => self.history.push(name, before),
+        }
         for &track in tracks {
             self.request_render(track);
         }
@@ -56,7 +71,7 @@ impl DawApp {
         ids
     }
 
-    fn source_is(&self, id: SourceId, state: SourceState) -> bool {
+    pub(crate) fn source_is(&self, id: SourceId, state: SourceState) -> bool {
         self.sources.get(id).is_some_and(|s| s.state == state)
     }
 
@@ -111,7 +126,8 @@ impl DawApp {
             let outcome = daw388_project::load_audio(&path)
                 .map(|clip| {
                     let at_rate = Arc::new(clip.at_rate(rate));
-                    (Arc::new(clip), at_rate)
+                    let peaks = Some(Arc::new(Peaks::of(&clip.samples, clip.sample_rate)));
+                    Loaded { clip: Arc::new(clip), at_rate, peaks }
                 })
                 .map_err(|e| e.to_string());
             let _ = tx.send(LoadResult { source: id, generation, outcome, rate });
@@ -128,7 +144,7 @@ impl DawApp {
         source.generation = generation;
         self.platform.spawn(Box::new(move || {
             let at_rate = Arc::new(clip.at_rate(rate));
-            let _ = tx.send(LoadResult { source: id, generation, outcome: Ok((clip, at_rate)), rate });
+            let _ = tx.send(LoadResult { source: id, generation, outcome: Ok(Loaded { clip, at_rate, peaks: None }), rate });
             ctx.request_repaint();
         }));
     }
@@ -151,19 +167,22 @@ impl DawApp {
                 continue;
             }
             match result.outcome {
-                Ok((clip, at_rate)) => self.source_loaded(id, clip, at_rate, result.rate),
+                Ok(loaded) => self.source_loaded(id, loaded, result.rate),
                 Err(e) => self.source_failed(id, &e),
             }
         }
     }
 
-    fn source_loaded(&mut self, id: SourceId, clip: Arc<MonoClip>, at_rate: Arc<Vec<f32>>, rate: u32) {
+    fn source_loaded(&mut self, id: SourceId, loaded: Loaded, rate: u32) {
         let engine_rate = self.engine_rate();
-        let duration = clip.duration_seconds();
+        let duration = loaded.clip.duration_seconds();
         if let Some(source) = self.sources.get_mut(id) {
             source.state = SourceState::Ready;
-            source.clip = Some(clip);
-            source.at_rate = (rate == engine_rate).then_some((rate, at_rate));
+            source.clip = Some(loaded.clip);
+            source.at_rate = (rate == engine_rate).then_some((rate, loaded.at_rate));
+            if loaded.peaks.is_some() {
+                source.peaks = loaded.peaks;
+            }
         }
         if rate != engine_rate {
             // The device changed while this was loading.
@@ -261,6 +280,15 @@ impl DawApp {
         }
     }
 
+    /// How long a source is: the file's length, or for a missing file the furthest any region
+    /// reaches into it (trimming cannot go beyond what is known).
+    pub(crate) fn source_length(&self, id: SourceId) -> f64 {
+        if let Some(clip) = self.sources.get(id).and_then(|s| s.clip.as_ref()) {
+            return clip.duration_seconds();
+        }
+        self.tracks.iter().flat_map(|t| &t.regions).filter(|r| r.source == id).map(|r| r.offset + r.length).fold(0.0, f64::max)
+    }
+
     /// A track waiting for a file whose length is unknown takes nothing new; says why.
     pub(crate) fn refuse_unresolved(&mut self, index: usize) -> bool {
         let Some(unresolved) = &self.tracks[index].unresolved else { return false };
@@ -289,7 +317,7 @@ impl DawApp {
         }
         let start = self.engine.as_ref().map_or(0.0, EngineHandle::position_seconds).max(0.0);
         let source = self.source_for(path);
-        let import = PendingImport { source, track: index, start };
+        let import = PendingImport { source, track: index, start, group: None };
         if self.source_is(source, SourceState::Ready) {
             self.place_import(import);
         } else {
@@ -297,7 +325,7 @@ impl DawApp {
         }
     }
 
-    fn place_import(&mut self, import: PendingImport) {
+    pub(crate) fn place_import(&mut self, import: PendingImport) {
         let track = import.track;
         if self.refuse_unresolved(track) {
             return;
@@ -305,7 +333,7 @@ impl DawApp {
         let Some(clip) = self.sources.get(import.source).and_then(|s| s.clip.clone()) else { return };
         let region =
             Region { source: import.source, start: import.start, offset: 0.0, length: clip.duration_seconds(), name: clip.name.clone() };
-        self.change("Importeren", &[track], |app| {
+        self.change_in("Importeren", import.group, &[track], |app| {
             let t = &mut app.tracks[track];
             t.regions = place(&t.regions, region);
             if t.name.is_empty() {
@@ -313,6 +341,11 @@ impl DawApp {
             }
         });
         self.status = format!("Spoor {}: {} geplaatst op {}", track + 1, clip.name, format_counter(import.start));
+        if let Some((group, note)) = &self.editor.drop_note
+            && import.group == Some(*group)
+        {
+            self.status = format!("{}; {note}", self.status);
+        }
     }
 
     /// A track whose file has already loaded does not wait: its reference becomes a region now.
@@ -364,7 +397,7 @@ impl DawApp {
         self.pending_imports.retain(|i| i.track != index);
     }
 
-    fn recording_now(&self) -> bool {
+    pub(crate) fn recording_now(&self) -> bool {
         self.engine.as_ref().is_some_and(|e| (0..TRACKS).any(|t| e.is_recording(t)))
     }
 
@@ -454,6 +487,7 @@ impl DawApp {
         if let Some(source) = self.sources.get_mut(id) {
             source.clip = Some(stored.clip);
             source.at_rate = Some((stored.engine_rate, stored.at_rate));
+            source.peaks = Some(stored.peaks);
         }
         if stored.engine_rate != self.engine_rate() {
             self.request_source_rate(id);
