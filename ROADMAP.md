@@ -25,12 +25,13 @@
 - [ ] Opnemen met de pitch-knop op VARI
 
 ## Fase 4: Mixer 8:8:2
-- [x] Ingangskeuze MIC / LINE / TAPE, trim (0.8.0; voorversterker-karakter volgt in 0.9.0)
-- [ ] 3-band sweepable EQ (concentrische knoppen)
-- [ ] AUX-send met PRE/POST, EFF-send post-fader
+- [x] Ingangskeuze MIC / LINE / TAPE, trim (0.8.0; voorversterker-karakter in 0.9.0)
+- [x] 3-band sweepable EQ (concentrische knoppen) (0.9.0)
+- [ ] AUX-send met PRE/POST, EFF-send post-fader (0.11.0)
 - [x] ASSIGN 1-2, 3-4, 5-6, 7-8 en L-R, busrouting (0.8.0)
 - [x] MONITOR-sectie met de omschakellogica van de 388, MON PGM/CUE, MONO (0.8.0)
-- [ ] Master-sectie: EFFECT RTN, MONITOR, AUX- en EFF-masters, STEREO MASTER
+- [x] Eenvoudige stand naast de 388-routering, met AUTO per kanaal (0.10.0)
+- [ ] Master-sectie: EFFECT RTN, MONITOR, AUX- en EFF-masters, STEREO MASTER (0.11.0)
 - [ ] Signaalroute controleren met het blokschema uit de handleiding
 
 ## Fase 5: Bewerken

@@ -4,14 +4,14 @@
 mod recording;
 
 use daw388_engine::{
-    ChannelParams, Command, EngineHandle, Meter, MixerParams, MonitorMode, MonitorParams, Motion, PITCH_RANGE, RecMode, Source, TRACKS,
-    TrackAudio, TransportStyle,
+    ChannelParams, Command, EQ_DEFAULTS, EngineHandle, EqBand, Meter, MixerParams, MonitorMode, MonitorParams, Motion, PITCH_RANGE,
+    RecMode, Source, TRACKS, TrackAudio, TransportStyle,
 };
 use daw388_project::preferences::{self, Preferences};
 use daw388_project::session::{self, PROJECT_FILE};
 use daw388_project::{
-    Backup, ChannelEntry, ChannelSource, MetronomeSettings, MixerEntry, MonSwitch, MonitorEntry, MonoClip, ProjectSettings, RepeatMode,
-    TrackToSave, TransportSettings,
+    Backup, BandEntry, ChannelEntry, ChannelSource, EqEntry, MetronomeSettings, MixerEntry, MonSwitch, MonitorEntry, MonoClip,
+    ProjectSettings, RepeatMode, Routing, TrackToSave, TransportSettings,
 };
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 use recording::{Composed, TakeDone, Underneath};
@@ -221,6 +221,8 @@ struct TrackState {
     monitor: MonitorEntry,
     /// Displayed TRK/PGM meter level in dB: what the track's MONITOR hears.
     trk_meter_db: f32,
+    /// OL stays lit until this time (`DawApp::now`).
+    ol_until: f64,
     /// What the engine plays for this track, and at which rate (a take is laid over this).
     audio: Option<(Arc<TrackAudio>, u32)>,
     /// Changes whenever the track gets other content (load, Wis, undo), but not on a resample;
@@ -271,6 +273,8 @@ pub struct DawApp {
     pitch_percent: f32,
     vari: bool,
     show_settings: bool,
+    /// The question before the 388 routing is reset for the simple mode.
+    confirm_simple: bool,
     input_devices: Vec<DeviceInfo>,
     insert: bool,
     auto_punch: bool,
@@ -308,6 +312,30 @@ fn trim_range(source: ChannelSource) -> std::ops::RangeInclusive<f32> {
     }
 }
 
+/// The sweep ranges of LOW, MID and HIGH, as on the 388.
+const EQ_RANGES: [std::ops::RangeInclusive<f32>; 3] = [50.0..=1000.0, 500.0..=5000.0, 2500.0..=15000.0];
+const EQ_NAMES: [&str; 3] = ["LOW", "MID", "HIGH"];
+/// How long OL stays lit after a peak, in seconds.
+const OL_HOLD: f64 = 0.5;
+
+/// Where `freq` sits on a frequency knob's travel: logarithmic, 0 to 1.
+fn freq_fraction(freq: f32, range: &std::ops::RangeInclusive<f32>) -> f32 {
+    (freq / range.start()).ln() / (range.end() / range.start()).ln()
+}
+
+fn fraction_freq(fraction: f32, range: &std::ops::RangeInclusive<f32>) -> f32 {
+    range.start() * (range.end() / range.start()).powf(fraction.clamp(0.0, 1.0))
+}
+
+/// OL: a peak after the EQ above -3 dBFS.
+fn overload(peak: f32) -> bool {
+    peak > 0.708
+}
+
+fn bands(eq: &EqEntry) -> [&BandEntry; 3] {
+    [&eq.low, &eq.mid, &eq.high]
+}
+
 fn channel_params(track: &TrackState) -> ChannelParams {
     ChannelParams {
         source: match track.channel.source {
@@ -318,13 +346,20 @@ fn channel_params(track: &TrackState) -> ChannelParams {
         // The engine counts input channels from 0.
         input: track.input.and_then(|c| c.checked_sub(1)),
         trim: db_to_gain(track.channel.trim_db),
+        eq: bands(&track.channel.eq).map(|b| EqBand { freq: b.freq_hz, gain_db: b.gain_db }),
         fader: db_to_gain(track.fader_db),
         pan: track.pan,
         mute: track.mute,
         assign: track.channel.assign,
         lr: track.channel.lr,
         direct: track.channel.direct,
+        auto: track.channel.auto,
     }
+}
+
+/// The mix of a new project: the simple mode.
+fn new_mixer() -> MixerEntry {
+    MixerEntry { mode: Routing::Simple, ..MixerEntry::default() }
 }
 
 fn monitor_params(monitor: &MonitorEntry) -> MonitorParams {
@@ -357,7 +392,7 @@ impl DawApp {
             next_device_check: DEVICE_CHECK_EVERY,
             tracks: Default::default(),
             master_db: 0.0,
-            mixer: MixerEntry::default(),
+            mixer: new_mixer(),
             meter_post: false,
             master_meter_db: [MIN_DB; 2],
             status: String::new(),
@@ -380,6 +415,7 @@ impl DawApp {
             pitch_percent: 0.0,
             vari: false,
             show_settings: false,
+            confirm_simple: false,
             input_devices,
             insert: false,
             auto_punch: false,
@@ -397,6 +433,7 @@ impl DawApp {
             track.meter_db = MIN_DB;
             track.trk_meter_db = MIN_DB;
             track.input = default_input(index);
+            track.channel = ChannelEntry::simple(ChannelSource::Line);
         }
         app.open_output();
         app
@@ -681,6 +718,7 @@ impl DawApp {
                 generation,
                 version: generation,
                 input: default_input(index),
+                channel: ChannelEntry::simple(ChannelSource::Line),
                 ..TrackState::default()
             };
             if let Some(engine) = &mut self.engine {
@@ -688,7 +726,7 @@ impl DawApp {
             }
         }
         self.master_db = 0.0;
-        self.mixer = MixerEntry::default();
+        self.mixer = new_mixer();
         self.meter_post = false;
         self.zero_seconds = 0.0;
         self.cue_seconds = None;
@@ -913,6 +951,72 @@ impl DawApp {
         }
     }
 
+    /// Whether the mix is already as the simple mode sets it, so switching loses nothing.
+    fn routing_is_simple(&self) -> bool {
+        let channels = self.tracks.iter().all(|t| {
+            let c = &t.channel;
+            c.auto && c.direct && c.lr && c.assign == [false; 4] && c.source != ChannelSource::Rmx && t.monitor == MonitorEntry::default()
+        });
+        channels && self.mixer.odd_db == 0.0 && self.mixer.even_db == 0.0 && self.mixer.mon == MonSwitch::Cue
+    }
+
+    /// The Eenvoudig | 388 switch. To the simple mode asks first when that resets routing.
+    fn set_routing(&mut self, mode: Routing) {
+        if mode == self.mixer.mode {
+            return;
+        }
+        match mode {
+            Routing::Classic => {
+                self.mixer.mode = Routing::Classic;
+                self.mark_dirty();
+            }
+            Routing::Simple if self.routing_is_simple() => self.apply_simple(),
+            Routing::Simple => self.confirm_simple = true,
+        }
+    }
+
+    /// Every channel to the simple setting; fader, pan, mute, EQ, TRIM and input stay.
+    fn apply_simple(&mut self) {
+        self.confirm_simple = false;
+        for track in &mut self.tracks {
+            let channel = ChannelEntry::simple(track.channel.source);
+            track.channel = ChannelEntry { trim_db: track.channel.trim_db, eq: track.channel.eq, ..channel };
+            track.monitor = MonitorEntry::default();
+        }
+        self.mixer = MixerEntry { mode: Routing::Simple, mono: self.mixer.mono, ..MixerEntry::default() };
+        self.send_mix();
+        self.mark_dirty();
+    }
+
+    fn confirm_simple_dialog(&mut self, ctx: &egui::Context) {
+        if !self.confirm_simple {
+            return;
+        }
+        let mut answer = None;
+        let response = egui::Modal::new(egui::Id::unique("confirm-simple")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.label(RichText::new("Naar de eenvoudige stand?").strong().size(16.0));
+            ui.add_space(6.0);
+            ui.label(
+                "De bussen, ASSIGN en de MONITOR-instellingen gaan terug naar de eenvoudige stand. Fader, PAN, EQ, TRIM en de ingang blijven staan.",
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Doorgaan").clicked() {
+                    answer = Some(true);
+                }
+                if ui.button("Annuleren").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        if answer == Some(true) {
+            self.apply_simple();
+        } else if answer == Some(false) || response.should_close() {
+            self.confirm_simple = false;
+        }
+    }
+
     fn unsaved_dialog(&mut self, ctx: &egui::Context) {
         let Some(action) = self.pending.clone() else { return };
         let mut answer = None;
@@ -1068,7 +1172,7 @@ impl DawApp {
     fn feeds(&self, index: usize) -> bool {
         let track = &self.tracks[index];
         if track.channel.direct {
-            track.channel.source != ChannelSource::Rmx && track.input.is_some()
+            (track.channel.source != ChannelSource::Rmx || track.channel.auto) && track.input.is_some()
         } else {
             self.tracks.iter().any(|t| t.channel.assign[index / 2])
         }
@@ -1145,7 +1249,9 @@ impl DawApp {
         let armed = !self.tracks[index].armed;
         self.tracks[index].armed = armed;
         self.engine_send(Command::SetArmed(index, armed));
-        if armed && !self.feeds(index) {
+        if armed && !self.feeds(index) && self.mixer.mode == Routing::Simple {
+            self.status = format!("Spoor {} krijgt niets binnen: kies een ingang", index + 1);
+        } else if armed && !self.feeds(index) {
             self.status = format!(
                 "Spoor {} krijgt niets binnen: zet DIRECT aan met een ingang (MIC of LINE), of ASSIGN een kanaal naar bus {}",
                 index + 1,
@@ -1379,8 +1485,13 @@ impl DawApp {
         engine.collect_garbage();
         // VU-like fall of about 20 dB per second.
         let fall = 20.0 * dt;
+        let now = self.now;
         for (index, track) in self.tracks.iter_mut().enumerate() {
             let peaks = engine.take_track_peaks(index);
+            // The PRE peak lies after the EQ: where the 388's OL looks.
+            if overload(peaks.pre) {
+                track.ol_until = now + OL_HOLD;
+            }
             let peak = gain_to_db(if self.meter_post { peaks.post } else { peaks.pre });
             track.meter_db = peak.max(track.meter_db - fall);
             let trk = gain_to_db(engine.take_trk_peak(index));
@@ -1431,6 +1542,20 @@ impl DawApp {
             self.edit_menu(ui);
             let name = format!("{}{}", self.project_name(), if self.dirty { " (gewijzigd)" } else { "" });
             ui.label(RichText::new(name).color(palette::TEXT_DIM).size(13.0));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (mode, label, tip) in [
+                    (Routing::Simple, "Eenvoudig", "Eén strook per spoor: ingang, REC en fader, zoals in de meeste DAW's"),
+                    (Routing::Classic, "388", "De routering van de 388: bussen, ASSIGN, DIRECT en de MONITOR-sectie"),
+                ] {
+                    let on = self.mixer.mode == mode;
+                    let text = RichText::new(label).size(13.0).color(if on { Color32::BLACK } else { palette::TEXT });
+                    let button = egui::Button::new(text).fill(if on { palette::CREAM } else { palette::PANEL_DARK });
+                    if ui.add(button).on_hover_text(tip).clicked() {
+                        self.set_routing(mode);
+                    }
+                }
+            });
             ui.separator();
             ui.label(RichText::new("Uitvoer").color(palette::TEXT_DIM));
             if let Some(choice) = self.device_combo(ui, "output-device") {
@@ -1459,9 +1584,12 @@ impl DawApp {
         let mut changed = false;
         let recording = self.engine.as_ref().is_some_and(|e| e.is_recording(index));
         let blink = (self.now * 2.0).fract() < 0.5;
+        let now = self.now;
         let input_channels = self.output.as_ref().and_then(|o| o.input.as_ref()).map_or(0, |i| i.channels);
+        // The simple mode shows one strip per track: input, EQ, PAN, REC and fader.
+        let simple = self.mixer.mode == Routing::Simple;
         let track = &mut self.tracks[index];
-        column(ui, 88.0, |ui| {
+        column(ui, 112.0, |ui| {
             ui.label(RichText::new(format!("{}", index + 1)).strong().size(18.0).color(palette::CREAM));
             let (name, colour) = match (&track.clip, &track.source) {
                 (_, _) if track.loading => ("laden...".to_string(), palette::ORANGE),
@@ -1486,14 +1614,18 @@ impl DawApp {
                 }
             });
             ui.add_space(4.0);
-            // INPUT: MIC, LINE or RMX (the tape), the selector at the top of a 388 channel.
+            // INPUT: MIC, LINE or RMX (the tape), the selector at the top of a 388 channel. The
+            // simple mode plays the tape by itself, so it has no RMX.
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 for (source, label, tip) in [
-                    (ChannelSource::Mic, "MIC", "De ingang via de voorversterker"),
+                    (ChannelSource::Mic, "MIC", "De ingang via de voorversterker, die boven ongeveer -6 dBFS zacht verzadigt"),
                     (ChannelSource::Line, "LINE", "De ingang, schoon"),
                     (ChannelSource::Rmx, "RMX", "De weergave van dit spoor"),
                 ] {
+                    if simple && source == ChannelSource::Rmx {
+                        continue;
+                    }
                     let on = track.channel.source == source;
                     if toggle(ui, label, on, palette::CREAM).on_hover_text(tip).clicked() && !on {
                         track.channel.source = source;
@@ -1503,7 +1635,7 @@ impl DawApp {
                     }
                 }
             });
-            if track.channel.source != ChannelSource::Rmx {
+            if track.channel.source != ChannelSource::Rmx || track.channel.auto {
                 let text = |c: Option<u16>| c.map_or("geen ingang".to_string(), |c| format!("in {c}"));
                 let mut input = track.input;
                 egui::ComboBox::from_id_salt(("strip-input", index)).selected_text(text(input)).width(76.0).show_ui(ui, |ui| {
@@ -1519,12 +1651,22 @@ impl DawApp {
             }
             ui.horizontal(|ui| {
                 let trim = knob(ui, &mut track.channel.trim_db, trim_range(track.channel.source), 0.0, palette::RED, 30.0, true)
-                    .on_hover_text(format!("TRIM {:+.1} dB (dubbelklik: 0 dB)", track.channel.trim_db));
+                    .on_hover_text(if track.channel.auto {
+                        format!("TRIM {:+.1} dB: alleen voor de ingang (dubbelklik: 0 dB)", track.channel.trim_db)
+                    } else {
+                        format!("TRIM {:+.1} dB (dubbelklik: 0 dB)", track.channel.trim_db)
+                    });
                 changed |= trim.changed() || trim.double_clicked();
-                let pan = knob(ui, &mut track.pan, -1.0..=1.0, 0.0, palette::CREAM, 30.0, true).on_hover_text(format!(
-                    "PAN {:+.2}: links naar de oneven bus, rechts naar de even bus (dubbelklik: midden)",
-                    track.pan
-                ));
+                let lit = now < track.ol_until;
+                let (dot, ol) = ui.allocate_exact_size(vec2(8.0, 30.0), Sense::hover());
+                ui.painter().circle_filled(dot.center(), 3.0, if lit { palette::LED } else { palette::PANEL_DARK });
+                ol.on_hover_text("OL: piek na de EQ boven -3 dBFS");
+                let pan_tip = if simple {
+                    format!("PAN {:+.2} (dubbelklik: midden)", track.pan)
+                } else {
+                    format!("PAN {:+.2}: links naar de oneven bus, rechts naar de even bus (dubbelklik: midden)", track.pan)
+                };
+                let pan = knob(ui, &mut track.pan, -1.0..=1.0, 0.0, palette::CREAM, 30.0, true).on_hover_text(pan_tip);
                 changed |= pan.changed() || pan.double_clicked();
             });
             ui.horizontal(|ui| {
@@ -1532,32 +1674,70 @@ impl DawApp {
                 ui.add_space(14.0);
                 ui.label(RichText::new("PAN").size(9.0).color(palette::TEXT_DIM));
             });
-            ui.label(RichText::new("ASSIGN").size(9.0).color(palette::TEXT_DIM));
+            // EQ: HIGH, MID and LOW top to bottom on the 388; here LOW to HIGH from left to right.
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                for pair in 0..4 {
-                    let (odd, even) = (2 * pair + 1, 2 * pair + 2);
-                    let tip = format!("Naar PGM-bus {odd} (PAN links) en {even} (PAN rechts)");
-                    if toggle(ui, &format!("{odd}{even}"), track.channel.assign[pair], palette::ORANGE).on_hover_text(tip).clicked() {
-                        track.channel.assign[pair] = !track.channel.assign[pair];
-                        changed = true;
-                    }
+                ui.spacing_mut().item_spacing.x = 3.0;
+                for band in 0..3 {
+                    let entry = match band {
+                        0 => &mut track.channel.eq.low,
+                        1 => &mut track.channel.eq.mid,
+                        _ => &mut track.channel.eq.high,
+                    };
+                    let response = eq_knob(ui, entry, &EQ_RANGES[band], EQ_DEFAULTS[band].freq, 34.0);
+                    let tip = format!(
+                        "{} {} {:+.1} dB. Midden: gain, ring: frequentie. Dubbelklik zet terug.",
+                        EQ_NAMES[band],
+                        format_freq(entry.freq_hz),
+                        entry.gain_db
+                    );
+                    changed |= response.on_hover_text(tip).changed();
                 }
             });
             ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                for name in EQ_NAMES {
+                    ui.add_sized(vec2(34.0, 10.0), egui::Label::new(RichText::new(name).size(8.0).color(palette::TEXT_DIM)));
+                }
+            });
+            if !simple {
+                ui.label(RichText::new("ASSIGN").size(9.0).color(palette::TEXT_DIM));
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    for pair in 0..4 {
+                        let (odd, even) = (2 * pair + 1, 2 * pair + 2);
+                        let tip = format!("Naar PGM-bus {odd} (PAN links) en {even} (PAN rechts)");
+                        if toggle(ui, &format!("{odd}{even}"), track.channel.assign[pair], palette::ORANGE).on_hover_text(tip).clicked() {
+                            track.channel.assign[pair] = !track.channel.assign[pair];
+                            changed = true;
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 let tip = "L-R: naar de stereobus. Staat er een kanaal op L-R, dan hoor je alleen de L-R-kanalen, niet de MONITOR";
                 if toggle(ui, "L-R", track.channel.lr, palette::ORANGE).on_hover_text(tip).clicked() {
                     track.channel.lr = !track.channel.lr;
                     changed = true;
                 }
-                let tip =
-                    format!("DIRECT: spoor {} neemt dit kanaal op (na TRIM, voor de fader) in plaats van PGM-bus {}", index + 1, index + 1);
+                let tip = format!(
+                    "DIRECT: spoor {} neemt dit kanaal op (na TRIM en EQ, voor de fader) in plaats van PGM-bus {}",
+                    index + 1,
+                    index + 1
+                );
                 if toggle(ui, "DIRECT", track.channel.direct, palette::GREEN).on_hover_text(tip).clicked() {
                     track.channel.direct = !track.channel.direct;
                     changed = true;
                 }
+                let tip = "AUTO: de band, en de ingang zodra dit spoor op REC staat (met INSERT vanaf het inprikpunt). De opname krijgt geen EQ";
+                if toggle(ui, "AUTO", track.channel.auto, palette::GREEN).on_hover_text(tip).clicked() {
+                    track.channel.auto = !track.channel.auto;
+                    if track.channel.auto && track.channel.source == ChannelSource::Rmx {
+                        track.channel.source = ChannelSource::Line;
+                    }
+                    changed = true;
+                }
             });
+            }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -2123,6 +2303,73 @@ fn knob(
     response
 }
 
+/// Which part of a concentric knob a drag started on.
+#[derive(Clone, Copy, PartialEq)]
+enum EqPart {
+    Gain,
+    Freq,
+}
+
+/// A concentric EQ knob as on the 388: the inner knob is gain (±15 dB), the outer ring the
+/// frequency. A drag works on the part it started on, which is outlined while hovered or
+/// dragged; double-click sets that part back (gain to 0 dB, frequency to its default).
+fn eq_knob(ui: &mut Ui, band: &mut BandEntry, range: &std::ops::RangeInclusive<f32>, default_freq: f32, size: f32) -> egui::Response {
+    let (rect, mut response) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
+    let centre = rect.center();
+    let outer = size / 2.0 - 1.0;
+    let inner = outer * 0.62;
+    let part_at = |pos: egui::Pos2| if pos.distance(centre) <= inner { EqPart::Gain } else { EqPart::Freq };
+    let id = response.id;
+    if response.drag_started()
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        ui.data_mut(|d| d.insert_temp(id, part_at(pos)));
+    }
+    if response.dragged() {
+        let part = ui.data(|d| d.get_temp::<EqPart>(id)).unwrap_or(EqPart::Gain);
+        let fine = if ui.input(|i| i.modifiers.shift) { 0.2 } else { 1.0 };
+        let delta = -response.drag_delta().y / 150.0 * fine;
+        match part {
+            EqPart::Gain => band.gain_db = (band.gain_db + delta * 30.0).clamp(-15.0, 15.0),
+            EqPart::Freq => band.freq_hz = fraction_freq(freq_fraction(band.freq_hz, range) + delta, range),
+        }
+        response.mark_changed();
+    }
+    if response.double_clicked()
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        match part_at(pos) {
+            EqPart::Gain => band.gain_db = 0.0,
+            EqPart::Freq => band.freq_hz = default_freq,
+        }
+        response.mark_changed();
+    }
+    let active = if response.dragged() { ui.data(|d| d.get_temp::<EqPart>(id)) } else { response.hover_pos().map(part_at) };
+    let painter = ui.painter();
+    let pointer = |fraction: f32| {
+        let angle = (-135.0 + 270.0 * fraction).to_radians();
+        vec2(angle.sin(), -angle.cos())
+    };
+    // The ring: grey, with a light tick for the frequency.
+    painter.circle_filled(centre, outer + 1.0, Color32::from_rgb(0x1b, 0x1b, 0x1c));
+    painter.circle_filled(centre, outer, Color32::from_rgb(0x6e, 0x6a, 0x62));
+    let f = pointer(freq_fraction(band.freq_hz, range));
+    painter.line_segment([centre + f * (inner + 1.0), centre + f * outer], Stroke::new(2.0, palette::CREAM));
+    // The gain knob: orange, with a dark pointer.
+    painter.circle_filled(centre, inner + 1.0, Color32::from_rgb(0x1b, 0x1b, 0x1c));
+    painter.circle_filled(centre, inner, palette::ORANGE);
+    let g = pointer((band.gain_db + 15.0) / 30.0);
+    painter.line_segment([centre + g * (inner * 0.25), centre + g * (inner * 0.9)], Stroke::new(2.0, Color32::from_rgb(0x2a, 0x26, 0x22)));
+    if let Some(part) = active {
+        painter.circle_stroke(centre, if part == EqPart::Gain { inner } else { outer }, Stroke::new(1.5, palette::CREAM));
+    }
+    response
+}
+
+fn format_freq(hz: f32) -> String {
+    if hz >= 1000.0 { format!("{:.1} kHz", hz / 1000.0).replace('.', ",") } else { format!("{hz:.0} Hz") }
+}
+
 /// A small latching switch, lit in `colour` when on.
 fn toggle(ui: &mut Ui, label: &str, on: bool, colour: Color32) -> egui::Response {
     let text = RichText::new(label).size(9.0).strong().color(if on { Color32::BLACK } else { palette::TEXT });
@@ -2342,10 +2589,13 @@ impl DawApp {
                                     ui.separator();
                                 }
                                 ui.add_space(8.0);
-                                self.pgm_masters(ui);
-                                ui.separator();
-                                self.monitor_section(ui);
-                                ui.separator();
+                                // The buses and the MONITOR section belong to the 388 routing.
+                                if self.mixer.mode == Routing::Classic {
+                                    self.pgm_masters(ui);
+                                    ui.separator();
+                                    self.monitor_section(ui);
+                                    ui.separator();
+                                }
                                 self.master_section(ui);
                                 ui.add_space(24.0);
                                 ui.vertical(|ui| {
@@ -2363,6 +2613,7 @@ impl DawApp {
         let ctx = ui.ctx().clone();
         self.settings_window(&ctx);
         self.unsaved_dialog(&ctx);
+        self.confirm_simple_dialog(&ctx);
         if self.may_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -2498,6 +2749,83 @@ mod tests {
     }
 
     #[test]
+    fn a_new_project_is_simple() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        assert_eq!(app.mixer.mode, Routing::Simple);
+        assert!(app.tracks.iter().all(|t| t.channel == ChannelEntry::simple(ChannelSource::Line)));
+        app.new_project();
+        assert_eq!(app.mixer.mode, Routing::Simple);
+        assert!(app.tracks.iter().all(|t| t.channel.auto));
+    }
+
+    #[test]
+    fn switching_to_simple_resets_the_388_routing_after_asking() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.set_routing(Routing::Classic);
+        assert_eq!(app.mixer.mode, Routing::Classic);
+        assert!(app.tracks[0].channel.auto, "to 388 changes nothing in the routing");
+        app.set_routing(Routing::Simple);
+        assert!(!app.confirm_simple, "nothing to reset: no question");
+        assert_eq!(app.mixer.mode, Routing::Simple);
+
+        app.set_routing(Routing::Classic);
+        let track = &mut app.tracks[2];
+        track.channel = ChannelEntry { source: ChannelSource::Mic, assign: [true, false, false, false], ..ChannelEntry::default() };
+        track.channel.eq.mid.gain_db = 6.0;
+        track.channel.trim_db = 12.0;
+        track.fader_db = -4.0;
+        app.tracks[5].channel.source = ChannelSource::Rmx;
+        app.tracks[5].channel.auto = false;
+        app.set_routing(Routing::Simple);
+        assert!(app.confirm_simple, "the 388 routing would be lost: ask first");
+        assert_eq!(app.mixer.mode, Routing::Classic);
+        app.apply_simple();
+        assert_eq!(app.mixer.mode, Routing::Simple);
+        let channel = app.tracks[2].channel;
+        assert!(channel.auto && channel.direct && channel.lr && channel.assign == [false; 4]);
+        assert_eq!(channel.source, ChannelSource::Mic, "MIC stays MIC");
+        assert_eq!((channel.eq.mid.gain_db, channel.trim_db, app.tracks[2].fader_db), (6.0, 12.0, -4.0), "the sound stays");
+        assert_eq!(app.tracks[5].channel.source, ChannelSource::Line, "RMX becomes LINE");
+    }
+
+    #[test]
+    fn simple_rec_warns_without_an_input() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.tracks[1].input = None;
+        app.toggle_arm(1);
+        assert!(app.status.contains("kies een ingang"), "{}", app.status);
+    }
+
+    #[test]
+    fn eq_frequencies_turn_logarithmically() {
+        let range = 50.0..=1000.0;
+        assert!(freq_fraction(50.0, &range).abs() < 1e-6);
+        assert!((freq_fraction(1000.0, &range) - 1.0).abs() < 1e-6);
+        for f in [50.0, 100.0, 333.0, 1000.0] {
+            assert!((fraction_freq(freq_fraction(f, &range), &range) - f).abs() < 0.01, "{f}");
+        }
+        assert!((fraction_freq(0.5, &range) - (50.0f32 * 1000.0).sqrt()).abs() < 0.01, "the middle is the geometric mean");
+    }
+
+    #[test]
+    fn the_channel_eq_reaches_the_engine() {
+        let mut track = TrackState::default();
+        track.channel.eq.mid = BandEntry { freq_hz: 2500.0, gain_db: -4.5 };
+        let params = channel_params(&track);
+        assert_eq!(params.eq[1], EqBand { freq: 2500.0, gain_db: -4.5 });
+        assert_eq!(params.eq[0], EQ_DEFAULTS[0]);
+    }
+
+    #[test]
+    fn ol_lights_above_minus_3_dbfs() {
+        assert!(!overload(0.70));
+        assert!(overload(0.71));
+    }
+
+    #[test]
     fn a_missing_chosen_device_falls_back_and_comes_back() {
         let ctx = egui::Context::default();
         let platform = FakePlatform::new(None);
@@ -2581,6 +2909,7 @@ mod tests {
         app.tracks[1].channel.assign[1] = true;
         app.tracks[1].monitor.gain_db = -4.0;
         app.mixer.mon = MonSwitch::Pgm;
+        app.mixer.mode = Routing::Classic;
         app.master_db = -2.0;
         app.meter_post = true;
         assert!(app.save(Backup::Always), "{}", app.status);
@@ -2602,6 +2931,7 @@ mod tests {
         assert!(app.tracks[1].channel.assign[1]);
         assert_eq!(app.tracks[1].monitor.gain_db, -4.0);
         assert_eq!(app.mixer.mon, MonSwitch::Pgm);
+        assert_eq!(app.mixer.mode, Routing::Classic, "a new project is simple, so this came from the file");
         assert_eq!(app.master_db, -2.0);
         assert!(app.meter_post);
         assert!(app.tracks[2].clip.is_none());
@@ -2765,9 +3095,11 @@ mod tests {
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
         app.record();
         assert!(app.status.contains("Sla het project eerst op"), "{}", app.status);
+        app.set_routing(Routing::Classic);
+        app.tracks[3].channel = ChannelEntry::default();
         app.toggle_arm(3);
         assert!(app.tracks[3].armed);
-        assert!(app.status.contains("krijgt niets binnen"), "a new project is RMX without ASSIGN: {}", app.status);
+        assert!(app.status.contains("krijgt niets binnen"), "RMX without ASSIGN: {}", app.status);
         app.tracks[4].channel = ChannelEntry { source: ChannelSource::Line, direct: true, ..ChannelEntry::default() };
         app.status.clear();
         app.toggle_arm(4);

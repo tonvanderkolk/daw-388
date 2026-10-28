@@ -83,12 +83,49 @@ pub enum ChannelSource {
 pub struct ChannelEntry {
     pub source: ChannelSource,
     pub trim_db: f32,
+    pub eq: EqEntry,
     /// ASSIGN 1-2, 3-4, 5-6 and 7-8.
     pub assign: [bool; 4],
     /// ASSIGN L-R: to the stereo bus.
     pub lr: bool,
-    /// The track records this channel after TRIM instead of its PGM bus.
+    /// The track records this channel after TRIM and EQ instead of its PGM bus.
     pub direct: bool,
+    /// AUTO: the tape, and the input while the track hears it.
+    pub auto: bool,
+}
+
+impl ChannelEntry {
+    /// A channel as the simple mode sets it: AUTO, recorded through DIRECT, heard on L-R.
+    pub fn simple(source: ChannelSource) -> Self {
+        let source = if source == ChannelSource::Rmx { ChannelSource::Line } else { source };
+        Self { source, auto: true, direct: true, lr: true, ..Self::default() }
+    }
+}
+
+/// One EQ band in `project.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BandEntry {
+    pub freq_hz: f32,
+    pub gain_db: f32,
+}
+
+/// A channel's EQ; missing bands are flat at the 388's centre frequencies.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EqEntry {
+    pub low: BandEntry,
+    pub mid: BandEntry,
+    pub high: BandEntry,
+}
+
+impl Default for EqEntry {
+    fn default() -> Self {
+        Self {
+            low: BandEntry { freq_hz: 100.0, gain_db: 0.0 },
+            mid: BandEntry { freq_hz: 1000.0, gain_db: 0.0 },
+            high: BandEntry { freq_hz: 8000.0, gain_db: 0.0 },
+        }
+    }
 }
 
 /// A track's MONITOR controls in `project.json`.
@@ -109,10 +146,23 @@ pub enum MonSwitch {
     Cue,
 }
 
+/// Which routing the mixer shows: one strip per track, or the 388's buses and MONITOR section.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Routing {
+    #[serde(rename = "simple")]
+    Simple,
+    /// Projects from before 0.10.0 were made with the 388's routing.
+    #[default]
+    #[serde(rename = "388")]
+    Classic,
+}
+
 /// The master section in `project.json` (the STEREO MASTER is `master_db`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MixerEntry {
+    /// Eenvoudig or 388.
+    pub mode: Routing,
     /// PGM MASTERS ODD and EVEN.
     pub odd_db: f32,
     pub even_db: f32,
@@ -280,21 +330,14 @@ pub fn open(path: &Path) -> Result<OpenedProject, ProjectError> {
     Ok(OpenedProject { dir, file: project })
 }
 
-/// Format 1 had one fader, pan and mute per track and recorded straight from the input. In
-/// format 2 these become the MONITOR controls, so the project sounds as before; the channel
-/// starts neutral, and a track that had an input records it through DIRECT on a LINE channel.
+/// Format 1 had one strip per track with its own input: that is the simple mode. Fader, pan
+/// and mute stay where they are; the input stays the track's input.
 fn upgrade_v1(project: &mut ProjectFile) {
     for track in &mut project.tracks {
-        track.monitor = MonitorEntry { gain_db: track.fader_db, pan: track.pan, mute: track.mute };
-        track.fader_db = 0.0;
-        track.pan = 0.0;
-        track.mute = false;
-        track.channel = if track.input.is_some() {
-            ChannelEntry { source: ChannelSource::Line, direct: true, ..ChannelEntry::default() }
-        } else {
-            ChannelEntry::default()
-        };
+        track.channel = ChannelEntry::simple(ChannelSource::Line);
+        track.monitor = MonitorEntry::default();
     }
+    project.mixer = MixerEntry { mode: Routing::Simple, ..MixerEntry::default() };
     project.version = FORMAT_VERSION;
 }
 
@@ -468,13 +511,24 @@ mod tests {
                 channel: ChannelEntry {
                     source: ChannelSource::Mic,
                     trim_db: 12.0,
+                    eq: EqEntry { mid: BandEntry { freq_hz: 2500.0, gain_db: -4.5 }, ..EqEntry::default() },
                     assign: [false, i == 1, false, false],
                     lr: i == 0,
                     direct: i == 1,
+                    auto: i == 1,
                 },
                 monitor: MonitorEntry { gain_db: -4.0, pan: 0.25, mute: i == 0 },
             })
             .collect()
+    }
+
+    #[test]
+    fn a_channel_without_eq_opens_flat() {
+        let channel: ChannelEntry = serde_json::from_str(r#"{"source":"line","trim_db":3.0}"#).unwrap_or_default();
+        assert_eq!(channel.trim_db, 3.0);
+        assert_eq!(channel.eq, EqEntry::default());
+        assert_eq!((channel.eq.low.freq_hz, channel.eq.mid.freq_hz, channel.eq.high.freq_hz), (100.0, 1000.0, 8000.0));
+        assert_eq!(channel.eq.mid.gain_db, 0.0);
     }
 
     #[test]
@@ -500,7 +554,7 @@ mod tests {
                     auto_punch: true,
                 },
                 metronome: MetronomeSettings { click: true, always: true, bpm: 96.5, beats: 6, unit: 8, volume_db: -12.0, count_in: 2 },
-                mixer: MixerEntry { odd_db: -2.0, even_db: 1.0, mon: MonSwitch::Pgm, mono: true },
+                mixer: MixerEntry { mode: Routing::Simple, odd_db: -2.0, even_db: 1.0, mon: MonSwitch::Pgm, mono: true },
             },
             &tracks([Some(kick.clone()), None]),
             Backup::Always,
@@ -532,10 +586,18 @@ mod tests {
         assert_eq!(opened.file.tracks[1].input, Some(2));
         assert_eq!(
             opened.file.tracks[1].channel,
-            ChannelEntry { source: ChannelSource::Mic, trim_db: 12.0, assign: [false, true, false, false], lr: false, direct: true }
+            ChannelEntry {
+                source: ChannelSource::Mic,
+                trim_db: 12.0,
+                eq: EqEntry { mid: BandEntry { freq_hz: 2500.0, gain_db: -4.5 }, ..EqEntry::default() },
+                assign: [false, true, false, false],
+                lr: false,
+                direct: true,
+                auto: true
+            }
         );
         assert_eq!(opened.file.tracks[0].monitor, MonitorEntry { gain_db: -4.0, pan: 0.25, mute: true });
-        assert_eq!(opened.file.mixer, MixerEntry { odd_db: -2.0, even_db: 1.0, mon: MonSwitch::Pgm, mono: true });
+        assert_eq!(opened.file.mixer, MixerEntry { mode: Routing::Simple, odd_db: -2.0, even_db: 1.0, mon: MonSwitch::Pgm, mono: true });
         assert_eq!(opened.file.version, FORMAT_VERSION, "a format 2 file is not upgraded again");
         assert!(crate::load_wav(&opened.track_source(&opened.file.tracks[0]).unwrap_or_default()).is_ok());
         assert_eq!(project_name(&dir), "Mijn liedje");
@@ -595,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn a_format_1_project_is_upgraded_and_sounds_the_same() {
+    fn a_format_1_project_becomes_a_simple_project() {
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let path = root.path().join(PROJECT_FILE);
         let v1 = r#"{"format":"daw388-project","version":1,"app_version":"0.7.0","tracks":[
@@ -604,17 +666,23 @@ mod tests {
         fs::write(&path, v1).unwrap_or_else(|e| panic!("{e}"));
         let file = open(&path).unwrap_or_else(|e| panic!("{e}")).file;
         assert_eq!(file.version, FORMAT_VERSION);
+        assert_eq!(file.mixer.mode, Routing::Simple);
         let (one, two) = (&file.tracks[0], &file.tracks[1]);
-        assert_eq!(one.monitor, MonitorEntry { gain_db: -6.0, pan: -0.5, mute: true }, "the old fader becomes MONITOR GAIN");
-        assert_eq!((one.fader_db, one.pan, one.mute), (0.0, 0.0, false), "the channel starts neutral");
-        assert_eq!(one.channel, ChannelEntry::default(), "RMX, nothing assigned");
-        assert_eq!(
-            two.channel,
-            ChannelEntry { source: ChannelSource::Line, direct: true, ..ChannelEntry::default() },
-            "it recorded its input"
-        );
+        assert_eq!((one.fader_db, one.pan, one.mute), (-6.0, -0.5, true), "the fader stays the fader");
+        assert_eq!(one.monitor, MonitorEntry::default());
+        assert_eq!(one.channel, ChannelEntry::simple(ChannelSource::Line));
+        assert_eq!(two.channel, ChannelEntry::simple(ChannelSource::Line));
         assert_eq!(two.input, Some(2));
-        assert_eq!(file.mixer, MixerEntry::default());
+    }
+
+    #[test]
+    fn a_project_without_a_mode_is_a_388_project() {
+        let mixer: MixerEntry = serde_json::from_str(r#"{"odd_db":-1.0}"#).unwrap_or_default();
+        assert_eq!((mixer.mode, mixer.odd_db), (Routing::Classic, -1.0));
+        let channel: ChannelEntry = serde_json::from_str(r#"{"source":"line"}"#).unwrap_or_default();
+        assert!(!channel.auto);
+        assert_eq!(serde_json::to_string(&Routing::Classic).unwrap_or_default(), r#""388""#);
+        assert_eq!(serde_json::to_string(&Routing::Simple).unwrap_or_default(), r#""simple""#);
     }
 
     #[test]

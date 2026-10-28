@@ -15,16 +15,18 @@
 //! [`TransportStyle::Cycle`] they jump straight there, as in a modern DAW.
 //!
 //! The mixer follows the 388's block diagram (see [`mixer`] and [`monitor`]): eight channels
-//! (MIC, LINE or the tape) with TRIM, fader and PAN, ASSIGN to eight PGM buses through the ODD
+//! (MIC, LINE or the tape) with TRIM, EQ, fader and PAN, ASSIGN to eight PGM buses through the ODD
 //! and EVEN masters, track N recording bus N (or its channel's DIRECT tap), a MONITOR section
 //! and the stereo bus with the STEREO MASTER.
 
 mod click;
+mod eq;
 mod mixer;
 mod monitor;
 mod record;
 
 pub use click::Meter;
+pub use eq::{EQ_DEFAULTS, EqBand};
 pub use mixer::{ChannelParams, MixerParams, Source};
 pub use monitor::{MonitorMode, MonitorParams};
 pub use record::{RecItem, RecMode, Recorder, input_ring};
@@ -106,7 +108,7 @@ pub enum Command {
     /// Speed as a ratio: 1.0 is normal, 1.15 is 15% faster.
     SetPitch(f64),
     SetTrack(usize, Option<Arc<TrackAudio>>),
-    /// A channel's source, TRIM, fader, PAN, ASSIGN, L-R and DIRECT.
+    /// A channel's source, AUTO, TRIM, EQ, fader, PAN, ASSIGN, L-R and DIRECT.
     SetChannel(usize, ChannelParams),
     /// A track's MONITOR GAIN, PAN and mute.
     SetMonitor(usize, MonitorParams),
@@ -268,7 +270,7 @@ fn sample_at(samples: &[f32], position: f64) -> f32 {
     ((c3 * t + c2) * t + c1) * t + y1
 }
 
-/// A channel's peak level after TRIM (before the fader) and after fader and mute (pan does not
+/// A channel's peak level after TRIM and EQ (before the fader; OL is read from it) and after fader and mute (pan does not
 /// count: the channel is mono).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TrackPeaks {
@@ -288,7 +290,7 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         garbage: garbage_tx,
         shared,
         tape: Default::default(),
-        channels: Default::default(),
+        channels: std::array::from_fn(|_| Channel::new(sample_rate)),
         monitors: Default::default(),
         mixer: MixerParams::default(),
         bus_gains: [1.0; 2],
@@ -881,20 +883,29 @@ impl Engine {
                 }
                 let params = self.channels[index].params;
                 let live = params.is_live(input_channels);
-                let sample = match params.source {
-                    // A track that hears its input is not played back into its own channel, so
-                    // bus, track and channel never form a loop.
-                    Source::Remix if hears_input(self.armed[index], self.insert, self.recording[index]) => 0.0,
-                    Source::Remix => tape[index],
-                    Source::Mic | Source::Line => match (&self.input, params.input) {
-                        (Some(input), Some(channel)) if live => input.sample(usize::from(channel)),
-                        _ => 0.0,
-                    },
+                let hears = hears_input(self.armed[index], self.insert, self.recording[index]);
+                let input = match (&self.input, params.input) {
+                    (Some(input), Some(channel)) if live => input.sample(usize::from(channel)),
+                    _ => 0.0,
                 };
-                let taps = self.channels[index].process(sample);
-                track_peaks[index] = track_peaks[index].max(taps.direct.abs());
+                // The sample, and whether it comes from the interface.
+                let (sample, from_input) = if params.auto {
+                    if hears && live { (input, true) } else { (tape[index], false) }
+                } else {
+                    match params.source {
+                        // A track that hears its input is not played back into its own channel, so
+                        // bus, track and channel never form a loop.
+                        Source::Remix if hears => (0.0, false),
+                        Source::Remix => (tape[index], false),
+                        Source::Mic | Source::Line => (input, live),
+                    }
+                };
+                let taps = self.channels[index].process(sample, from_input);
+                track_peaks[index] = track_peaks[index].max(taps.pre.abs());
                 track_peaks_post[index] = track_peaks_post[index].max(taps.post.abs());
-                let audible = if live && !self.monitoring { 0.0 } else { 1.0 };
+                // Only what comes from the interface is silent when the interface does the
+                // monitoring; an AUTO channel playing the tape stays audible.
+                let audible = if from_input && !self.monitoring { 0.0 } else { 1.0 };
                 direct[index] = (taps.direct, taps.direct * audible);
                 for (pair, on) in params.assign.into_iter().enumerate() {
                     if on {
@@ -1586,6 +1597,85 @@ mod tests {
         assert_eq!(odd.len(), 100);
         assert!(odd.iter().all(|s| (s + 0.5).abs() < 1e-3), "bus 1 through the ODD master at half: {:?}", &odd[..3]);
         assert!(even.iter().all(|s| s.abs() < 1e-6), "hard left: nothing on bus 2");
+    }
+
+    /// An AUTO channel on `input`, to the stereo bus hard left, as the simple mode sets it.
+    fn auto(input: u16) -> ChannelParams {
+        ChannelParams {
+            source: Source::Line,
+            input: Some(input),
+            auto: true,
+            direct: true,
+            lr: true,
+            pan: -1.0,
+            ..ChannelParams::default()
+        }
+    }
+
+    #[test]
+    fn auto_plays_the_tape_until_its_track_hears_the_input() {
+        let (mut handle, mut engine, mut tx, _recorder) = with_input();
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 48_000])));
+        handle.send(Command::SetChannel(0, ChannelParams { trim: 2.0, ..auto(1) }));
+        settle(&mut engine);
+        handle.play();
+        feed(&mut tx, 0, 11);
+        let out = run(&mut engine, 10);
+        assert!((out[2 * 9] - 0.5).abs() < 1e-3, "the tape, without TRIM: {}", out[2 * 9]);
+        handle.send(Command::SetArmed(0, true));
+        feed(&mut tx, 0, 11);
+        let out = run(&mut engine, 10);
+        assert!((out[2 * 9] + 2.0).abs() < 1e-3, "armed with INSERT off: the input, with TRIM: {}", out[2 * 9]);
+    }
+
+    #[test]
+    fn with_insert_auto_switches_to_the_input_at_the_punch_in() {
+        let (mut handle, mut engine, mut tx, _recorder) = with_input();
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 48_000])));
+        handle.send(Command::SetChannel(0, auto(1)));
+        handle.send(Command::SetInsert(true));
+        handle.send(Command::SetArmed(0, true));
+        settle(&mut engine);
+        handle.play();
+        feed(&mut tx, 0, 11);
+        let out = run(&mut engine, 10);
+        assert!((out[2 * 9] - 0.5).abs() < 1e-3, "armed with INSERT: the tape before the punch-in: {}", out[2 * 9]);
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 11);
+        let out = run(&mut engine, 10);
+        assert!((out[0] + 1.0).abs() < 1e-3, "the input from the first frame of the punch-in: {}", out[0]);
+    }
+
+    #[test]
+    fn auto_records_its_input_without_the_eq_and_with_compensation() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        let mut eq = EQ_DEFAULTS;
+        eq[1].gain_db = 15.0;
+        handle.send(Command::SetChannel(2, ChannelParams { eq, ..auto(0) }));
+        handle.send(Command::SetArmed(2, true));
+        settle(&mut engine);
+        handle.send(Command::Locate(1_000.0));
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 51);
+        run(&mut engine, 50);
+        let items = takes(&mut recorder, 2);
+        assert_eq!(items.first(), Some(&RecItem::Start(999.0)), "a live source: compensated");
+        let samples = samples_of(&items);
+        assert_eq!(samples.len(), 50);
+        assert!(samples.iter().enumerate().all(|(n, s)| (s - n as f32).abs() < 1e-3), "the input as it came in: {samples:?}");
+    }
+
+    #[test]
+    fn auto_without_input_plays_the_tape_and_records_silence() {
+        let (mut handle, mut engine, _tx, mut recorder) = with_input();
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 48_000])));
+        handle.send(Command::SetChannel(0, ChannelParams { input: None, ..auto(0) }));
+        handle.send(Command::SetArmed(0, true));
+        settle(&mut engine);
+        handle.send(Command::Record);
+        let out = run(&mut engine, 20);
+        assert!((out[2 * 19] - 0.5).abs() < 1e-3, "no input: the tape plays on: {}", out[2 * 19]);
+        assert!(samples_of(&takes(&mut recorder, 0)).iter().all(|s| *s == 0.0));
     }
 
     #[test]

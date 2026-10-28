@@ -7,6 +7,28 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.10.0] - 2026-10-28
+
+### Toegevoegd
+- Eenvoudige stand, standaard voor nieuwe projecten. Per spoor een ingang (MIC of LINE), TRIM, EQ, PAN, REC en fader. Zolang een spoor op REC staat hoor je de ingang, anders de band. De opname krijgt geen EQ; die hoor je bij meeluisteren en afspelen.
+- Schakelaar Eenvoudig | 388 in de bovenbalk. Naar 388 verandert niets aan het geluid; naar Eenvoudig vraagt de app eerst als de 388-routering daarbij verdwijnt.
+- AUTO per kanaal in de 388-stand: de band, en de ingang zodra het spoor op REC staat (met INSERT vanaf het inprikpunt).
+
+### Gewijzigd
+- Een project van 0.7.0 of ouder opent nu als eenvoudig project, met de oude fader op de kanaalfader. Projecten van 0.8.0 en 0.9.0 openen in de 388-stand, zoals ze gemaakt zijn.
+- Grotere EQ-knoppen en een iets bredere kanaalstrook.
+- De sends en masters schuiven op naar 0.11.0.
+
+## [0.9.0] - 2026-10-28
+
+### Toegevoegd
+- 3-band EQ per kanaal: LOW 50 Hz tot 1 kHz, MID 500 Hz tot 5 kHz en HIGH 2,5 tot 15 kHz, elk ±15 dB. Elke band is een concentrische knop zoals op de 388: slepen in het midden regelt de gain, op de ring de frequentie. Dubbelklik zet het aangeklikte deel terug. Een vlakke EQ laat het signaal ongemoeid.
+- MIC gaat door een nagebootste voorversterker die boven ongeveer -6 dBFS zacht en licht asymmetrisch verzadigt en onder 0 dBFS blijft. LINE en RMX blijven schoon.
+- OL-lampje per kanaal: aan bij een piek na de EQ boven -3 dBFS, een halve seconde nagloeiend.
+
+### Gewijzigd
+- DIRECT en de PRE-kanaalmeter liggen nu na de EQ. Een project van 0.8.0 opent met een vlakke EQ.
+
 ## [0.8.0] - 2026-10-28
 
 ### Toegevoegd

@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.8.0
+Versie: 0.10.0
 Laatst bijgewerkt: 28-10-2026
 
 ## Doel
@@ -48,8 +48,8 @@ Mijn liedje/
 └── backups/            # eerdere versies van project.json (laatste 10)
 ```
 
-- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 2), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `mixer` (`odd_db`, `even_db`, `mon` pgm/cue, `mono`) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `assign`, `lr`, `direct`) en `monitor` (`gain_db`, `pan`, `mute`).
-- Een project met formaatversie 1 wordt bij openen omgezet: de oude fader, pan en mute gaan naar de MONITOR-sectie, de kanaalfader naar 0 dB, en een spoor met een ingang wordt een LINE-kanaal met DIRECT. Het klinkt en neemt dan op als voorheen.
+- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 2), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `mixer` (`mode` simple/388, ontbreekt: 388; `odd_db`, `even_db`, `mon` pgm/cue, `mono`) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `eq` met `low`, `mid` en `high` (elk `freq_hz` en `gain_db`; ontbreekt `eq`, dan is hij vlak), `assign`, `lr`, `direct`, `auto`) en `monitor` (`gain_db`, `pan`, `mute`).
+- Een project met formaatversie 1 (0.7.0 en ouder) opent als eenvoudig project: fader, pan en mute blijven de kanaalfader, elk kanaal krijgt de eenvoudige instelling (LINE, AUTO, DIRECT, L-R) en houdt zijn ingang. Een project van 0.8.0 of 0.9.0 (zonder `mode`) opent in de 388-stand.
 - Opslaan kopieert audio van buiten het project naar `audio/`. Het origineel blijft staan. Bij een naamconflict krijgt de kopie een achtervoegsel (`take-2.wav`).
 - `project.json` wordt eerst naar een tijdelijk bestand geschreven en daarna hernoemd, zodat een crash nooit een half bestand achterlaat.
 - Autosave volgt 30 seconden na een wijziging, alleen als het project al een map heeft.
@@ -101,19 +101,31 @@ Naar de handleiding van de 388 (REC FUNCTION, REC, INSERT, Punch-in):
 
 ## Mixer
 
+Twee standen, per project, met de schakelaar Eenvoudig | 388 in de bovenbalk:
+
+- **Eenvoudig** (standaard voor een nieuw project): per spoor één strook met ingang (MIC of LINE), TRIM, EQ, PAN, REC, MUTE en fader. Elk kanaal staat op AUTO met DIRECT en L-R; de PGM-bussen, de MONITOR-sectie en MON zijn verborgen.
+- **388**: de volledige routering hieronder. Van Eenvoudig naar 388 verandert niets aan het geluid. Van 388 naar Eenvoudig vraagt de app eerst als de 388-routering daarbij verdwijnt; fader, PAN, MUTE, EQ, TRIM en ingang blijven, RMX wordt LINE.
+- **AUTO** (een afwijking van de 388, zoals DIRECT): het kanaal speelt de band, en de ingang zodra zijn spoor de ingang hoort (op REC, met INSERT pas vanaf het inprikpunt). De ingang gaat door TRIM en de voorversterker, dan naar DIRECT, dan door de EQ; de band gaat alleen door de EQ. De opname krijgt dus geen EQ, en bij het afspelen zit hij er één keer op. Een AUTO-kanaal zonder ingang speelt de band en neemt stilte op.
+
 Naar het blokschema en Features and Controls in de handleiding van de 388:
 
 - Kanaal: bron (MIC, LINE of RMX), TRIM, fader, PAN, ASSIGN 1-2/3-4/5-6/7-8 en L-R. RMX is de weergave van het spoor met hetzelfde nummer; zolang dat spoor zijn ingang hoort (REC FUNCTION aan en opnemend of zonder INSERT) is RMX stil, zodat er geen lus ontstaat.
 - PAN verdeelt over de oneven (links) en even (rechts) bus van een ASSIGN-paar. De PGM MASTERS ODD en EVEN regelen bussen 1, 3, 5, 7 en 2, 4, 6, 8.
-- Spoor N neemt PGM-bus N op, of met DIRECT kanaal N na TRIM (en straks EQ), voor de fader. DIRECT is een afwijking van de 388: een snelle opnameroute naast de bussen. Opnemen vraagt geen ingang: van band naar band bouncen kan ook zonder ingangsapparaat.
+- Spoor N neemt PGM-bus N op, of met DIRECT kanaal N na TRIM en EQ, voor de fader. DIRECT is een afwijking van de 388: een snelle opnameroute naast de bussen. Opnemen vraagt geen ingang: van band naar band bouncen kan ook zonder ingangsapparaat.
 - MONITOR: per spoor GAIN, PAN en mute. Met MON op PGM hoort de monitor de bus (of het DIRECT-signaal); op CUE volgt hij de tabel uit de handleiding: de ingang zolang het spoor zijn ingang hoort, anders de band als die speelt, anders niets.
 - De STEREO MASTER krijgt de L-R-kanalen, of de MONITOR-mix als geen kanaal op L-R staat. Daarna MONO.
 - Meeluisteren via de interface: live bronnen worden wel opgenomen maar nergens gehoord; de engine houdt per bus een opname- en een luistersom bij.
-- Een nieuw project staat in de opnamestand: alle kanalen RMX zonder ASSIGN, je hoort de sporen via de MONITOR.
+- Zonder L-R hoor je de sporen via de MONITOR-sectie (de opnamestand van de 388). Een nieuw project begint in de eenvoudige stand; daar staat elk kanaal op L-R.
 - Latencycompensatie geldt alleen als de opname een live bron bevat (bepaald bij de punch-in). Een bounce van band naar band ligt sample-precies onder de bron.
-- MIC heeft nu nog een schone versterking; het karakter van de voorversterker, de EQ en de sends volgen in 0.9.0 en 0.10.0.
+- MIC gaat na TRIM door een nagebootste voorversterker: tot -6 dBFS schoon, daarboven een zachte tanh-knie naar een plafond onder 0 dBFS, licht asymmetrisch (even harmonischen). LINE en RMX zijn schoon.
+- EQ: drie RBJ-piekfilters met Q 0,9, elk ±15 dB. LOW 50 Hz tot 1 kHz (standaard 100 Hz), MID 500 Hz tot 5 kHz (1 kHz), HIGH 2,5 tot 15 kHz (8 kHz). De engine krijgt frequentie en gain, vloeit ze per sample over en rekent elke 32 samples de coëfficiënten opnieuw uit op zijn eigen samplerate. Een band die vlak staat wordt overgeslagen, dus een vlakke EQ laat het signaal bit voor bit door.
+- In de strook is elke band één concentrische knop: slepen in het midden is gain, op de ring frequentie (logaritmisch). Dubbelklik zet het aangeklikte deel terug.
+- OL: de PRE-piek van het kanaal (na de EQ) boven -3 dBFS, 0,5 s nagloeiend. De UI leidt hem af uit de PRE-meterwaarde; er is geen apart signaal voor.
+- De sends (AUX en EFF) volgen in 0.11.0.
 
 ### Routing in de praktijk
+
+In de eenvoudige stand is het: ingang kiezen, REC, spelen. Zolang een spoor op REC staat hoor je de ingang, anders de band. De fader en PAN zijn wat je hoort. Voor pingpong en de bussen schakel je naar 388; hieronder gaat het over die stand.
 
 ![Signaalroute 0.8.0](design/daw388_routering_0_8_0.png)
 
@@ -141,7 +153,7 @@ Audio wordt op een achtergrondthread gedecodeerd en naar de samplerate van het a
 
 - Import van WAV en AIFF (ongecomprimeerd). Nog geen FLAC, MP3 of andere formaten.
 - Samplerate-conversie gebruikt Hermite-interpolatie: prima voor afluisteren, voor export komt een betere resampler.
-- Nog geen EQ, sends, effecten of tape-model. Zie de roadmap.
+- Nog geen sends, effecten of tape-model. Pingpong kan alleen in de 388-stand. Zie de roadmap.
 - Een bus die een live ingang en de band tegelijk opneemt, wordt gecompenseerd voor de ingang; het banddeel komt dan de apparaatlatency te vroeg op het nieuwe spoor.
 - Op macOS vraagt het systeem bij het eerste gebruik van een ingang om toegang tot de microfoon. Zolang de app als los programma vanuit de terminal draait, hoort die toestemming bij de terminal.
 - Op macOS is het standaard app-menu uitgezet, zodat Cmd+Q via de opslaan-vraag loopt. Afsluiten door uitloggen of herstarten van de Mac gaat nog wel buiten die vraag om; autosave beperkt dan het verlies tot de laatste 30 seconden.
