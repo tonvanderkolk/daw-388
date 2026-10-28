@@ -7,6 +7,14 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.15.0] - 2026-10-28
+
+### Toegevoegd
+- Export (knop EXPORT of Bestand, Exporteren): een stereo bounce en losse sporen als WAV of AIFF, 16 bit (met dither), 24 bit of 32 bit float, 44,1, 48 of 96 kHz. Offline gerenderd, sneller dan realtime, met uitklinkende galm en echo.
+- Losse sporen met mixer en tape (stereo, met de eigen galm en echo; samen precies de mix), alleen tape (mono) of droog (de opname zelf).
+- Het hele nummer, of van het nulpunt tot het CUE-punt, eventueel met stilte ervoor zodat de bestanden op de band passen.
+- Samplerate-conversie voor de export met `rubato`.
+
 ## [0.14.0] - 2026-10-28
 
 ### Toegevoegd

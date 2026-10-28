@@ -1,6 +1,7 @@
 //! The egui interface of DAW 388. Platform-specific parts (audio devices, file dialogs) come in
 //! through the [`Platform`] trait, so the same UI can later run in the browser.
 
+mod export;
 mod recording;
 
 use daw388_engine::{
@@ -8,6 +9,7 @@ use daw388_engine::{
     MonitorParams, Motion, PITCH_RANGE, PlateParams, RecMode, RtnParams, Source, Speed, TRACKS, TapeKind, TapeParams, TrackAudio,
     TransportStyle,
 };
+use daw388_project::export::{BitDepth, ExportFormat};
 use daw388_project::preferences::{self, Preferences};
 use daw388_project::session::{self, PROJECT_FILE};
 use daw388_project::{
@@ -16,6 +18,7 @@ use daw388_project::{
     TransportSettings,
 };
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
+use export::{ExportJob, Progress, StemKind};
 use recording::{Composed, TakeDone, Underneath};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -285,6 +288,9 @@ pub struct DawApp {
     /// The tape on playback, saved with the project.
     tape: TapeSettings,
     show_tape: bool,
+    export: ExportChoices,
+    show_export: bool,
+    running_export: Option<RunningExport>,
     /// The question before the 388 routing is reset for the simple mode.
     confirm_simple: bool,
     input_devices: Vec<DeviceInfo>,
@@ -380,6 +386,46 @@ fn new_mixer() -> MixerEntry {
         rtn.gain_db = 0.0;
     }
     mixer
+}
+
+/// What the Export window asks; kept while the app runs.
+#[derive(Debug, Clone, PartialEq)]
+struct ExportChoices {
+    stereo: bool,
+    /// The bounce with the tape's character (when the project plays through the 388 tape).
+    stereo_tape: bool,
+    stems: bool,
+    stem_tracks: [bool; TRACKS],
+    stem_kind: StemKind,
+    /// From the zero point to the CUE point instead of the whole song.
+    to_cue: bool,
+    from_zero: bool,
+    format: ExportFormat,
+    depth: BitDepth,
+    rate: u32,
+}
+
+impl Default for ExportChoices {
+    fn default() -> Self {
+        Self {
+            stereo: true,
+            stereo_tape: true,
+            stems: false,
+            stem_tracks: [true; TRACKS],
+            stem_kind: StemKind::Mixed,
+            to_cue: false,
+            from_zero: true,
+            format: ExportFormat::Wav,
+            depth: BitDepth::Int24,
+            rate: 48_000,
+        }
+    }
+}
+
+/// An export on its way: its progress and where its result arrives.
+struct RunningExport {
+    progress: Arc<Progress>,
+    result: Receiver<Result<Vec<PathBuf>, String>>,
 }
 
 /// The tape of a new project: the 388 at 7½ IPS on 456.
@@ -518,6 +564,9 @@ impl DawApp {
             show_settings: false,
             tape: new_tape(),
             show_tape: false,
+            export: ExportChoices::default(),
+            show_export: false,
+            running_export: None,
             confirm_simple: false,
             input_devices,
             insert: false,
@@ -1243,6 +1292,9 @@ impl DawApp {
             }
             if ui.button("Tape-instellingen...").clicked() {
                 self.show_tape = true;
+            }
+            if ui.button("Exporteren...").clicked() {
+                self.show_export = true;
             }
             ui.separator();
             if ui.add(egui::Button::new("Project sluiten").shortcut_text(command(ui, Key::W))).clicked() {
@@ -2352,10 +2404,20 @@ impl DawApp {
                 self.set_metronome(metronome);
             });
             ui.add_space(4.0);
-            let tape = small_key(ui, &tape_label(&self.tape), self.tape.mode == TapeMode::Machine, vec2(150.0, 22.0));
-            if tape.on_hover_text("Het karakter van de band bij afspelen: snelheid, soort, saturatie, wow, ruis").clicked() {
-                self.show_tape = true;
-            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let tape = small_key(ui, &tape_label(&self.tape), self.tape.mode == TapeMode::Machine, vec2(150.0, 22.0));
+                if tape.on_hover_text("Het karakter van de band bij afspelen: snelheid, soort, saturatie, wow, ruis").clicked() {
+                    self.show_tape = true;
+                }
+                let running = self.running_export.is_some();
+                if small_key(ui, "EXPORT", running, vec2(70.0, 22.0))
+                    .on_hover_text("Stereo bounce en losse sporen als WAV of AIFF")
+                    .clicked()
+                {
+                    self.show_export = true;
+                }
+            });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -2540,6 +2602,163 @@ impl DawApp {
             .color(palette::TEXT_DIM),
         );
         self.set_output(wanted);
+    }
+
+    /// The export as the app stands now, or why it cannot start.
+    fn export_job(&self) -> Result<ExportJob, String> {
+        let Some(dir) = &self.project_dir else {
+            return Err("Sla het project eerst op: de export komt in de map export van het project".into());
+        };
+        let choices = &self.export;
+        let clips: [Option<Arc<MonoClip>>; TRACKS] = std::array::from_fn(|i| self.tracks[i].clip.clone());
+        let longest = clips.iter().flatten().map(|c| c.duration_seconds()).fold(0.0, f64::max);
+        if longest <= 0.0 {
+            return Err("Er staat nog niets op de band om te exporteren".into());
+        }
+        let range = if choices.to_cue {
+            let end = self.cue_seconds.filter(|cue| *cue > self.zero_seconds).unwrap_or(longest);
+            (self.zero_seconds, end)
+        } else {
+            (0.0, longest)
+        };
+        let stems: Vec<(usize, StemKind)> = if choices.stems {
+            (0..TRACKS).filter(|i| choices.stem_tracks[*i] && clips[*i].is_some()).map(|i| (i, choices.stem_kind)).collect()
+        } else {
+            Vec::new()
+        };
+        if !choices.stereo && stems.is_empty() {
+            return Err("Kies een stereo bounce of losse sporen".into());
+        }
+        Ok(ExportJob {
+            rate: choices.rate,
+            clips,
+            channels: std::array::from_fn(|i| channel_params(&self.tracks[i])),
+            monitors: std::array::from_fn(|i| monitor_params(&self.tracks[i].monitor)),
+            mixer: mixer_params(&self.mixer, &self.preferences, 2),
+            master: db_to_gain(self.master_db),
+            tape: tape_params(&self.tape),
+            meter: meter_of(&self.metronome),
+            range,
+            stereo: choices.stereo.then_some(choices.stereo_tape),
+            stems,
+            from_zero: choices.from_zero,
+            dir: dir.join("export"),
+            project: self.project_name(),
+            format: choices.format,
+            depth: choices.depth,
+        })
+    }
+
+    fn start_export(&mut self) {
+        let job = match self.export_job() {
+            Ok(job) => job,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        let progress = Arc::new(Progress::default());
+        let (tx, rx) = channel();
+        let shared = Arc::clone(&progress);
+        self.running_export = Some(RunningExport { progress, result: rx });
+        self.status = "Exporteren...".into();
+        self.platform.spawn(Box::new(move || {
+            let _ = tx.send(export::run(&job, &shared));
+        }));
+    }
+
+    /// Pick up a finished export.
+    fn poll_export(&mut self) {
+        let Some(running) = &self.running_export else { return };
+        let Ok(result) = running.result.try_recv() else { return };
+        self.running_export = None;
+        self.status = match result {
+            Ok(files) => {
+                let dir = files.first().and_then(|f| f.parent()).map(|d| d.display().to_string()).unwrap_or_default();
+                format!("{} bestand(en) geëxporteerd naar {dir}", files.len())
+            }
+            Err(e) => e,
+        };
+    }
+
+    fn export_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_export;
+        let mut choices = self.export.clone();
+        let mut start = false;
+        let names: [String; TRACKS] =
+            std::array::from_fn(|i| self.tracks[i].clip.as_ref().map_or_else(|| "leeg".to_string(), |c| c.name.clone()));
+        let running = self.running_export.as_ref().map(|r| Arc::clone(&r.progress));
+        egui::Window::new("Export").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.add_enabled_ui(running.is_none(), |ui| {
+                ui.checkbox(&mut choices.stereo, "Stereo bounce (de mix zoals je hem hoort)");
+                ui.add_enabled_ui(choices.stereo && self.tape.mode == TapeMode::Machine, |ui| {
+                    ui.checkbox(&mut choices.stereo_tape, "met tape-karakter");
+                });
+                ui.add_space(4.0);
+                ui.checkbox(&mut choices.stems, "Losse sporen");
+                ui.add_enabled_ui(choices.stems, |ui| {
+                    egui::Grid::new("export-stems").num_columns(4).show(ui, |ui| {
+                        for (index, name) in names.iter().enumerate() {
+                            let has = self.tracks[index].clip.is_some();
+                            ui.add_enabled(has, egui::Checkbox::new(&mut choices.stem_tracks[index], format!("{} {name}", index + 1)));
+                            if index % 4 == 3 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        for (kind, label, tip) in [
+                            (StemKind::Mixed, "met mixer en tape", "Stereo, zoals in de mix: EQ, fader, pan, en de eigen galm en echo"),
+                            (StemKind::TapeOnly, "alleen tape", "Mono, het spoor zoals het van de band komt"),
+                            (StemKind::Dry, "droog", "Mono, de opname zelf"),
+                        ] {
+                            ui.selectable_value(&mut choices.stem_kind, kind, label).on_hover_text(tip);
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+                ui.checkbox(&mut choices.to_cue, "Alleen van het nulpunt tot het CUE-punt");
+                ui.add_enabled_ui(choices.to_cue, |ui| {
+                    ui.checkbox(&mut choices.from_zero, "Alle bestanden beginnen op 0:00");
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut choices.format, ExportFormat::Wav, "WAV");
+                    ui.selectable_value(&mut choices.format, ExportFormat::Aiff, "AIFF");
+                    ui.separator();
+                    ui.selectable_value(&mut choices.depth, BitDepth::Int16, "16 bit");
+                    ui.selectable_value(&mut choices.depth, BitDepth::Int24, "24 bit");
+                    ui.selectable_value(&mut choices.depth, BitDepth::Float32, "32 bit float");
+                });
+                ui.horizontal(|ui| {
+                    for rate in [44_100, 48_000, 96_000] {
+                        ui.selectable_value(&mut choices.rate, rate, format!("{},{} kHz", rate / 1000, (rate % 1000) / 100));
+                    }
+                });
+                ui.add_space(6.0);
+                let place =
+                    self.project_dir.as_ref().map_or("Sla het project eerst op".to_string(), |d| d.join("export").display().to_string());
+                ui.label(RichText::new(format!("Map: {place}")).size(11.0).color(palette::TEXT_DIM));
+                ui.add_space(6.0);
+                if ui.button("Exporteren").clicked() {
+                    start = true;
+                }
+            });
+            if let Some(progress) = &running {
+                let done = progress.done.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
+                ui.add(egui::ProgressBar::new(done).show_percentage());
+                if ui.button("Annuleren").clicked() {
+                    progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                ctx.request_repaint();
+            }
+        });
+        self.show_export = open;
+        self.export = choices;
+        if start {
+            self.start_export();
+        }
     }
 
     /// Clean or 388, tape speed and kind, and four amounts from 0 to 200%.
@@ -2971,6 +3190,7 @@ impl DawApp {
         self.poll_loads();
         self.poll_takes();
         self.poll_composed();
+        self.poll_export();
         self.sync_transport();
         self.update_meters(dt);
         self.handle_file_shortcuts(ui);
@@ -3023,6 +3243,7 @@ impl DawApp {
         let ctx = ui.ctx().clone();
         self.settings_window(&ctx);
         self.tape_window(&ctx);
+        self.export_window(&ctx);
         self.unsaved_dialog(&ctx);
         self.confirm_simple_dialog(&ctx);
         if self.may_close {
@@ -3357,6 +3578,28 @@ mod tests {
             writer.write_sample((n * 10) as i16).unwrap_or_else(|e| panic!("{e}"));
         }
         writer.finalize().unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    #[test]
+    fn export_writes_the_mix_and_the_stems_into_the_project() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let kick = files.path().join("01_Kick.wav");
+        write_wav(&kick);
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("Demo");
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(dir.clone()))));
+        app.start_export();
+        assert!(app.status.contains("Sla het project eerst op"), "{}", app.status);
+        app.load_paths(vec![kick]);
+        app.poll_loads();
+        assert!(app.save(Backup::Always));
+        app.export = ExportChoices { stems: true, stem_kind: StemKind::Dry, ..ExportChoices::default() };
+        app.start_export();
+        app.poll_export();
+        assert!(app.status.contains("2 bestand(en)"), "{}", app.status);
+        assert!(dir.join("export").join("Demo_mix.wav").exists());
+        assert!(dir.join("export").join("Demo_01_01_Kick.wav").exists());
     }
 
     #[test]

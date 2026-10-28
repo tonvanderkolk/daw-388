@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.14.0
+Versie: 0.15.0
 Laatst bijgewerkt: 28-10-2026
 
 ## Doel
@@ -24,7 +24,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 | `daw388-engine` | `crates/engine` | Transport, 8 sporen en stereomix. Platformonafhankelijk, geen allocaties of locks in de audiothread |
 | `daw388-tape` | `crates/tape` | Tape-model bij afspelen (acht sporen tegelijk), met dbx |
 | `daw388-fx` | `crates/fx` | Plate reverb en tape echo: buffers bij het aanmaken, geen allocaties in `process` |
-| `daw388-project` | `crates/project` | WAV- en AIFF-import naar mono, samplerate-conversie en de projectmap (`project.json`, `audio/`, `backups/`). Later export |
+| `daw388-project` | `crates/project` | WAV- en AIFF-import naar mono, samplerate-conversie, de projectmap (`project.json`, `audio/`, `backups/`) en de exportbestanden (`export.rs`: `rubato`-resampler, WAV- en AIFF-schrijvers, dither) |
 | `daw388-ui` | `crates/ui` | egui-interface, praat met het platform via de `Platform`-trait |
 | `daw388` | `crates/app-desktop` | Desktop-entrypoint: cpal-uitvoer, bestandsdialogen en het eframe-venster |
 
@@ -90,6 +90,15 @@ Naar de handleiding van de 388 (REC FUNCTION, REC, INSERT, Punch-in):
 - Opnemen gaat op normale snelheid; met de pitch-knop op VARI en niet op 0% weigert REC met een melding.
 - Een project zonder map vraagt bij REC eerst om op te slaan.
 - Ingangsapparaat, meeluisteren en latencycorrectie zijn app-voorkeuren; de ingang per kanaal, INSERT en AUTO PUNCH worden per project bewaard.
+
+## Export
+
+- Knop EXPORT bij de transportsectie of Bestand, Exporteren. Het venster Export kiest: stereo bounce (met of zonder tape-karakter), losse sporen (per spoor aan of uit) met een verwerking, het bereik, het formaat en de map.
+- Offline: `crates/ui/src/export.rs` maakt een tweede engine zonder apparaat op de exportsamplerate, op een achtergrondthread, en geeft hem dezelfde sporen en instellingen. Eerst 3 s voorloop terwijl de band stilstaat (faders, sends en de echo-tijd zetten zich), dan het bereik, dan stopt de band en klinken galm en echo uit tot 0,5 s onder -90 dBFS (hooguit 10 s).
+- Losse sporen: *met mixer en tape* is de mix met dat spoor op SOLO (stereo, met zijn eigen galm en echo; de som van alle stems is de bounce); *alleen tape* is het spoor via een neutraal kanaal door het tape-model (mono); *droog* is de opname zelf (mono).
+- Bereik: het hele nummer (van het begin tot het einde van het langste spoor) of van het nulpunt tot het CUE-punt; dan begint elk bestand op 0:00, of met stilte ervoor zodat het op de band past.
+- WAV of AIFF (32 bit float als AIFF-C `fl32`), 16 bit met TPDF-dither, 24 bit of 32 bit float, 44,1, 48 of 96 kHz; samplerate-conversie met `rubato`. Bestanden in `export/` van het project als `Projectnaam_mix` en `Projectnaam_01_Naam`; een bestaand bestand krijgt `-2`. Er wordt via een tijdelijk bestand geschreven; bij annuleren of een fout worden de bestanden van die export verwijderd.
+- Een kanaal op MIC of LINE zonder AUTO is bij export stil (geen ingang).
 
 ## Tape
 
@@ -168,8 +177,8 @@ Audio wordt op een achtergrondthread gedecodeerd en naar de samplerate van het a
 ## Bekende beperkingen
 
 - Import van WAV en AIFF (ongecomprimeerd). Nog geen FLAC, MP3 of andere formaten.
-- Samplerate-conversie gebruikt Hermite-interpolatie: prima voor afluisteren, voor export komt een betere resampler.
-- Het tape-karakter zit alleen in de weergave; bij export (fase 7) kies je of het meegaat. Pingpong kan alleen in de 388-stand. Zie de roadmap.
+- Samplerate-conversie bij het afspelen gebruikt Hermite-interpolatie; de export gebruikt `rubato`.
+- Het tape-karakter zit alleen in de weergave; bij de export kies je of het meegaat. Pingpong kan alleen in de 388-stand. Zie de roadmap.
 - Een bus die een live ingang en de band tegelijk opneemt, wordt gecompenseerd voor de ingang; het banddeel komt dan de apparaatlatency te vroeg op het nieuwe spoor.
 - Op macOS vraagt het systeem bij het eerste gebruik van een ingang om toegang tot de microfoon. Zolang de app als los programma vanuit de terminal draait, hoort die toestemming bij de terminal.
 - Op macOS is het standaard app-menu uitgezet, zodat Cmd+Q via de opslaan-vraag loopt. Afsluiten door uitloggen of herstarten van de Mac gaat nog wel buiten die vraag om; autosave beperkt dan het verlies tot de laatste 30 seconden.
