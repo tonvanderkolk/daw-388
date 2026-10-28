@@ -3,7 +3,7 @@
 //! Reading WAV and AIFF files into mono tracks and converting them to the device's sample rate, plus the
 //! project folder (see [`session`]). Export follows in phase 7 (see ROADMAP.md).
 
-mod aiff;
+mod decode;
 pub mod export;
 pub mod preferences;
 pub mod session;
@@ -40,7 +40,8 @@ impl MonoClip {
 #[derive(Debug)]
 pub enum ImportError {
     Wav(hound::Error),
-    Aiff(String),
+    /// A format symphonia reads (AIFF, FLAC, MP3) and why it failed.
+    Decode(&'static str, String),
     Io(std::io::Error),
     Empty,
 }
@@ -49,7 +50,7 @@ impl fmt::Display for ImportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Wav(e) => write!(f, "WAV-bestand niet leesbaar: {e}"),
-            Self::Aiff(e) => write!(f, "AIFF-bestand niet leesbaar: {e}"),
+            Self::Decode(format, e) => write!(f, "{format}-bestand niet leesbaar: {e}"),
             Self::Io(e) => write!(f, "bestand niet leesbaar: {e}"),
             Self::Empty => write!(f, "het bestand bevat geen audio"),
         }
@@ -65,9 +66,9 @@ impl From<hound::Error> for ImportError {
 }
 
 /// File extensions the import dialog offers.
-pub const AUDIO_EXTENSIONS: [&str; 5] = ["wav", "wave", "aif", "aiff", "aifc"];
+pub const AUDIO_EXTENSIONS: [&str; 7] = ["wav", "wave", "aif", "aiff", "aifc", "flac", "mp3"];
 
-/// Read a WAV or AIFF file and average its channels to mono. The format is recognised by the
+/// Read a WAV, AIFF, FLAC or MP3 file and average its channels to mono. The format is recognised by the
 /// file's first bytes, not its name.
 pub fn load_audio(path: &Path) -> Result<MonoClip, ImportError> {
     let mut magic = [0u8; 4];
@@ -77,7 +78,10 @@ pub fn load_audio(path: &Path) -> Result<MonoClip, ImportError> {
         // A file shorter than four bytes is not audio; let the WAV reader report it.
         let _ = file.read_exact(&mut magic);
     }
-    if &magic == b"FORM" { aiff::load(path) } else { load_wav(path) }
+    match decode::Format::sniff(&magic) {
+        Some(format) => decode::load(path, format),
+        None => load_wav(path),
+    }
 }
 
 fn file_name(path: &Path) -> String {

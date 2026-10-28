@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/*"]
 
 [workspace.package]
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["Ton van der Kolk"]
@@ -20,7 +20,7 @@ daw388-ui = { path = "crates/ui" }
 
 rtrb = "0.4"
 hound = "3.5"
-symphonia = { version = "0.6", default-features = false, features = ["aiff", "pcm"] }
+symphonia = { version = "0.6", default-features = false, features = ["aiff", "pcm", "flac", "mp3", "id3v2"] }
 cpal = "0.18"
 egui = "0.37"
 eframe = "0.37"

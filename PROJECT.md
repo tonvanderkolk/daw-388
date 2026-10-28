@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.15.0
+Versie: 0.16.0
 Laatst bijgewerkt: 28-10-2026
 
 ## Doel
@@ -24,7 +24,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 | `daw388-engine` | `crates/engine` | Transport, 8 sporen en stereomix. Platformonafhankelijk, geen allocaties of locks in de audiothread |
 | `daw388-tape` | `crates/tape` | Tape-model bij afspelen (acht sporen tegelijk), met dbx |
 | `daw388-fx` | `crates/fx` | Plate reverb en tape echo: buffers bij het aanmaken, geen allocaties in `process` |
-| `daw388-project` | `crates/project` | WAV- en AIFF-import naar mono, samplerate-conversie, de projectmap (`project.json`, `audio/`, `backups/`) en de exportbestanden (`export.rs`: `rubato`-resampler, WAV- en AIFF-schrijvers, dither) |
+| `daw388-project` | `crates/project` | Import van WAV (hound) en AIFF, FLAC en MP3 (symphonia, `decode.rs`; het formaat volgt uit de eerste bytes) naar mono, samplerate-conversie, de projectmap (`project.json`, `audio/`, `backups/`) en de exportbestanden (`export.rs`: `rubato`-resampler, WAV- en AIFF-schrijvers, dither) |
 | `daw388-ui` | `crates/ui` | egui-interface, praat met het platform via de `Platform`-trait |
 | `daw388` | `crates/app-desktop` | Desktop-entrypoint: cpal-uitvoer, bestandsdialogen en het eframe-venster |
 
@@ -176,7 +176,7 @@ Audio wordt op een achtergrondthread gedecodeerd en naar de samplerate van het a
 
 ## Bekende beperkingen
 
-- Import van WAV en AIFF (ongecomprimeerd). Nog geen FLAC, MP3 of andere formaten.
+- Import van WAV, AIFF, FLAC en MP3. MP3 begint en eindigt met een beetje stilte (encodervertraging); andere formaten (OGG, AAC) nog niet.
 - Samplerate-conversie bij het afspelen gebruikt Hermite-interpolatie; de export gebruikt `rubato`.
 - Het tape-karakter zit alleen in de weergave; bij de export kies je of het meegaat. Pingpong kan alleen in de 388-stand. Zie de roadmap.
 - Een bus die een live ingang en de band tegelijk opneemt, wordt gecompenseerd voor de ingang; het banddeel komt dan de apparaatlatency te vroeg op het nieuwe spoor.

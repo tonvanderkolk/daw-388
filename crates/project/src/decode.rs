@@ -1,4 +1,4 @@
-//! AIFF and AIFF-C import through symphonia (uncompressed PCM, 8 to 32-bit integer and float).
+//! AIFF, AIFF-C, FLAC and MP3 import through symphonia (WAV goes through hound).
 
 use crate::{ImportError, MonoClip, file_name, to_mono};
 use std::path::Path;
@@ -9,19 +9,54 @@ use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
 
-fn err(e: impl std::fmt::Display) -> ImportError {
-    ImportError::Aiff(e.to_string())
+/// The formats symphonia reads for us, recognised by their first bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Format {
+    Aiff,
+    Flac,
+    Mp3,
 }
 
-pub(crate) fn load(path: &Path) -> Result<MonoClip, ImportError> {
+impl Format {
+    /// The format from a file's first four bytes; `None` for anything else (WAV and the rest).
+    pub(crate) fn sniff(magic: &[u8; 4]) -> Option<Self> {
+        match magic {
+            b"FORM" => Some(Self::Aiff),
+            b"fLaC" => Some(Self::Flac),
+            // An ID3 tag, or an MPEG frame sync.
+            [b'I', b'D', b'3', _] => Some(Self::Mp3),
+            [0xFF, second, ..] if second & 0xE0 == 0xE0 => Some(Self::Mp3),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Aiff => "AIFF",
+            Self::Flac => "FLAC",
+            Self::Mp3 => "MP3",
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Aiff => "aiff",
+            Self::Flac => "flac",
+            Self::Mp3 => "mp3",
+        }
+    }
+}
+
+pub(crate) fn load(path: &Path, format: Format) -> Result<MonoClip, ImportError> {
+    let err = |e: &dyn std::fmt::Display| ImportError::Decode(format.name(), e.to_string());
     let file = std::fs::File::open(path).map_err(ImportError::Io)?;
     let stream = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
     let mut hint = Hint::new();
-    hint.with_extension("aiff");
+    hint.with_extension(format.extension());
     let mut reader =
-        symphonia::default::get_probe().probe(&hint, stream, FormatOptions::default(), MetadataOptions::default()).map_err(err)?;
+        symphonia::default::get_probe().probe(&hint, stream, FormatOptions::default(), MetadataOptions::default()).map_err(|e| err(&e))?;
 
-    let track = reader.default_track(TrackType::Audio).ok_or_else(|| err("geen audiospoor gevonden"))?;
+    let track = reader.default_track(TrackType::Audio).ok_or_else(|| err(&"geen audiospoor gevonden"))?;
     let track_id = track.id;
     let params = track
         .codec_params
@@ -29,9 +64,9 @@ pub(crate) fn load(path: &Path) -> Result<MonoClip, ImportError> {
         .and_then(|p| p.audio())
         .filter(|p| p.codec != CODEC_ID_NULL_AUDIO)
         .cloned()
-        .ok_or_else(|| err("geen bruikbaar audioformaat"))?;
-    let sample_rate = params.sample_rate.filter(|&r| r > 0).ok_or_else(|| err("onbekende samplerate"))?;
-    let mut decoder = symphonia::default::get_codecs().make_audio_decoder(&params, &AudioDecoderOptions::default()).map_err(err)?;
+        .ok_or_else(|| err(&"geen bruikbaar audioformaat"))?;
+    let sample_rate = params.sample_rate.filter(|&r| r > 0).ok_or_else(|| err(&"onbekende samplerate"))?;
+    let mut decoder = symphonia::default::get_codecs().make_audio_decoder(&params, &AudioDecoderOptions::default()).map_err(|e| err(&e))?;
 
     let mut interleaved: Vec<f32> = Vec::new();
     let mut scratch: Vec<f32> = Vec::new();
@@ -42,12 +77,12 @@ pub(crate) fn load(path: &Path) -> Result<MonoClip, ImportError> {
             Ok(None) => break,
             // A file cut short still plays up to where it ends.
             Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(err(e)),
+            Err(e) => return Err(err(&e)),
         };
         if packet.track_id != track_id {
             continue;
         }
-        let decoded = decoder.decode(&packet).map_err(err)?;
+        let decoded = decoder.decode(&packet).map_err(|e| err(&e))?;
         let planes = decoded.num_planes();
         if planes == 0 {
             continue;
@@ -142,5 +177,42 @@ mod tests {
         let empty = dir.path().join("leeg.aif");
         std::fs::write(&empty, b"").unwrap_or_else(|e| panic!("{e}"));
         assert!(load_audio(&empty).is_err());
+    }
+
+    fn fixture(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join(name)
+    }
+
+    /// The frequency of a sine from its rising zero crossings.
+    fn hz(samples: &[f32], rate: u32) -> f32 {
+        let part = &samples[samples.len() / 10..samples.len() * 9 / 10];
+        let crossings = part.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+        crossings as f32 * rate as f32 / part.len() as f32
+    }
+
+    #[test]
+    fn flac_reads_as_mono_at_its_rate() {
+        let clip = load_audio(&fixture("sine.flac")).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!((clip.name.as_str(), clip.sample_rate, clip.samples.len()), ("sine", 44_100, 22_050));
+        assert!((hz(&clip.samples, 44_100) - 1_000.0).abs() < 10.0);
+    }
+
+    #[test]
+    fn mp3_reads_as_mono_at_its_rate() {
+        let clip = load_audio(&fixture("sine.mp3")).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(clip.sample_rate, 48_000);
+        // MP3 adds a little silence at the start and end (encoder delay and padding).
+        assert!(clip.samples.len() >= 24_000 && clip.samples.len() < 27_000, "{}", clip.samples.len());
+        assert!((hz(&clip.samples, 48_000) - 1_000.0).abs() < 10.0);
+    }
+
+    #[test]
+    fn formats_are_recognised_by_their_first_bytes() {
+        use super::Format;
+        assert_eq!(Format::sniff(b"FORM"), Some(Format::Aiff));
+        assert_eq!(Format::sniff(b"fLaC"), Some(Format::Flac));
+        assert_eq!(Format::sniff(b"ID3\x04"), Some(Format::Mp3));
+        assert_eq!(Format::sniff(&[0xFF, 0xFB, 0x90, 0x00]), Some(Format::Mp3));
+        assert_eq!(Format::sniff(b"RIFF"), None);
     }
 }

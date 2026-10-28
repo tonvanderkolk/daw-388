@@ -1785,7 +1785,7 @@ impl DawApp {
                 label.on_hover_text(format!("Niet gevonden: {}", source.display()));
             }
             ui.horizontal(|ui| {
-                if ui.small_button("Laad").on_hover_text("WAV- of AIFF-bestand op dit spoor laden").clicked() {
+                if ui.small_button("Laad").on_hover_text("WAV-, AIFF-, FLAC- of MP3-bestand op dit spoor laden").clicked() {
                     load = true;
                 }
                 if (track.clip.is_some() || track.missing) && ui.small_button("Wis").clicked() {

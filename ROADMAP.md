@@ -49,7 +49,7 @@
 
 ## Fase 7: Export, import, autosave
 - [x] Stereo bounce en stems, verwerkingsopties, WAV/AIFF, 16/24/32-bit float, 44,1/48/96 kHz (0.15.0)
-- [ ] Import van andere formaten (symphonia): AIFF is er sinds 0.2.1, FLAC en MP3 volgen
+- [x] Import van andere formaten (symphonia): AIFF sinds 0.2.1, FLAC en MP3 sinds 0.16.0
 - [x] Autosave met visuele bevestiging, backups (0.2.0)
 
 ## Fase 8: Vintage UI-skin volgens A2
