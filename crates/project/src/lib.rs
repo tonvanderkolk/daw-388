@@ -6,13 +6,15 @@
 mod decode;
 pub mod export;
 pub mod preferences;
+pub mod regions;
+pub mod render;
 pub mod session;
 pub mod take;
 
 pub use session::{
     Backup, BandEntry, ChannelEntry, ChannelSource, EchoEntry, EchoSyncEntry, EffectsEntry, EqEntry, KindEntry, ListenSwitch, MeterSwitch,
-    MetronomeSettings, MixerEntry, MonSwitch, MonitorEntry, OpenedProject, PlateEntry, ProjectError, ProjectSettings, RepeatMode, Routing,
-    RtnEntry, SEND_CLOSED_DB, Saved, SpeedEntry, TapeMode, TapeSettings, TrackToSave, TransportSettings,
+    MetronomeSettings, MixerEntry, MonSwitch, MonitorEntry, OpenedProject, PlateEntry, ProjectError, ProjectSettings, RegionEntry,
+    RegionToSave, RepeatMode, Routing, RtnEntry, SEND_CLOSED_DB, Saved, SpeedEntry, TapeMode, TapeSettings, TrackToSave, TransportSettings,
 };
 
 use std::fmt;

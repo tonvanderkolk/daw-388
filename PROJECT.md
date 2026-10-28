@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.16.0
+Versie: 0.17.0
 Laatst bijgewerkt: 28-10-2026
 
 ## Doel
@@ -24,7 +24,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 | `daw388-engine` | `crates/engine` | Transport, 8 sporen en stereomix. Platformonafhankelijk, geen allocaties of locks in de audiothread |
 | `daw388-tape` | `crates/tape` | Tape-model bij afspelen (acht sporen tegelijk), met dbx |
 | `daw388-fx` | `crates/fx` | Plate reverb en tape echo: buffers bij het aanmaken, geen allocaties in `process` |
-| `daw388-project` | `crates/project` | Import van WAV (hound) en AIFF, FLAC en MP3 (symphonia, `decode.rs`; het formaat volgt uit de eerste bytes) naar mono, samplerate-conversie, de projectmap (`project.json`, `audio/`, `backups/`) en de exportbestanden (`export.rs`: `rubato`-resampler, WAV- en AIFF-schrijvers, dither) |
+| `daw388-project` | `crates/project` | Import van WAV (hound) en AIFF, FLAC en MP3 (symphonia, `decode.rs`; het formaat volgt uit de eerste bytes) naar mono, samplerate-conversie, de projectmap (`project.json`, `audio/`, `backups/`), de exportbestanden (`export.rs`: `rubato`-resampler, WAV- en AIFF-schrijvers, dither), het regiomodel (`regions.rs`) en het uitrekenen van een spoor (`render.rs`) |
 | `daw388-ui` | `crates/ui` | egui-interface, praat met het platform via de `Platform`-trait |
 | `daw388` | `crates/app-desktop` | Desktop-entrypoint: cpal-uitvoer, bestandsdialogen en het eframe-venster |
 
@@ -37,6 +37,9 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 - De engine kent geen audioapparaten. `app-desktop` roept `Engine::render` aan vanuit de cpal-callback; een latere browserversie doet hetzelfde vanuit WebAudio.
 - Bij het wisselen van apparaat bouwt de app een nieuwe engine op de samplerate van het apparaat en stuurt de sporen (opnieuw geconverteerd), mixinstellingen en positie opnieuw.
 - Sporen zijn mono, zoals op de 388. Stereobestanden worden bij het laden gemiddeld naar mono.
+- Een spoor bestaat uit regio's: een stuk van een bron (een audiobestand) op een plek op de band, gesorteerd en zonder overlap. Wat op een plek komt, vervangt wat er lag; de bron blijft, dus een rand is terug te halen. De bewerkingen zijn pure functies in `regions.rs`, zodat undo de oude lijst kan bewaren.
+- De engine kent geen regio's. Na elke wijziging rekent de UI het spoor op de achtergrond uit tot één buffer (`render.rs`: stilte tussen regio's, een fade van 3 ms aan een vrije rand, een crossfade van 3 ms waar twee regio's elkaar raken, niets waar een regio zijn bron naadloos voortzet) en stuurt die met `SetTrack`. De bronnen staan in een gedeelde tabel (`crates/ui/src/sources.rs`), elk één keer gedecodeerd en één keer omgezet naar de samplerate van de engine.
+- Undo en redo (`crates/ui/src/history.rs`): 10 stappen voor alles wat de inhoud van de sporen verandert. Een stap bewaart de regio's van de sporen die hij raakte; de bronnen worden gedeeld.
 - Het formaat van een audiobestand wordt herkend aan de eerste bytes (`RIFF` of `FORM`), niet aan de extensie.
 
 ## Projectmap
@@ -48,9 +51,11 @@ Mijn liedje/
 └── backups/            # eerdere versies van project.json (laatste 10)
 ```
 
-- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 2), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `tape` (`mode` clean/388, ontbreekt: clean; `speed` 3.75/7.5/15, `kind` 456/250/911, `saturation`, `wow_flutter`, `noise`, `crosstalk` van 0 tot 2, `dbx` twee booleans, ontbreekt: aan), `mixer` (`mode` simple/388, ontbreekt: 388; `odd_db`, `even_db`, `mon` pgm/cue, `mono`, `aux_master_db`, `eff_master_db`, `phones_db`, `listen` stereo/aux/eff, `meter` lr/aux_eff, `effects` met `plate` (`decay_s`, `predelay_ms`, `tone`), `echo` (`time_ms`, `sync` off/quarter/eighth/dotted_eighth, `feedback`, `tone`) en `rtn` (twee keer `gain_db` en `pan`; ontbreken ze, dan zijn de RTN's dicht)) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `aux_db`, `aux_pre`, `eff_db` (ontbreken ze, dan zijn de sends dicht: `SEND_CLOSED_DB`, -60 dB), `eq` met `low`, `mid` en `high` (elk `freq_hz` en `gain_db`; ontbreekt `eq`, dan is hij vlak), `assign`, `lr`, `direct`, `auto`) en `monitor` (`gain_db`, `pan`, `mute`).
+- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 3), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `tape` (`mode` clean/388, ontbreekt: clean; `speed` 3.75/7.5/15, `kind` 456/250/911, `saturation`, `wow_flutter`, `noise`, `crosstalk` van 0 tot 2, `dbx` twee booleans, ontbreekt: aan), `mixer` (`mode` simple/388, ontbreekt: 388; `odd_db`, `even_db`, `mon` pgm/cue, `mono`, `aux_master_db`, `eff_master_db`, `phones_db`, `listen` stereo/aux/eff, `meter` lr/aux_eff, `effects` met `plate` (`decay_s`, `predelay_ms`, `tone`), `echo` (`time_ms`, `sync` off/quarter/eighth/dotted_eighth, `feedback`, `tone`) en `rtn` (twee keer `gain_db` en `pan`; ontbreken ze, dan zijn de RTN's dicht)) en per spoor `number`, `name`, `regions` (elk `file` met een relatief pad, `start` op de band en `offset` in het bestand in seconden, `length` en `name`), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `aux_db`, `aux_pre`, `eff_db` (ontbreken ze, dan zijn de sends dicht: `SEND_CLOSED_DB`, -60 dB), `eq` met `low`, `mid` en `high` (elk `freq_hz` en `gain_db`; ontbreekt `eq`, dan is hij vlak), `assign`, `lr`, `direct`, `auto`) en `monitor` (`gain_db`, `pan`, `mute`).
+- `length` ontbreekt alleen bij de enige regio van een spoor die vanaf 0:00 een heel bestand speelt waarvan de lengte nog niet bekend is: een spoor dat nog geladen wordt of waarvan het bestand ontbreekt. Zo'n spoor neemt niets nieuws aan (geen REC FUNCTION, geen Laad) tot het bestand geladen is of het spoor gewist.
+- Een project met formaatversie 2 (0.16.0 en ouder) opent met per spoor één regio over het hele bestand vanaf 0:00. Een regio die niet klopt (geen lengte, overlap, negatieve tijden) wordt bij het openen weggelaten met een melding.
 - Een project met formaatversie 1 (0.7.0 en ouder) opent als eenvoudig project: fader, pan en mute blijven de kanaalfader, elk kanaal krijgt de eenvoudige instelling (LINE, AUTO, DIRECT, L-R) en houdt zijn ingang. Een project van 0.8.0 of 0.9.0 (zonder `mode`) opent in de 388-stand.
-- Opslaan kopieert audio van buiten het project naar `audio/`. Het origineel blijft staan. Bij een naamconflict krijgt de kopie een achtervoegsel (`take-2.wav`).
+- Opslaan kopieert audio van buiten het project naar `audio/`, elk bestand één keer, ook als meerdere regio's het gebruiken. Het origineel blijft staan. Bij een naamconflict krijgt de kopie een achtervoegsel (`take-2.wav`).
 - `project.json` wordt eerst naar een tijdelijk bestand geschreven en daarna hernoemd, zodat een crash nooit een half bestand achterlaat.
 - Autosave volgt 30 seconden na een wijziging, alleen als het project al een map heeft.
 - Backups: bij elke handmatige opslag en hooguit elke 5 minuten bij autosave.
@@ -85,8 +90,8 @@ Naar de handleiding van de 388 (REC FUNCTION, REC, INSERT, Punch-in):
 - AUTO PUNCH: na REC wordt alleen tussen nulpunt en CUE-punt opgenomen, bij elke doorgang met REPEAT opnieuw.
 - De ingang draait op de samplerate van de uitvoer. De input-callback vult een lock-free ring, de output-callback leest per uitvoerframe een invoerframe, zodat band en ingang op dezelfde klok lopen. Bij twee apparaten met een eigen klok stuurt de engine bij door af en toe een frame over te slaan.
 - Latencycompensatie: de tijd van opname tot callback (ingang) plus van callback tot weergave (uitgang), gemeten met de tijdstempels van cpal, plus de vulling van de ring, plus een handmatige correctie in milliseconden. Een opname wordt zoveel eerder op de band gelegd.
-- De engine stuurt per spoor een stroom `Start(positie)`, samples en `Stop` naar een schrijver op een eigen thread, die elke take als 32-bit float WAV in een tijdelijke map zet. Daarna legt een achtergrondtaak de take over het spoor (alleen het opgenomen stuk wordt vervangen, zoals op band) en schrijft het resultaat als 24-bit WAV `NN_Naam_opnameN.wav` in `audio/`. Takes van hetzelfde spoor worden op volgorde verwerkt.
-- Cmd+Z (Bewerken, Opname ongedaan maken) zet tot 10 opnames terug; de bestanden blijven in `audio/` staan.
+- De engine stuurt per spoor een stroom `Start(positie)`, samples en `Stop` naar een schrijver op een eigen thread, die elke take als 32-bit float WAV in een tijdelijke map zet. Daarna schrijft een achtergrondtaak de take als 24-bit WAV `NN_Naam_opnameN.wav` in `audio/` (alleen het opgenomen stuk), en wordt hij een regio op zijn plek die vervangt wat eronder lag, zoals op band. Takes van hetzelfde spoor worden op volgorde verwerkt. Een take die door latencycorrectie voor 0:00 zou beginnen, verliest dat stuk. Een take die binnenkomt nadat er een ander project is geopend, wordt niet geplaatst (het bestand blijft staan).
+- Cmd+Z (Bewerken, Ongedaan maken) zet tot 10 stappen terug: opnames, laden, Laad en Wis. Cmd+Shift+Z doet ze opnieuw. Tijdens een opname kan dat niet. De bestanden blijven in `audio/` staan.
 - Opnemen gaat op normale snelheid; met de pitch-knop op VARI en niet op 0% weigert REC met een melding.
 - Een project zonder map vraagt bij REC eerst om op te slaan.
 - Ingangsapparaat, meeluisteren en latencycorrectie zijn app-voorkeuren; de ingang per kanaal, INSERT en AUTO PUNCH worden per project bewaard.
@@ -94,8 +99,8 @@ Naar de handleiding van de 388 (REC FUNCTION, REC, INSERT, Punch-in):
 ## Export
 
 - Knop EXPORT bij de transportsectie of Bestand, Exporteren. Het venster Export kiest: stereo bounce (met of zonder tape-karakter), losse sporen (per spoor aan of uit) met een verwerking, het bereik, het formaat en de map.
-- Offline: `crates/ui/src/export.rs` maakt een tweede engine zonder apparaat op de exportsamplerate, op een achtergrondthread, en geeft hem dezelfde sporen en instellingen. Eerst 3 s voorloop terwijl de band stilstaat (faders, sends en de echo-tijd zetten zich), dan het bereik, dan stopt de band en klinken galm en echo uit tot 0,5 s onder -90 dBFS (hooguit 10 s).
-- Losse sporen: *met mixer en tape* is de mix met dat spoor op SOLO (stereo, met zijn eigen galm en echo; de som van alle stems is de bounce); *alleen tape* is het spoor via een neutraal kanaal door het tape-model (mono); *droog* is de opname zelf (mono).
+- Offline: `crates/ui/src/export.rs` maakt een tweede engine zonder apparaat op de exportsamplerate, op een achtergrondthread, en geeft hem dezelfde sporen en instellingen. De sporen worden daar uit hun regio's uitgerekend, met de bronnen via `rubato` op de exportsamplerate, zodat de export klinkt zoals de app. Eerst 3 s voorloop terwijl de band stilstaat (faders, sends en de echo-tijd zetten zich), dan het bereik, dan stopt de band en klinken galm en echo uit tot 0,5 s onder -90 dBFS (hooguit 10 s).
+- Losse sporen: *met mixer en tape* is de mix met dat spoor op SOLO (stereo, met zijn eigen galm en echo; de som van alle stems is de bounce); *alleen tape* is het spoor via een neutraal kanaal door het tape-model (mono); *droog* is het spoor zelf, zijn regio's met hun fades (mono).
 - Bereik: het hele nummer (van het begin tot het einde van het langste spoor) of van het nulpunt tot het CUE-punt; dan begint elk bestand op 0:00, of met stilte ervoor zodat het op de band past.
 - WAV of AIFF (32 bit float als AIFF-C `fl32`), 16 bit met TPDF-dither, 24 bit of 32 bit float, 44,1, 48 of 96 kHz; samplerate-conversie met `rubato`. Bestanden in `export/` van het project als `Projectnaam_mix` en `Projectnaam_01_Naam`; een bestaand bestand krijgt `-2`. Er wordt via een tijdelijk bestand geschreven; bij annuleren of een fout worden de bestanden van die export verwijderd.
 - Een kanaal op MIC of LINE zonder AUTO is bij export stil (geen ingang).
@@ -165,7 +170,10 @@ Er zijn twee routes: wat er op band komt (kanaal, bus, spoor) en wat je hoort (M
 
 ## Laden
 
-Audio wordt op een achtergrondthread gedecodeerd en naar de samplerate van het apparaat omgezet (via `Platform::spawn`). Elk verzoek krijgt een volgnummer; een resultaat voor een spoor dat intussen gewist of opnieuw geladen is, wordt genegeerd. Bij een apparaatwissel worden de sporen op de achtergrond opnieuw omgezet.
+Een bron (audiobestand) wordt op een achtergrondthread gedecodeerd en naar de samplerate van het apparaat omgezet (via `Platform::spawn`), één keer, hoeveel regio's hem ook gebruiken. Daarna wordt elk spoor dat hem gebruikt opnieuw uitgerekend. Bronnen en sporen hebben elk een volgnummer; een te laat resultaat wordt genegeerd. Bij een apparaatwissel worden de bronnen opnieuw omgezet en de sporen opnieuw uitgerekend.
+
+- Laad in de strook zet een bestand als regio op het spoor, vanaf de afspeelpositie op het moment van kiezen; het vervangt alleen dat stuk.
+- "8 audiobestanden laden..." en bestanden op de opdrachtregel vervangen de sporen 1 tot 8 (op naamvolgorde) door één regio vanaf 0:00, samen één undo-stap.
 
 ## Audio-uitvoer
 

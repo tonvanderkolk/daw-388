@@ -1,23 +1,6 @@
-//! Recorded takes: laying a take over a track the way tape does (only the recorded stretch is
-//! replaced), and writing the result as a 24-bit WAV file.
+//! Recorded takes: their file names and writing them as 24-bit WAV files.
 
 use std::path::{Path, PathBuf};
-
-/// The track after recording `take` at sample position `start` (negative: the take begins
-/// before the start of the tape, and that part is dropped). Outside the take the old audio stays;
-/// a gap between the end of the old audio and the take is silence.
-pub fn lay_over(old: &[f32], take: &[f32], start: i64) -> Vec<f32> {
-    let skip = usize::try_from(-start).unwrap_or(0).min(take.len());
-    let take = &take[skip..];
-    let start = usize::try_from(start.max(0)).unwrap_or(0);
-    let end = start + take.len();
-    let mut out = old.to_vec();
-    if out.len() < end {
-        out.resize(end, 0.0);
-    }
-    out[start..end].copy_from_slice(take);
-    out
-}
 
 /// Write mono audio as a 24-bit WAV file (atomically: a temporary file, then renamed).
 pub fn write_wav_24(path: &Path, sample_rate: u32, samples: &[f32]) -> Result<(), hound::Error> {
@@ -61,24 +44,6 @@ fn strip_take_suffix(name: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_punch_in_replaces_only_the_recorded_stretch() {
-        let old = vec![1.0; 10];
-        assert_eq!(lay_over(&old, &[5.0, 5.0], 3), vec![1.0, 1.0, 1.0, 5.0, 5.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
-    }
-
-    #[test]
-    fn a_take_past_the_end_extends_the_track_with_silence_before_it() {
-        assert_eq!(lay_over(&[1.0, 1.0], &[5.0], 4), vec![1.0, 1.0, 0.0, 0.0, 5.0]);
-        assert_eq!(lay_over(&[], &[5.0, 6.0], 0), vec![5.0, 6.0]);
-    }
-
-    #[test]
-    fn a_take_before_the_start_of_the_tape_loses_that_part() {
-        assert_eq!(lay_over(&[1.0, 1.0, 1.0], &[4.0, 5.0, 6.0], -2), vec![6.0, 1.0, 1.0]);
-        assert_eq!(lay_over(&[1.0], &[4.0], -5), vec![1.0]);
-    }
 
     #[test]
     fn writes_24_bit_wav_that_reads_back() {

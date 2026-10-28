@@ -5,6 +5,9 @@
 use daw388_engine::{ChannelParams, Command, Meter, MixerParams, MonitorParams, Source, TRACKS, TapeParams, TrackAudio};
 use daw388_project::MonoClip;
 use daw388_project::export::{BitDepth, ExportFormat, export_name, resample_hq, unused_path, write_audio};
+use daw388_project::regions::{Region, SourceId};
+use daw388_project::render::{RateSources, render_track};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -21,11 +24,20 @@ pub(crate) enum StemKind {
     Dry,
 }
 
+/// One track for an export: its name (for the stem's file name) and its regions.
+#[derive(Clone, Default)]
+pub(crate) struct ExportTrack {
+    pub name: String,
+    pub regions: Vec<Region>,
+}
+
 /// Everything an export needs, copied from the app so it can run on its own thread.
 #[derive(Clone)]
 pub(crate) struct ExportJob {
     pub rate: u32,
-    pub clips: [Option<Arc<MonoClip>>; TRACKS],
+    pub tracks: [ExportTrack; TRACKS],
+    /// The sources the regions use, at their own rate.
+    pub sources: HashMap<SourceId, Arc<MonoClip>>,
     pub channels: [ChannelParams; TRACKS],
     pub monitors: [MonitorParams; TRACKS],
     pub mixer: MixerParams,
@@ -163,12 +175,26 @@ impl Renderer<'_> {
     }
 }
 
+/// Every track with regions as one buffer at the export's rate, the way the app renders them.
+fn render_tracks(job: &ExportJob) -> [Option<Arc<TrackAudio>>; TRACKS] {
+    let used = |id: &SourceId| job.tracks.iter().any(|t| t.regions.iter().any(|r| r.source == *id));
+    let sources: RateSources = job
+        .sources
+        .iter()
+        .filter(|(id, _)| used(id))
+        .map(|(id, clip)| (*id, Arc::new(resample_hq(&clip.samples, clip.sample_rate, job.rate))))
+        .collect();
+    std::array::from_fn(|i| {
+        let track = &job.tracks[i];
+        (!track.regions.is_empty())
+            .then(|| Arc::new(TrackAudio { name: track.name.clone(), samples: render_track(&track.regions, &sources, job.rate) }))
+    })
+}
+
 /// Run an export; returns the files written. On an error or a cancel, nothing is left behind.
 pub(crate) fn run(job: &ExportJob, progress: &Progress) -> Result<Vec<PathBuf>, String> {
     std::fs::create_dir_all(&job.dir).map_err(|e| format!("Map {} maken mislukt: {e}", job.dir.display()))?;
-    let audio = job.clips.clone().map(|clip| {
-        clip.map(|clip| Arc::new(TrackAudio { name: clip.name.clone(), samples: resample_hq(&clip.samples, clip.sample_rate, job.rate) }))
-    });
+    let audio = render_tracks(job);
     let mut renderer = Renderer { job, audio, progress, done: 0, total: 0 };
     let renders = job.stereo.iter().count() + job.stems.len();
     renderer.total = (renders * renderer.frames()) as u64;
@@ -195,8 +221,12 @@ pub(crate) fn run(job: &ExportJob, progress: &Progress) -> Result<Vec<PathBuf>, 
                 StemKind::TapeOnly => vec![renderer.render(Some(index), job.tape.on, true)?[0].clone()],
                 StemKind::Dry => vec![renderer.dry(index)?],
             };
-            let clip = job.clips[index].as_ref().map(|c| c.name.as_str());
-            save(export_name(&job.project, Some(index), clip), renderer.place(channels), &mut written)?;
+            let name = &job.tracks[index].name;
+            save(
+                export_name(&job.project, Some(index), (!name.is_empty()).then_some(name.as_str())),
+                renderer.place(channels),
+                &mut written,
+            )?;
         }
         Ok(())
     })();
@@ -221,14 +251,22 @@ mod tests {
 
     const RATE: u32 = 48_000;
 
-    fn clip(name: &str, samples: Vec<f32>) -> Option<Arc<MonoClip>> {
-        Some(Arc::new(MonoClip { name: name.into(), sample_rate: RATE, samples }))
+    /// Put `samples` on track `index` as one region from 0:00, with the track's index as source.
+    fn put(job: &mut ExportJob, index: usize, name: &str, samples: Vec<f32>) {
+        let clip = MonoClip { name: name.into(), sample_rate: RATE, samples };
+        let region = Region { source: index as SourceId, start: 0.0, offset: 0.0, length: clip.duration_seconds(), name: name.into() };
+        job.tracks[index] = ExportTrack { name: name.into(), regions: vec![region] };
+        job.sources.insert(index as SourceId, Arc::new(clip));
     }
 
     fn job(dir: PathBuf) -> ExportJob {
-        let mut clips: [Option<Arc<MonoClip>>; TRACKS] = Default::default();
-        clips[0] = clip("Kick", (0..24_000).map(|i| if i % 4_800 == 0 { 0.8 } else { 0.0 }).collect());
-        clips[1] = clip("Bas", (0..24_000).map(|i| 0.3 * (i as f32 * 0.01).sin()).collect());
+        let mut job = empty_job(dir);
+        put(&mut job, 0, "Kick", (0..24_000).map(|i| if i % 4_800 == 0 { 0.8 } else { 0.0 }).collect());
+        put(&mut job, 1, "Bas", (0..24_000).map(|i| 0.3 * (i as f32 * 0.01).sin()).collect());
+        job
+    }
+
+    fn empty_job(dir: PathBuf) -> ExportJob {
         let channels = std::array::from_fn(|i| ChannelParams {
             lr: true,
             pan: if i == 0 { -0.5 } else { 0.3 },
@@ -240,7 +278,8 @@ mod tests {
         let echo = EchoParams { time_ms: 100.0, feedback: 0.0, tone: 1.0, sync: EchoSync::Off };
         ExportJob {
             rate: RATE,
-            clips,
+            tracks: Default::default(),
+            sources: HashMap::new(),
             channels,
             monitors: [MonitorParams::default(); TRACKS],
             mixer: MixerParams { rtn, echo, ..MixerParams::default() },
@@ -259,8 +298,7 @@ mod tests {
     }
 
     fn renderer<'a>(job: &'a ExportJob, progress: &'a Progress) -> Renderer<'a> {
-        let audio = job.clips.clone().map(|c| c.map(|c| Arc::new(TrackAudio { name: c.name.clone(), samples: c.samples.clone() })));
-        Renderer { job, audio, progress, done: 0, total: 1 }
+        Renderer { job, audio: render_tracks(job), progress, done: 0, total: 1 }
     }
 
     #[test]
@@ -291,8 +329,26 @@ mod tests {
         let names: Vec<String> = files.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["Demo_mix.wav", "Demo_01_Kick.wav", "Demo_02_Bas.wav"]);
         let dry = daw388_project::load_audio(&files[1]).unwrap_or_else(|e| panic!("{e}"));
-        let original = job.clips[0].as_ref().map(|c| c.samples.clone()).unwrap_or_default();
-        assert_eq!(dry.samples, original, "bit for bit");
+        let original = job.sources[&0].samples.clone();
+        // Bit for bit, apart from the 3 ms fades at the edges (144 samples at 48 kHz).
+        assert_eq!(dry.samples.len(), original.len());
+        assert_eq!(dry.samples[144..original.len() - 144], original[144..original.len() - 144]);
+        assert!(dry.samples[0] < original[0], "the first sample is faded in");
+    }
+
+    #[test]
+    fn a_stem_follows_the_regions() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut job =
+            ExportJob { range: (0.0, 0.75), stereo: None, stems: vec![(0, StemKind::Dry)], ..empty_job(dir.path().to_path_buf()) };
+        put(&mut job, 0, "Gitaar", vec![0.5; 48_000]);
+        let region = |start: f64| Region { source: 0, start, offset: 0.0, length: 0.25, name: "Gitaar".into() };
+        job.tracks[0].regions = vec![region(0.0), region(0.5)];
+        let progress = Progress::default();
+        let dry = renderer(&job, &progress).dry(0).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(dry.len(), 36_000);
+        assert!(dry[12_500..23_500].iter().all(|s| *s == 0.0));
+        assert_eq!((dry[6_000], dry[30_000]), (0.5, 0.5));
     }
 
     #[test]

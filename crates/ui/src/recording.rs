@@ -1,7 +1,7 @@
 //! Takes on their way to disk: a writer that turns the engine's recorded stream into temporary
-//! files, and the job that lays a finished take over its track and saves the result.
+//! files, and the job that saves a finished take in the project.
 
-use daw388_engine::{RecItem, Recorder, TRACKS, TrackAudio};
+use daw388_engine::{RecItem, Recorder, TRACKS};
 use daw388_project::MonoClip;
 use std::fs::File;
 use std::io::BufWriter;
@@ -117,21 +117,13 @@ pub fn run_writer(mut recorder: Recorder, dir: PathBuf, rate: u32, tx: Sender<Ta
     }
 }
 
-/// What the track held before the take, to lay the take over.
-pub enum Underneath {
-    Nothing,
-    /// Already at the take's rate.
-    Audio(Arc<TrackAudio>),
-    /// At another rate: resample first.
-    Clip(Arc<MonoClip>),
-}
-
-/// The track after a take: saved at `dest`, and in memory for the UI and the engine.
-pub struct Composed {
+/// A take saved in the project: its file, and its audio for the source table.
+pub struct StoredTake {
     pub path: PathBuf,
     pub clip: Arc<MonoClip>,
-    pub audio: Arc<TrackAudio>,
-    pub rate: u32,
+    /// The take at the engine's rate.
+    pub at_rate: Arc<Vec<f32>>,
+    pub engine_rate: u32,
 }
 
 fn read_take(path: &Path) -> Result<Vec<f32>, String> {
@@ -139,37 +131,26 @@ fn read_take(path: &Path) -> Result<Vec<f32>, String> {
     reader.into_samples::<f32>().collect::<Result<_, _>>().map_err(|e| e.to_string())
 }
 
-/// Lay `take` over what the track held and save the result as a 24-bit WAV at `dest`; the
-/// temporary take file is removed afterwards.
-pub fn compose(take: &TakeDone, underneath: &Underneath, dest: &Path) -> Result<Composed, String> {
-    let recorded = read_take(&take.path)?;
-    let resampled;
-    let old: &[f32] = match underneath {
-        Underneath::Nothing => &[],
-        Underneath::Audio(audio) => &audio.samples,
-        Underneath::Clip(clip) => {
-            resampled = clip.at_rate(take.rate);
-            &resampled
-        }
-    };
-    let samples = daw388_project::take::lay_over(old, &recorded, take.start.round() as i64);
+/// Save `take` as a 24-bit WAV at `dest`; the temporary take file is removed afterwards.
+pub fn store_take(take: &TakeDone, dest: &Path, engine_rate: u32) -> Result<StoredTake, String> {
+    let samples = read_take(&take.path)?;
     daw388_project::take::write_wav_24(dest, take.rate, &samples).map_err(|e| format!("{}: {e}", dest.display()))?;
     if let Err(e) = std::fs::remove_file(&take.path) {
         log::warn!("cannot remove {}: {e}", take.path.display());
     }
     let name = dest.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let audio = Arc::new(TrackAudio { name: name.clone(), samples: samples.clone() });
-    let clip = Arc::new(MonoClip { name, sample_rate: take.rate, samples });
-    Ok(Composed { path: dest.to_path_buf(), clip, audio, rate: take.rate })
+    let clip = MonoClip { name, sample_rate: take.rate, samples };
+    let at_rate = Arc::new(clip.at_rate(engine_rate));
+    Ok(StoredTake { path: dest.to_path_buf(), clip: Arc::new(clip), at_rate, engine_rate })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daw388_engine::{ChannelParams, Command, Source, input_ring};
+    use daw388_engine::{ChannelParams, Command, Source, TrackAudio, input_ring};
 
     #[test]
-    fn a_recorded_take_is_written_and_laid_over_the_track() {
+    fn a_recorded_take_is_stored() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let (mut handle, mut engine) = daw388_engine::create(48_000);
         let (mut tx, rx) = input_ring(48_000, 1);
@@ -195,16 +176,15 @@ mod tests {
         let take = &done[0];
         assert_eq!((take.track, take.frames, take.start), (0, 30, 20.0));
 
-        let old = Arc::new(TrackAudio { name: "oud".into(), samples: vec![0.1; 100] });
         let dest = dir.path().join("01_oud_opname1.wav");
-        let composed = compose(take, &Underneath::Audio(old), &dest).unwrap_or_else(|e| panic!("{e}"));
+        let stored = store_take(take, &dest, 48_000).unwrap_or_else(|e| panic!("{e}"));
         assert!(!take.path.exists(), "the temporary file is removed");
-        assert_eq!(composed.audio.samples.len(), 100);
-        assert!((composed.audio.samples[19] - 0.1).abs() < 1e-6);
-        assert!((composed.audio.samples[20] - 0.5).abs() < 1e-6 && (composed.audio.samples[49] - 0.5).abs() < 1e-6);
-        assert!((composed.audio.samples[50] - 0.1).abs() < 1e-6, "outside the punch the old take stays");
+        assert_eq!(stored.clip.samples.len(), 30);
+        assert_eq!(stored.at_rate.len(), 30);
+        assert_eq!(stored.clip.name, "01_oud_opname1");
         let reloaded = daw388_project::load_audio(&dest).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(reloaded.samples.len(), 100);
+        assert_eq!(reloaded.samples.len(), 30);
+        assert!((reloaded.samples[0] - 0.5).abs() < 1e-5);
     }
 
     #[test]

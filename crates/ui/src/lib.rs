@@ -1,8 +1,11 @@
 //! The egui interface of DAW 388. Platform-specific parts (audio devices, file dialogs) come in
 //! through the [`Platform`] trait, so the same UI can later run in the browser.
 
+mod content;
 mod export;
+mod history;
 mod recording;
+mod sources;
 
 use daw388_engine::{
     ChannelParams, Command, EQ_DEFAULTS, EchoParams, EchoSync, EngineHandle, EqBand, Listen, Meter, MixerParams, MonitorMode,
@@ -11,15 +14,18 @@ use daw388_engine::{
 };
 use daw388_project::export::{BitDepth, ExportFormat};
 use daw388_project::preferences::{self, Preferences};
+use daw388_project::regions::{Region, SourceId, Unresolved, track_end};
 use daw388_project::session::{self, PROJECT_FILE};
 use daw388_project::{
     Backup, BandEntry, ChannelEntry, ChannelSource, EchoSyncEntry, EqEntry, KindEntry, ListenSwitch, MeterSwitch, MetronomeSettings,
-    MixerEntry, MonSwitch, MonitorEntry, MonoClip, ProjectSettings, RepeatMode, Routing, SpeedEntry, TapeMode, TapeSettings, TrackToSave,
-    TransportSettings,
+    MixerEntry, MonSwitch, MonitorEntry, MonoClip, ProjectSettings, RegionToSave, RepeatMode, Routing, SpeedEntry, TapeMode, TapeSettings,
+    TrackToSave, TransportSettings,
 };
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
-use export::{ExportJob, Progress, StemKind};
-use recording::{Composed, TakeDone, Underneath};
+use export::{ExportJob, ExportTrack, Progress, StemKind};
+use history::History;
+use recording::{StoredTake, TakeDone};
+use sources::Sources;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
@@ -73,22 +79,29 @@ pub struct OutputInfo {
     pub input_error: Option<String>,
 }
 
-/// Recordings that can be undone with Cmd+Z.
-const UNDO_STEPS: usize = 10;
-
-/// What a track held before a recording, so the recording can be undone.
-struct UndoEntry {
-    track: usize,
-    source: Option<PathBuf>,
-    clip: Option<Arc<MonoClip>>,
-    audio: Option<(Arc<TrackAudio>, u32)>,
-}
-
-/// A take laid over its track, back from the background job.
+/// A take saved in the project, back from the background job.
 struct ComposeResult {
     track: usize,
+    /// The project it was made in; a take for another project is not placed.
+    project_generation: u64,
+    /// Where it starts on the tape, in seconds (latency-corrected).
+    start: f64,
+    outcome: Result<StoredTake, String>,
+}
+
+/// A track rendered for the engine.
+struct RenderDone {
+    track: usize,
     generation: u64,
-    outcome: Result<Composed, String>,
+    rate: u32,
+    audio: Arc<TrackAudio>,
+}
+
+/// A file chosen for a track, placed at `start` (seconds) once its source has loaded.
+struct PendingImport {
+    source: SourceId,
+    track: usize,
+    start: f64,
 }
 
 /// Buffer sizes offered in the settings, when the device allows them.
@@ -129,17 +142,13 @@ pub trait Platform {
     fn temp_dir(&self) -> PathBuf;
 }
 
-/// A finished background load or resample for one track.
+/// A source decoded (or resampled) in the background.
 struct LoadResult {
-    index: usize,
+    source: SourceId,
     generation: u64,
-    /// The track's audio as decoded and, for the engine, at `rate`.
-    outcome: Result<(Arc<MonoClip>, Arc<TrackAudio>), String>,
+    /// The file at its own rate and at `rate`.
+    outcome: Result<(Arc<MonoClip>, Arc<Vec<f32>>), String>,
     rate: u32,
-    /// The file came from a project being opened: keep the reference when it is missing.
-    from_project: bool,
-    /// A new file (not a resample of audio already on the track).
-    fresh: bool,
 }
 
 fn style_of(mode: RepeatMode) -> TransportStyle {
@@ -206,15 +215,17 @@ pub fn format_counter(seconds: f64) -> String {
 
 #[derive(Default)]
 struct TrackState {
-    clip: Option<Arc<MonoClip>>,
-    /// A file is being decoded for this track.
-    loading: bool,
-    /// Identifies the latest load request, so a late result for an older one is ignored.
-    generation: u64,
-    /// The file the clip came from; after saving, its copy in the project's `audio/` folder.
-    source: Option<PathBuf>,
-    /// The project refers to a file that could not be loaded.
-    missing: bool,
+    /// What plays on this track, sorted and without overlap.
+    regions: Vec<Region>,
+    /// A file whose length is not known yet; nothing new can come on the track meanwhile.
+    unresolved: Option<Unresolved>,
+    /// The track's name: the strip, the exported stems and the names of new takes.
+    name: String,
+    /// Identifies the latest render, so a late one is ignored.
+    render_generation: u64,
+    /// What the engine got last: its rate and length.
+    #[cfg_attr(not(test), allow(dead_code))] // Read by the tests.
+    rendered: Option<(u32, usize)>,
     fader_db: f32,
     pan: f32,
     mute: bool,
@@ -233,11 +244,6 @@ struct TrackState {
     solo: bool,
     /// OL stays lit until this time (`DawApp::now`).
     ol_until: f64,
-    /// What the engine plays for this track, and at which rate (a take is laid over this).
-    audio: Option<(Arc<TrackAudio>, u32)>,
-    /// Changes whenever the track gets other content (load, Wis, undo), but not on a resample;
-    /// a take finished for older content is not laid over newer content.
-    version: u64,
 }
 
 pub struct DawApp {
@@ -272,9 +278,16 @@ pub struct DawApp {
     /// The user agreed to quit; let the next close request through.
     may_close: bool,
     title: String,
+    /// Every audio file the regions play.
+    sources: Sources,
     /// Background loads report back here.
     loads_tx: Sender<LoadResult>,
     loads_rx: Receiver<LoadResult>,
+    renders_tx: Sender<RenderDone>,
+    renders_rx: Receiver<RenderDone>,
+    pending_imports: Vec<PendingImport>,
+    /// Changes with every new or opened project, so a late take of another project is not placed.
+    project_generation: u64,
     next_generation: u64,
     ctx: egui::Context,
     /// Transport memory and settings, kept here so they survive a device change and are saved.
@@ -304,7 +317,7 @@ pub struct DawApp {
     /// Takes waiting for their track's previous take to be laid down.
     queued_takes: [VecDeque<TakeDone>; TRACKS],
     composing: [bool; TRACKS],
-    undo: Vec<UndoEntry>,
+    history: History,
     metronome: MetronomeSettings,
     /// Times of the last TAP presses, for tap tempo.
     taps: Vec<f64>,
@@ -526,6 +539,7 @@ impl DawApp {
         let devices = platform.output_devices();
         let preferences = platform.preferences_path().map(|path| preferences::load(&path)).unwrap_or_default();
         let (loads_tx, loads_rx) = channel();
+        let (renders_tx, renders_rx) = channel();
         let (takes_tx, takes_rx) = channel();
         let (composed_tx, composed_rx) = channel();
         let input_devices = platform.input_devices();
@@ -551,8 +565,13 @@ impl DawApp {
             pending: None,
             may_close: false,
             title: String::new(),
+            sources: Sources::default(),
             loads_tx,
             loads_rx,
+            renders_tx,
+            renders_rx,
+            pending_imports: Vec::new(),
+            project_generation: 0,
             next_generation: 1,
             ctx: ctx.clone(),
             zero_seconds: 0.0,
@@ -577,7 +596,7 @@ impl DawApp {
             composed_rx,
             queued_takes: Default::default(),
             composing: [false; TRACKS],
-            undo: Vec::new(),
+            history: History::default(),
             metronome: MetronomeSettings::default(),
             taps: Vec::new(),
         };
@@ -647,9 +666,7 @@ impl DawApp {
             self.play();
         }
         // The audio has to be resampled for the new rate.
-        for index in 0..TRACKS {
-            self.request_resample(index);
-        }
+        self.resample_all();
         self.next_device_check = self.now + DEVICE_CHECK_EVERY;
     }
 
@@ -721,102 +738,10 @@ impl DawApp {
         self.engine.as_ref().map_or(48_000, EngineHandle::sample_rate)
     }
 
-    /// Start loading a WAV or AIFF file onto a track in the background; [`Self::poll_loads`]
-    /// puts it on the track when it is ready.
-    fn request_load(&mut self, index: usize, path: &Path, from_project: bool) {
-        let generation = self.next_generation;
-        self.next_generation += 1;
-        let track = &mut self.tracks[index];
-        track.generation = generation;
-        track.version = generation;
-        track.loading = true;
-        track.missing = false;
-        track.source = Some(path.to_path_buf());
-        let (path, rate, tx, ctx) = (path.to_path_buf(), self.engine_rate(), self.loads_tx.clone(), self.ctx.clone());
-        self.platform.spawn(Box::new(move || {
-            let outcome = daw388_project::load_audio(&path)
-                .map(|clip| {
-                    let audio = Arc::new(TrackAudio { name: clip.name.clone(), samples: clip.at_rate(rate) });
-                    (Arc::new(clip), audio)
-                })
-                .map_err(|e| e.to_string());
-            let _ = tx.send(LoadResult { index, generation, outcome, rate, from_project, fresh: true });
-            ctx.request_repaint();
-        }));
-    }
-
-    /// Resample a track's audio for the current device in the background.
-    fn request_resample(&mut self, index: usize) {
-        let Some(clip) = self.tracks[index].clip.clone() else { return };
-        let generation = self.next_generation;
-        self.next_generation += 1;
-        self.tracks[index].generation = generation;
-        let (rate, tx, ctx) = (self.engine_rate(), self.loads_tx.clone(), self.ctx.clone());
-        self.platform.spawn(Box::new(move || {
-            let audio = Arc::new(TrackAudio { name: clip.name.clone(), samples: clip.at_rate(rate) });
-            let _ = tx.send(LoadResult { index, generation, outcome: Ok((clip, audio)), rate, from_project: false, fresh: false });
-            ctx.request_repaint();
-        }));
-    }
-
-    /// Put finished background loads on their tracks.
-    pub fn poll_loads(&mut self) {
-        while let Ok(result) = self.loads_rx.try_recv() {
-            let index = result.index;
-            if self.tracks.get(index).is_none_or(|t| t.generation != result.generation) {
-                continue;
-            }
-            self.tracks[index].loading = false;
-            match result.outcome {
-                Ok((clip, audio)) => {
-                    if result.fresh && !result.from_project {
-                        self.status = format!("Spoor {}: {} geladen ({:.1} s)", index + 1, clip.name, clip.duration_seconds());
-                    }
-                    self.tracks[index].clip = Some(clip);
-                    if result.rate == self.engine_rate() {
-                        self.tracks[index].audio = Some((Arc::clone(&audio), result.rate));
-                        self.engine_send(Command::SetTrack(index, Some(audio)));
-                    } else {
-                        // The device changed while this was loading.
-                        self.request_resample(index);
-                    }
-                }
-                Err(e) if result.from_project => {
-                    log::warn!("track {}: {e}", index + 1);
-                    self.tracks[index].missing = true;
-                    let missing: Vec<String> =
-                        self.tracks.iter().enumerate().filter(|(_, t)| t.missing).map(|(i, _)| (i + 1).to_string()).collect();
-                    self.status = format!("{}: audio ontbreekt op spoor {}", self.project_name(), missing.join(", "));
-                }
-                Err(e) => {
-                    let name = self.tracks[index].source.take().map(|p| p.display().to_string()).unwrap_or_default();
-                    self.status = format!("{name}: {e}");
-                }
-            }
-        }
-    }
-
-    /// Whether any track is still loading.
-    pub fn is_loading(&self) -> bool {
-        self.tracks.iter().any(|t| t.loading)
-    }
-
     /// Load up to eight files onto the tracks, starting at track 1.
     fn load_all(&mut self) {
         let paths = self.platform.pick_audio_files(true);
         self.load_paths(paths);
-    }
-
-    /// Load files onto tracks 1 to 8 in name order (for example `01_Kick.wav`, `02_Snare.wav`).
-    pub fn load_paths(&mut self, mut paths: Vec<PathBuf>) {
-        paths.sort();
-        for (index, path) in paths.iter().take(TRACKS).enumerate() {
-            self.request_load(index, path, false);
-            self.mark_dirty();
-        }
-        if paths.len() > TRACKS {
-            self.status = format!("{} bestanden gekozen, alleen de eerste {TRACKS} zijn geladen", paths.len());
-        }
     }
 
     /// Handle command-line arguments: a project folder or `project.json` opens that project,
@@ -827,24 +752,6 @@ impl DawApp {
             [one] if one.is_dir() || one.file_name().is_some_and(|n| n == PROJECT_FILE) => self.open_project(one),
             _ => self.load_paths(paths),
         }
-    }
-
-    fn clear_track(&mut self, index: usize) {
-        let generation = self.next_generation;
-        self.next_generation += 1;
-        let track = &mut self.tracks[index];
-        track.clip = None;
-        track.audio = None;
-        track.source = None;
-        track.missing = false;
-        track.loading = false;
-        // A load still running for this track is dropped when it arrives.
-        track.generation = generation;
-        track.version = generation;
-        if let Some(engine) = &mut self.engine {
-            engine.send(Command::SetTrack(index, None));
-        }
-        self.mark_dirty();
     }
 
     fn mark_dirty(&mut self) {
@@ -862,14 +769,13 @@ impl DawApp {
     fn reset(&mut self) {
         for index in 0..TRACKS {
             let meter_db = self.tracks[index].meter_db;
-            // A fresh generation drops any load still running for the old project.
+            // A fresh generation drops any render still running for the old project.
             let generation = self.next_generation;
             self.next_generation += 1;
             self.tracks[index] = TrackState {
                 meter_db,
                 trk_meter_db: MIN_DB,
-                generation,
-                version: generation,
+                render_generation: generation,
                 input: default_input(index),
                 channel: ChannelEntry::simple(ChannelSource::Line),
                 ..TrackState::default()
@@ -891,7 +797,11 @@ impl DawApp {
         self.auto_punch = false;
         self.metronome = MetronomeSettings::default();
         self.tape = new_tape();
-        self.undo.clear();
+        self.history.clear();
+        // Loads still running belong to sources that no longer exist, and are dropped.
+        self.sources.clear();
+        self.pending_imports.clear();
+        self.project_generation += 1;
         if let Some(engine) = &mut self.engine {
             engine.stop();
             engine.send(Command::Locate(0.0));
@@ -937,9 +847,22 @@ impl DawApp {
                 pan: entry.monitor.pan.clamp(-1.0, 1.0),
                 mute: entry.monitor.mute,
             };
-            if let Some(source) = opened.track_source(entry) {
-                self.request_load(index, &source, true);
+            self.tracks[index].name.clone_from(&entry.name);
+            for region in &entry.regions {
+                let source = self.source_for(&opened.region_path(region));
+                match region.length {
+                    Some(length) => self.tracks[index].regions.push(Region {
+                        source,
+                        start: region.start,
+                        offset: region.offset,
+                        length,
+                        name: region.name.clone(),
+                    }),
+                    None => self.tracks[index].unresolved = Some(Unresolved { source, name: region.name.clone() }),
+                }
             }
+            self.resolve_loaded(index);
+            self.request_render(index);
         }
         self.master_db = opened.file.master_db.clamp(MIN_DB, MAX_DB);
         self.meter_post = opened.file.meter_post;
@@ -972,6 +895,12 @@ impl DawApp {
         self.dirty = false;
         self.autosave_at = None;
         self.status = format!("{} geopend", self.project_name());
+        for warning in &opened.warnings {
+            log::warn!("{warning}");
+        }
+        if let Some(first) = opened.warnings.first() {
+            self.status = format!("{}; {first}", self.status);
+        }
     }
 
     /// The pitch control as a speed ratio (1.0 in FIX).
@@ -1032,7 +961,25 @@ impl DawApp {
             .tracks
             .iter()
             .map(|t| TrackToSave {
-                source: t.source.clone(),
+                name: t.name.clone(),
+                regions: t
+                    .regions
+                    .iter()
+                    .map(|r| RegionToSave {
+                        source: self.sources.path(r.source).map(Path::to_path_buf).unwrap_or_default(),
+                        start: r.start,
+                        offset: r.offset,
+                        length: Some(r.length),
+                        name: r.name.clone(),
+                    })
+                    .chain(t.unresolved.iter().map(|u| RegionToSave {
+                        source: self.sources.path(u.source).map(Path::to_path_buf).unwrap_or_default(),
+                        start: 0.0,
+                        offset: 0.0,
+                        length: None,
+                        name: u.name.clone(),
+                    }))
+                    .collect(),
                 fader_db: t.fader_db,
                 pan: t.pan,
                 mute: t.mute,
@@ -1060,9 +1007,7 @@ impl DawApp {
         };
         match session::save(&dir, &settings, &tracks, backup) {
             Ok(saved) => {
-                for (track, source) in self.tracks.iter_mut().zip(saved.sources) {
-                    track.source = source;
-                }
+                self.sources.rename(&saved.sources);
                 self.dirty = false;
                 self.autosave_at = None;
                 let what = if backup == Backup::Always { "Opgeslagen" } else { "Automatisch opgeslagen" };
@@ -1248,20 +1193,28 @@ impl DawApp {
         if new {
             self.request(Pending::New);
         }
-        if ui.input_mut(|i| i.consume_shortcut(&shortcut(Key::Z))) {
-            self.undo_recording();
+        // Shift first: consume_shortcut ignores an extra Shift, so Cmd+Z would also take Cmd+Shift+Z.
+        let redo = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+        if ui.input_mut(|i| i.consume_shortcut(&redo)) {
+            self.redo();
+        } else if ui.input_mut(|i| i.consume_shortcut(&shortcut(Key::Z))) {
+            self.undo();
         }
     }
 
     fn edit_menu(&mut self, ui: &mut Ui) {
         let undo = ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
+        let redo = ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z));
         ui.menu_button("Bewerken", |ui| {
-            let label = match self.undo.last() {
-                Some(entry) => format!("Opname op spoor {} ongedaan maken", entry.track + 1),
-                None => "Opname ongedaan maken".to_string(),
-            };
-            if ui.add_enabled(!self.undo.is_empty(), egui::Button::new(label).shortcut_text(undo)).clicked() {
-                self.undo_recording();
+            let undo_name = self.history.undo_name().map(str::to_string);
+            let label = undo_name.as_ref().map_or_else(|| "Ongedaan maken".to_string(), |n| format!("{n} ongedaan maken"));
+            if ui.add_enabled(undo_name.is_some(), egui::Button::new(label).shortcut_text(undo)).clicked() {
+                self.undo();
+            }
+            let redo_name = self.history.redo_name().map(str::to_string);
+            let label = redo_name.as_ref().map_or_else(|| "Opnieuw".to_string(), |n| format!("{n} opnieuw"));
+            if ui.add_enabled(redo_name.is_some(), egui::Button::new(label).shortcut_text(redo)).clicked() {
+                self.redo();
             }
         });
     }
@@ -1421,6 +1374,9 @@ impl DawApp {
     /// REC FUNCTION for a track: ready to record, or safe.
     fn toggle_arm(&mut self, index: usize) {
         let armed = !self.tracks[index].armed;
+        if armed && self.refuse_unresolved(index) {
+            return;
+        }
         self.tracks[index].armed = armed;
         self.engine_send(Command::SetArmed(index, armed));
         if armed && !self.feeds(index) && self.mixer.mode == Routing::Simple {
@@ -1484,102 +1440,6 @@ impl DawApp {
         if self.engine.as_ref().is_some_and(EngineHandle::take_overflow) {
             self.status = "Let op: de opname haperde, er is audio verloren gegaan".into();
         }
-    }
-
-    /// Lay the next queued take over its track in the background (one at a time per track, so a
-    /// take is always laid over the one before it).
-    fn start_compose(&mut self, track: usize) {
-        if self.composing[track] {
-            return;
-        }
-        let Some(take) = self.queued_takes[track].pop_front() else { return };
-        let Some(dir) = self.project_dir.clone() else {
-            self.status = format!("Opname op spoor {} niet bewaard: het project heeft nog geen map", track + 1);
-            return;
-        };
-        let audio_dir = dir.join(session::AUDIO_DIR);
-        if let Err(e) = std::fs::create_dir_all(&audio_dir) {
-            self.status = format!("{}: {e}", audio_dir.display());
-            return;
-        }
-        let state = &self.tracks[track];
-        let dest = daw388_project::take::take_path(&audio_dir, track + 1, state.clip.as_ref().map(|c| c.name.as_str()));
-        let underneath = match (&state.audio, &state.clip) {
-            (Some((audio, rate)), _) if *rate == take.rate => Underneath::Audio(Arc::clone(audio)),
-            (_, Some(clip)) => Underneath::Clip(Arc::clone(clip)),
-            _ => Underneath::Nothing,
-        };
-        let (generation, tx, ctx) = (state.version, self.composed_tx.clone(), self.ctx.clone());
-        self.composing[track] = true;
-        self.platform.spawn(Box::new(move || {
-            let outcome = recording::compose(&take, &underneath, &dest);
-            let _ = tx.send(ComposeResult { track, generation, outcome });
-            ctx.request_repaint();
-        }));
-    }
-
-    /// Put laid-down takes on their tracks.
-    pub fn poll_composed(&mut self) {
-        while let Ok(result) = self.composed_rx.try_recv() {
-            let track = result.track;
-            self.composing[track] = false;
-            match result.outcome {
-                Ok(composed) if self.tracks[track].version == result.generation => {
-                    let state = &mut self.tracks[track];
-                    self.undo.push(UndoEntry { track, source: state.source.clone(), clip: state.clip.clone(), audio: state.audio.clone() });
-                    if self.undo.len() > UNDO_STEPS {
-                        self.undo.remove(0);
-                    }
-                    let seconds = composed.clip.duration_seconds();
-                    state.source = Some(composed.path);
-                    state.clip = Some(composed.clip);
-                    state.missing = false;
-                    state.audio = Some((Arc::clone(&composed.audio), composed.rate));
-                    if composed.rate == self.engine_rate() {
-                        self.engine_send(Command::SetTrack(track, Some(composed.audio)));
-                    } else {
-                        self.request_resample(track);
-                    }
-                    self.status = format!("Spoor {}: opname vastgelegd ({seconds:.1} s)", track + 1);
-                    self.mark_dirty();
-                }
-                Ok(composed) => {
-                    self.status =
-                        format!("Spoor {} kreeg intussen andere audio; de opname staat in {}", track + 1, composed.path.display());
-                }
-                Err(e) => self.status = format!("Opname op spoor {} niet bewaard: {e}", track + 1),
-            }
-            self.start_compose(track);
-        }
-    }
-
-    /// Cmd+Z: put back what a track held before its last recording.
-    fn undo_recording(&mut self) {
-        let Some(entry) = self.undo.pop() else {
-            self.status = "Er is geen opname om ongedaan te maken".into();
-            return;
-        };
-        let track = entry.track;
-        let version = self.next_generation;
-        self.next_generation += 1;
-        let rate = self.engine_rate();
-        let state = &mut self.tracks[track];
-        state.source = entry.source;
-        state.clip = entry.clip;
-        state.audio = entry.audio.clone();
-        state.missing = false;
-        state.version = version;
-        match entry.audio {
-            Some((audio, audio_rate)) if audio_rate == rate => {
-                self.engine_send(Command::SetTrack(track, Some(audio)));
-            }
-            _ if self.tracks[track].clip.is_some() => self.request_resample(track),
-            _ => {
-                self.engine_send(Command::SetTrack(track, None));
-            }
-        }
-        self.status = format!("Opname op spoor {} ongedaan gemaakt", track + 1);
-        self.mark_dirty();
     }
 
     /// Change the metronome and tell the engine.
@@ -1767,28 +1627,32 @@ impl DawApp {
         let input_channels = self.output.as_ref().and_then(|o| o.input.as_ref()).map_or(0, |i| i.channels);
         // The simple mode shows one strip per track: input, EQ, PAN, REC and fader.
         let simple = self.mixer.mode == Routing::Simple;
+        // Asked before `track` borrows the tracks.
+        let (loading, missing) = (self.track_loading(index), self.track_missing(index));
         let track = &mut self.tracks[index];
+        let has_content = !track.regions.is_empty() || track.unresolved.is_some();
         column(ui, 112.0, |ui| {
             ui.label(RichText::new(format!("{}", index + 1)).strong().size(18.0).color(palette::CREAM));
-            let (name, colour) = match (&track.clip, &track.source) {
-                (_, _) if track.loading => ("laden...".to_string(), palette::ORANGE),
-                (Some(clip), _) => (clip.name.clone(), palette::TEXT_DIM),
-                (None, Some(source)) if track.missing => {
-                    (format!("ontbreekt: {}", source.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), palette::LED)
-                }
-                _ => ("leeg".to_string(), palette::TEXT_DIM),
+            let (name, colour) = match missing.first() {
+                _ if loading => ("laden...".to_string(), palette::ORANGE),
+                Some(path) => (format!("ontbreekt: {}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), palette::LED),
+                None if has_content => (track.name.clone(), palette::TEXT_DIM),
+                None => ("leeg".to_string(), palette::TEXT_DIM),
             };
             let label = ui.add(egui::Label::new(RichText::new(name).size(11.0).color(colour)).truncate());
-            if track.missing
-                && let Some(source) = &track.source
-            {
-                label.on_hover_text(format!("Niet gevonden: {}", source.display()));
+            if !missing.is_empty() {
+                let paths: Vec<String> = missing.iter().map(|p| p.display().to_string()).collect();
+                label.on_hover_text(format!("Niet gevonden: {}", paths.join(", ")));
             }
             ui.horizontal(|ui| {
-                if ui.small_button("Laad").on_hover_text("WAV-, AIFF-, FLAC- of MP3-bestand op dit spoor laden").clicked() {
+                if ui
+                    .small_button("Laad")
+                    .on_hover_text("WAV-, AIFF-, FLAC- of MP3-bestand op dit spoor zetten, vanaf de afspeelpositie")
+                    .clicked()
+                {
                     load = true;
                 }
-                if (track.clip.is_some() || track.missing) && ui.small_button("Wis").clicked() {
+                if has_content && ui.small_button("Wis").clicked() {
                     clear = true;
                 }
             });
@@ -1994,9 +1858,8 @@ impl DawApp {
             self.send_channel(index);
             self.mark_dirty();
         }
-        if load && let Some(path) = self.platform.pick_audio_files(false).first() {
-            self.request_load(index, path, false);
-            self.mark_dirty();
+        if load {
+            self.import(index);
         }
         if clear {
             self.clear_track(index);
@@ -2610,8 +2473,14 @@ impl DawApp {
             return Err("Sla het project eerst op: de export komt in de map export van het project".into());
         };
         let choices = &self.export;
-        let clips: [Option<Arc<MonoClip>>; TRACKS] = std::array::from_fn(|i| self.tracks[i].clip.clone());
-        let longest = clips.iter().flatten().map(|c| c.duration_seconds()).fold(0.0, f64::max);
+        let tracks: [ExportTrack; TRACKS] =
+            std::array::from_fn(|i| ExportTrack { name: self.tracks[i].name.clone(), regions: self.tracks[i].regions.clone() });
+        let sources = tracks
+            .iter()
+            .flat_map(|t| &t.regions)
+            .filter_map(|r| self.sources.get(r.source).and_then(|s| s.clip.clone()).map(|clip| (r.source, clip)))
+            .collect();
+        let longest = tracks.iter().map(|t| track_end(&t.regions)).fold(0.0, f64::max);
         if longest <= 0.0 {
             return Err("Er staat nog niets op de band om te exporteren".into());
         }
@@ -2622,7 +2491,7 @@ impl DawApp {
             (0.0, longest)
         };
         let stems: Vec<(usize, StemKind)> = if choices.stems {
-            (0..TRACKS).filter(|i| choices.stem_tracks[*i] && clips[*i].is_some()).map(|i| (i, choices.stem_kind)).collect()
+            (0..TRACKS).filter(|i| choices.stem_tracks[*i] && !tracks[*i].regions.is_empty()).map(|i| (i, choices.stem_kind)).collect()
         } else {
             Vec::new()
         };
@@ -2631,7 +2500,8 @@ impl DawApp {
         }
         Ok(ExportJob {
             rate: choices.rate,
-            clips,
+            tracks,
+            sources,
             channels: std::array::from_fn(|i| channel_params(&self.tracks[i])),
             monitors: std::array::from_fn(|i| monitor_params(&self.tracks[i].monitor)),
             mixer: mixer_params(&self.mixer, &self.preferences, 2),
@@ -2686,7 +2556,7 @@ impl DawApp {
         let mut choices = self.export.clone();
         let mut start = false;
         let names: [String; TRACKS] =
-            std::array::from_fn(|i| self.tracks[i].clip.as_ref().map_or_else(|| "leeg".to_string(), |c| c.name.clone()));
+            std::array::from_fn(|i| if self.tracks[i].name.is_empty() { "leeg".to_string() } else { self.tracks[i].name.clone() });
         let running = self.running_export.as_ref().map(|r| Arc::clone(&r.progress));
         egui::Window::new("Export").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.set_width(420.0);
@@ -2700,7 +2570,7 @@ impl DawApp {
                 ui.add_enabled_ui(choices.stems, |ui| {
                     egui::Grid::new("export-stems").num_columns(4).show(ui, |ui| {
                         for (index, name) in names.iter().enumerate() {
-                            let has = self.tracks[index].clip.is_some();
+                            let has = !self.tracks[index].regions.is_empty();
                             ui.add_enabled(has, egui::Checkbox::new(&mut choices.stem_tracks[index], format!("{} {name}", index + 1)));
                             if index % 4 == 3 {
                                 ui.end_row();
@@ -3190,6 +3060,7 @@ impl DawApp {
         self.poll_loads();
         self.poll_takes();
         self.poll_composed();
+        self.poll_renders();
         self.poll_export();
         self.sync_transport();
         self.update_meters(dt);
@@ -3580,6 +3451,32 @@ mod tests {
         writer.finalize().unwrap_or_else(|e| panic!("{e}"));
     }
 
+    /// A mono 48 kHz WAV of `seconds` long with a constant level.
+    fn write_wav_of(path: &Path, seconds: f64, value: f32) {
+        let spec = hound::WavSpec { channels: 1, sample_rate: 48_000, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap_or_else(|e| panic!("{e}"));
+        for _ in 0..(seconds * 48_000.0).round() as usize {
+            writer.write_sample(value).unwrap_or_else(|e| panic!("{e}"));
+        }
+        writer.finalize().unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    /// Let every background result that is waiting arrive (spawn runs at once in the tests).
+    fn settle(app: &mut DawApp) {
+        for _ in 0..4 {
+            app.poll_loads();
+            app.poll_takes();
+            app.poll_composed();
+            app.poll_renders();
+        }
+    }
+
+    /// (start, offset, length) of a track's regions in milliseconds.
+    fn regions_ms(app: &DawApp, track: usize) -> Vec<(i64, i64, i64)> {
+        let ms = |s: f64| (s * 1000.0).round() as i64;
+        app.tracks[track].regions.iter().map(|r| (ms(r.start), ms(r.offset), ms(r.length))).collect()
+    }
+
     #[test]
     fn export_writes_the_mix_and_the_stems_into_the_project() {
         let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
@@ -3615,7 +3512,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(dir.clone()))));
         app.load_paths(vec![kick, bass]);
-        app.poll_loads();
+        settle(&mut app);
         assert!(app.dirty);
         app.tracks[1].fader_db = -6.0;
         app.tracks[1].pan = -0.5;
@@ -3631,15 +3528,18 @@ mod tests {
         assert!(!app.dirty);
         assert!(app.saved_label.as_deref().is_some_and(|l| l.starts_with("Opgeslagen")));
         assert_eq!(app.project_name(), "Demo");
-        assert!(app.tracks[0].source.as_ref().is_some_and(|s| s.starts_with(&dir)), "audio now lives in the project");
+        let source = app.tracks[0].regions[0].source;
+        assert!(app.sources.path(source).is_some_and(|s| s.starts_with(&dir)), "audio now lives in the project");
 
         app.new_project();
-        assert!(app.tracks.iter().all(|t| t.clip.is_none()));
+        assert!(app.tracks.iter().all(|t| t.regions.is_empty()));
         app.open_arguments(vec![dir.clone()]);
-        app.poll_loads();
+        settle(&mut app);
         assert_eq!(app.project_name(), "Demo");
         assert!(!app.dirty);
-        assert!(app.tracks[0].clip.is_some() && app.tracks[1].clip.is_some());
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 10)], "441 samples at 44.1 kHz");
+        assert_eq!((app.tracks[0].name.as_str(), app.tracks[1].name.as_str()), ("01_Kick", "03_Bas"));
+        assert!(app.tracks[0].rendered.is_some(), "and the engine plays it");
         assert_eq!(app.tracks[1].fader_db, -6.0);
         assert_eq!(app.tracks[1].pan, -0.5);
         assert!(app.tracks[1].mute);
@@ -3650,7 +3550,7 @@ mod tests {
         assert!(!app.tracks[1].solo, "SOLO is for listening only and is not saved");
         assert_eq!(app.master_db, -2.0);
         assert!(app.meter_post);
-        assert!(app.tracks[2].clip.is_none());
+        assert!(app.tracks[2].regions.is_empty());
     }
 
     #[test]
@@ -3663,19 +3563,19 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(dir.clone()))));
         app.load_paths(vec![kick]);
-        app.poll_loads();
+        settle(&mut app);
         assert!(app.save(Backup::Always));
         std::fs::remove_file(dir.join("audio/kick.wav")).unwrap_or_else(|e| panic!("{e}"));
 
         app.open_project(&dir);
-        app.poll_loads();
-        assert!(app.tracks[0].missing);
+        settle(&mut app);
+        assert_eq!(app.track_missing(0).len(), 1);
         assert!(app.status.contains("ontbreekt op spoor 1"), "{}", app.status);
         // Saving again keeps the reference, so putting the file back repairs the project.
         app.mark_dirty();
         assert!(app.save(Backup::Always));
         let opened = session::open(&dir).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/kick.wav"));
+        assert_eq!(opened.file.tracks[0].regions[0].file, "audio/kick.wav");
     }
 
     #[test]
@@ -3732,8 +3632,8 @@ mod tests {
         app.load_paths(vec![kick]);
         assert!(app.is_loading());
         app.clear_track(0);
-        app.poll_loads();
-        assert!(app.tracks[0].clip.is_none(), "the old load must not come back after Wis");
+        settle(&mut app);
+        assert!(app.tracks[0].regions.is_empty() && app.tracks[0].unresolved.is_none(), "the old load must not come back after Wis");
         assert!(!app.is_loading());
     }
 
@@ -3746,41 +3646,48 @@ mod tests {
         writer.finalize().unwrap_or_else(|e| panic!("{e}"));
     }
 
+    /// A project in `dir` with `01_Kick.wav` (1 s at 0.25) on track 1, saved.
+    fn project_with_kick(files: &Path, dir: &Path) -> DawApp {
+        let kick = files.join("01_Kick.wav");
+        write_wav_of(&kick, 1.0, 0.25);
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(dir.to_path_buf()))));
+        app.load_paths(vec![kick]);
+        settle(&mut app);
+        assert!(app.save(Backup::Always));
+        app
+    }
+
+    fn send_take(app: &DawApp, files: &Path, track: usize, start: f64, frames: usize, rate: u32) -> PathBuf {
+        let take = files.join(format!("take-{track}-{start}.wav"));
+        write_take(&take, 0.5, frames);
+        let _ = app.takes_tx.send(TakeDone { track, start, path: take.clone(), frames, rate });
+        take
+    }
+
     #[test]
-    fn a_take_is_laid_over_the_track_saved_in_the_project_and_can_be_undone() {
+    fn a_take_becomes_a_region_and_can_be_undone() {
         let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
-        let kick = files.path().join("01_Kick.wav");
-        write_wav(&kick);
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let dir = root.path().join("Demo");
-        let ctx = egui::Context::default();
-        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(dir.clone()))));
-        app.load_paths(vec![kick]);
-        app.poll_loads();
-        assert!(app.save(Backup::Always));
-        let before = app.tracks[0].source.clone();
-        let length = app.tracks[0].audio.as_ref().map_or(0, |(a, _)| a.samples.len());
+        let mut app = project_with_kick(files.path(), &dir);
 
-        let take = files.path().join("take.wav");
-        write_take(&take, 0.5, 100);
-        let _ = app.takes_tx.send(TakeDone { track: 0, start: 10.0, path: take.clone(), frames: 100, rate: 48_000 });
-        app.poll_takes();
-        app.poll_composed();
-        let state = &app.tracks[0];
-        let source = state.source.clone().unwrap_or_default();
+        let take = send_take(&app, files.path(), 0, 4_800.0, 4_800, 48_000);
+        settle(&mut app);
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 100), (100, 0, 100), (200, 200, 800)]);
+        let source = app.sources.path(app.tracks[0].regions[1].source).map(Path::to_path_buf).unwrap_or_default();
         assert!(source.starts_with(dir.join("audio")), "{}", source.display());
         assert_eq!(source.file_name().and_then(|n| n.to_str()), Some("01_Kick_opname1.wav"));
         assert!(source.exists() && !take.exists());
-        let samples = &state.audio.as_ref().unwrap_or_else(|| panic!("no audio")).0.samples;
-        assert_eq!(samples.len(), length);
-        assert!((samples[10] - 0.5).abs() < 1e-5 && (samples[109] - 0.5).abs() < 1e-5);
-        assert!((samples[110] - 0.5).abs() > 1e-3, "after the punch-out the old take plays");
+        assert_eq!(app.history.undo_name(), Some("Opname spoor 1"));
         assert!(app.dirty);
+        assert_eq!(app.tracks[0].rendered, Some((48_000, 48_000)), "the engine plays the new track");
 
-        app.undo_recording();
-        assert_eq!(app.tracks[0].source, before);
-        assert!(app.undo.is_empty());
+        app.undo();
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)]);
         assert!(source.exists(), "undo keeps the take's file in audio/");
+        app.redo();
+        assert_eq!(app.tracks[0].regions.len(), 3);
     }
 
     #[test]
@@ -3790,19 +3697,163 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(root.path().join("Demo")))));
         assert!(app.save(Backup::Always));
-        for (n, value) in [(1, 0.25f32), (2, 0.75)] {
-            let take = files.path().join(format!("take{n}.wav"));
-            write_take(&take, value, 50);
-            let _ = app.takes_tx.send(TakeDone { track: 2, start: f64::from(n) * 100.0, path: take, frames: 50, rate: 48_000 });
-        }
+        send_take(&app, files.path(), 2, 4_800.0, 9_600, 48_000);
+        send_take(&app, files.path(), 2, 9_600.0, 9_600, 48_000);
+        settle(&mut app);
+        assert_eq!(regions_ms(&app, 2), vec![(100, 0, 100), (200, 0, 200)], "the second take is laid over the first");
+        assert_eq!(app.history.len(), 2);
+        assert_eq!(app.tracks[2].name, "03_Spoor3_opname1");
+    }
+
+    #[test]
+    fn a_take_before_the_start_loses_that_part() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut app = project_with_kick(files.path(), &root.path().join("Demo"));
+        send_take(&app, files.path(), 1, -480.0, 4_800, 48_000);
+        settle(&mut app);
+        assert_eq!(regions_ms(&app, 1), vec![(0, 10, 90)]);
+    }
+
+    #[test]
+    fn a_take_after_wis_is_its_own_step() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut app = project_with_kick(files.path(), &root.path().join("Demo"));
+        send_take(&app, files.path(), 0, 4_800.0, 4_800, 48_000);
         app.poll_takes();
-        app.poll_composed();
-        app.poll_composed();
-        let samples = &app.tracks[2].audio.as_ref().unwrap_or_else(|| panic!("no audio")).0.samples;
-        assert_eq!(samples.len(), 250);
-        assert!((samples[120] - 0.25).abs() < 1e-5, "the first take stays");
-        assert!((samples[220] - 0.75).abs() < 1e-5, "the second is laid over it");
-        assert_eq!(app.undo.len(), 2);
+        app.clear_track(0);
+        settle(&mut app);
+        assert_eq!(regions_ms(&app, 0), vec![(100, 0, 100)]);
+        assert_eq!(app.history.undo_name(), Some("Opname spoor 1"));
+        app.undo();
+        assert_eq!(app.history.undo_name(), Some("Wis"));
+    }
+
+    #[test]
+    fn a_take_from_another_project_is_not_placed() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut app = project_with_kick(files.path(), &root.path().join("Demo"));
+        send_take(&app, files.path(), 1, 0.0, 4_800, 48_000);
+        app.poll_takes();
+        app.new_project();
+        settle(&mut app);
+        assert!(app.tracks.iter().all(|t| t.regions.is_empty()));
+        assert!(app.status.contains("ander project"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_take_at_another_rate_lands_in_the_right_place() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut app = project_with_kick(files.path(), &root.path().join("Demo"));
+        app.set_output(Preferences { sample_rate: Some(44_100), ..Preferences::default() });
+        assert_eq!(app.engine_rate(), 44_100);
+        send_take(&app, files.path(), 1, 48_000.0, 4_800, 48_000);
+        settle(&mut app);
+        assert_eq!(regions_ms(&app, 1), vec![(1000, 0, 100)]);
+        assert_eq!(app.tracks[1].rendered, Some((44_100, 48_510)), "rendered at the engine's rate");
+    }
+
+    #[test]
+    fn loading_files_is_one_step_and_resolves_to_regions() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (kick, bass) = (files.path().join("01_Kick.wav"), files.path().join("02_Bas.wav"));
+        write_wav_of(&kick, 1.0, 0.25);
+        write_wav_of(&bass, 0.5, 0.25);
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.load_paths(vec![bass, kick]);
+        settle(&mut app);
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)]);
+        assert_eq!(regions_ms(&app, 1), vec![(0, 0, 500)]);
+        assert!(app.tracks[0].unresolved.is_none());
+        assert_eq!(app.history.undo_name(), Some("Laden"));
+        app.undo();
+        assert!(app.tracks[0].regions.is_empty() && app.tracks[1].regions.is_empty());
+        assert_eq!(app.history.undo_name(), None);
+    }
+
+    #[test]
+    fn an_import_lands_at_the_playhead() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let platform = FakePlatform::new(Some(root.path().join("Demo")));
+        let engines = std::rc::Rc::clone(&platform.engines);
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(platform));
+        let kick = files.path().join("01_Kick.wav");
+        write_wav_of(&kick, 1.0, 0.25);
+        app.load_paths(vec![kick]);
+        settle(&mut app);
+        app.engine_send(Command::Locate(24_000.0));
+        render_latest(&engines);
+        let snare = files.path().join("Snare.wav");
+        write_wav_of(&snare, 0.25, 0.5);
+        app.import_path(0, &snare);
+        settle(&mut app);
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 500), (500, 0, 250), (750, 750, 250)]);
+        assert_eq!(app.history.undo_name(), Some("Importeren"));
+        app.undo();
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)]);
+        app.redo();
+        assert_eq!(app.tracks[0].regions.len(), 3);
+    }
+
+    #[test]
+    fn an_unresolved_track_refuses_rec_and_import() {
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("Oud");
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{e}"));
+        let v2 = r#"{"format":"daw388-project","version":2,"app_version":"0.16.0","tracks":[{"number":1,"file":"audio/weg.wav"}]}"#;
+        std::fs::write(dir.join(PROJECT_FILE), v2).unwrap_or_else(|e| panic!("{e}"));
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.open_project(&dir);
+        settle(&mut app);
+        assert!(app.tracks[0].unresolved.is_some());
+        app.toggle_arm(0);
+        assert!(!app.tracks[0].armed);
+        assert!(app.status.contains("wis het spoor"), "{}", app.status);
+        app.clear_track(0);
+        app.toggle_arm(0);
+        assert!(app.tracks[0].armed);
+    }
+
+    #[test]
+    fn the_undo_stack_holds_ten_steps() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let kick = files.path().join("kick.wav");
+        write_wav_of(&kick, 0.1, 0.25);
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        for _ in 0..6 {
+            app.load_paths(vec![kick.clone()]);
+            settle(&mut app);
+            app.clear_track(0);
+        }
+        assert_eq!(app.history.len(), 10);
+        for _ in 0..10 {
+            app.undo();
+        }
+        app.undo();
+        assert_eq!(app.status, "Er is niets om ongedaan te maken");
+    }
+
+    #[test]
+    fn a_device_change_renders_again_at_the_new_rate() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let kick = files.path().join("kick.wav");
+        write_wav_of(&kick, 1.0, 0.25);
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.load_paths(vec![kick]);
+        settle(&mut app);
+        assert_eq!(app.tracks[0].rendered, Some((48_000, 48_000)));
+        app.set_output(Preferences { sample_rate: Some(44_100), ..Preferences::default() });
+        settle(&mut app);
+        assert_eq!(app.tracks[0].rendered, Some((44_100, 44_100)));
     }
 
     #[test]
@@ -3885,7 +3936,7 @@ mod tests {
         app.pending = None;
         assert!(app.save(Backup::Always));
         app.request(Pending::Close);
-        assert!(app.tracks[0].clip.is_none());
+        assert!(app.tracks[0].regions.is_empty());
         assert_eq!(app.project_name(), "Naamloos");
         assert!(app.status.contains("Demo gesloten"), "{}", app.status);
         app.request(Pending::Quit);

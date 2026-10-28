@@ -5,6 +5,8 @@
 //! folder can be moved, backed up or shared as a whole.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,7 +21,7 @@ pub const MAX_BACKUPS: usize = 10;
 pub const BACKUP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 const FORMAT: &str = "daw388-project";
-const FORMAT_VERSION: u32 = 2;
+const FORMAT_VERSION: u32 = 3;
 
 /// Contents of `project.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,9 +52,15 @@ pub struct ProjectFile {
 pub struct TrackEntry {
     /// Track number, 1 to 8.
     pub number: u8,
-    /// Audio file, relative to the project folder (for example `audio/01_Kick.wav`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Format 1 and 2 only: the track's audio file, relative to the project folder. Opening turns
+    /// it into a region.
+    #[serde(default, skip_serializing)]
     pub file: Option<String>,
+    /// The track's name (the strip, the stems and the names of new takes).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<RegionEntry>,
     #[serde(default)]
     pub fader_db: f32,
     #[serde(default)]
@@ -66,6 +74,22 @@ pub struct TrackEntry {
     pub channel: ChannelEntry,
     #[serde(default)]
     pub monitor: MonitorEntry,
+}
+
+/// One region in `project.json`. `length` is missing only for the single region of a track that
+/// fills it from 0:00 while its length is unknown (see [`crate::regions::Unresolved`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegionEntry {
+    /// Audio file, relative to the project folder (for example `audio/01_Kick.wav`).
+    pub file: String,
+    #[serde(default)]
+    pub start: f64,
+    #[serde(default)]
+    pub offset: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<f64>,
+    #[serde(default)]
+    pub name: String,
 }
 
 /// Where a channel's signal comes from: the microphone preamp, the line input or the tape (RMX,
@@ -427,8 +451,8 @@ pub struct ProjectSettings {
 /// What the UI hands over for one track when saving.
 #[derive(Debug, Clone, Default)]
 pub struct TrackToSave {
-    /// Where the track's audio is now (anywhere on disk), if it has any.
-    pub source: Option<PathBuf>,
+    pub name: String,
+    pub regions: Vec<RegionToSave>,
     pub fader_db: f32,
     pub pan: f32,
     pub mute: bool,
@@ -438,11 +462,21 @@ pub struct TrackToSave {
     pub monitor: MonitorEntry,
 }
 
+/// A region as the UI hands it over: where its source is now (anywhere on disk).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionToSave {
+    pub source: PathBuf,
+    pub start: f64,
+    pub offset: f64,
+    pub length: Option<f64>,
+    pub name: String,
+}
+
 /// The result of a save.
 #[derive(Debug, Clone)]
 pub struct Saved {
-    /// Per track, where its audio lives now (inside the project's `audio/` folder).
-    pub sources: Vec<Option<PathBuf>>,
+    /// Per source, where it was and where it lives now (inside the project's `audio/` folder).
+    pub sources: HashMap<PathBuf, PathBuf>,
     /// The backup made of the previous `project.json`, if any.
     pub backup: Option<PathBuf>,
 }
@@ -452,12 +486,14 @@ pub struct Saved {
 pub struct OpenedProject {
     pub dir: PathBuf,
     pub file: ProjectFile,
+    /// Regions that were left out because they did not make sense.
+    pub warnings: Vec<String>,
 }
 
 impl OpenedProject {
-    /// Absolute path of a track's audio file, if the track has one.
-    pub fn track_source(&self, entry: &TrackEntry) -> Option<PathBuf> {
-        entry.file.as_ref().map(|f| self.dir.join(f))
+    /// Absolute path of a region's audio file.
+    pub fn region_path(&self, region: &RegionEntry) -> PathBuf {
+        self.dir.join(&region.file)
     }
 }
 
@@ -507,10 +543,57 @@ pub fn open(path: &Path) -> Result<OpenedProject, ProjectError> {
     if project.version > FORMAT_VERSION {
         return Err(ProjectError::TooNew(project.version));
     }
-    if project.version < 2 {
+    let from = project.version;
+    if from < 2 {
         upgrade_v1(&mut project);
     }
-    Ok(OpenedProject { dir, file: project })
+    if from < 3 {
+        upgrade_v2(&mut project);
+    }
+    project.version = FORMAT_VERSION;
+    let warnings = check_regions(&mut project);
+    Ok(OpenedProject { dir, file: project, warnings })
+}
+
+/// Format 2 had one file per track: it becomes one region from 0:00 whose length is known once
+/// the file has loaded.
+fn upgrade_v2(project: &mut ProjectFile) {
+    for track in &mut project.tracks {
+        if let Some(file) = track.file.take() {
+            let name = Path::new(&file).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            track.name.clone_from(&name);
+            track.regions = vec![RegionEntry { file, start: 0.0, offset: 0.0, length: None, name }];
+        }
+    }
+}
+
+/// Sort the regions and leave out what does not make sense (a file edited by hand): a region
+/// without a length unless it is the only one at 0:00, a too short one, negative times and
+/// overlaps.
+fn check_regions(project: &mut ProjectFile) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for track in &mut project.tracks {
+        track.regions.sort_by(|a, b| a.start.total_cmp(&b.start));
+        let alone = track.regions.len() == 1;
+        let mut end = 0.0f64;
+        let mut kept = Vec::with_capacity(track.regions.len());
+        for region in track.regions.drain(..) {
+            let fine = match region.length {
+                None => alone && region.start == 0.0 && region.offset == 0.0,
+                Some(length) => {
+                    length >= crate::regions::MIN_LENGTH && region.start >= 0.0 && region.offset >= 0.0 && region.start >= end - 1e-9
+                }
+            };
+            if fine {
+                end = region.start + region.length.unwrap_or(0.0);
+                kept.push(region);
+            } else {
+                warnings.push(format!("Spoor {}: regio {} overgeslagen", track.number, region.name));
+            }
+        }
+        track.regions = kept;
+    }
+    warnings
 }
 
 /// Format 1 had one strip per track with its own input: that is the simple mode. Fader, pan
@@ -521,7 +604,6 @@ fn upgrade_v1(project: &mut ProjectFile) {
         track.monitor = MonitorEntry::default();
     }
     project.mixer = MixerEntry { mode: Routing::Simple, ..MixerEntry::default() };
-    project.version = FORMAT_VERSION;
 }
 
 /// Save a project into `dir` (created when needed). Audio from outside the project is copied
@@ -531,18 +613,31 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
     let audio_dir = dir.join(AUDIO_DIR);
     fs::create_dir_all(&audio_dir).map_err(io("Aanmaken van", &audio_dir))?;
 
+    // Every source once, however many regions use it.
+    let mut placed: HashMap<PathBuf, PathBuf> = HashMap::new();
+    for region in tracks.iter().flat_map(|t| &t.regions) {
+        if let Entry::Vacant(entry) = placed.entry(region.source.clone()) {
+            entry.insert(place_audio(&audio_dir, &region.source)?);
+        }
+    }
+    let entry_of = |region: &RegionToSave| {
+        let path = placed.get(&region.source).unwrap_or(&region.source);
+        RegionEntry {
+            file: relative(dir, path).unwrap_or_else(|| path.to_string_lossy().into_owned()),
+            start: region.start,
+            offset: region.offset,
+            length: region.length,
+            name: region.name.clone(),
+        }
+    };
     let mut entries = Vec::with_capacity(tracks.len());
-    let mut sources = Vec::with_capacity(tracks.len());
     for (index, track) in tracks.iter().enumerate() {
         let number = u8::try_from(index + 1).unwrap_or(u8::MAX);
-        let source = match &track.source {
-            Some(source) => Some(place_audio(&audio_dir, source)?),
-            None => None,
-        };
-        let file = source.as_ref().and_then(|s| relative(dir, s));
         entries.push(TrackEntry {
             number,
-            file,
+            file: None,
+            name: track.name.clone(),
+            regions: track.regions.iter().map(entry_of).collect(),
             fader_db: track.fader_db,
             pan: track.pan,
             mute: track.mute,
@@ -550,7 +645,6 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
             channel: track.channel,
             monitor: track.monitor,
         });
-        sources.push(source);
     }
 
     let project = ProjectFile {
@@ -572,7 +666,7 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
     let temporary = dir.join(format!("{PROJECT_FILE}.tmp"));
     fs::write(&temporary, json).map_err(io("Schrijven van", &temporary))?;
     fs::rename(&temporary, &path).map_err(io("Schrijven van", &path))?;
-    Ok(Saved { sources, backup })
+    Ok(Saved { sources: placed, backup })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -687,7 +781,8 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, source)| TrackToSave {
-                source,
+                name: source.as_ref().map(|_| format!("Spoor {}", i + 1)).unwrap_or_default(),
+                regions: source.map(|source| vec![region(source, 0.0, Some(100.0 / 48_000.0))]).unwrap_or_default(),
                 fader_db: -3.0 * i as f32,
                 pan: 0.5,
                 mute: i == 1,
@@ -707,6 +802,11 @@ mod tests {
                 monitor: MonitorEntry { gain_db: -4.0, pan: 0.25, mute: i == 0 },
             })
             .collect()
+    }
+
+    fn region(source: PathBuf, start: f64, length: Option<f64>) -> RegionToSave {
+        let name = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        RegionToSave { source, start, offset: 0.0, length, name }
     }
 
     #[test]
@@ -773,7 +873,7 @@ mod tests {
             Backup::Always,
         )
         .unwrap_or_else(|e| panic!("{e}"));
-        let copied = saved.sources[0].clone().unwrap_or_else(|| panic!("no source"));
+        let copied = saved.sources.get(&kick).cloned().unwrap_or_else(|| panic!("no source"));
         assert!(copied.starts_with(dir.join(AUDIO_DIR)));
         assert!(copied.exists() && kick.exists(), "the original stays where it was");
         assert!(saved.backup.is_none(), "nothing to back up on the first save");
@@ -805,8 +905,9 @@ mod tests {
             }
         );
         assert_eq!(opened.file.tracks.len(), 2);
-        assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/01_Kick.wav"));
-        assert_eq!(opened.file.tracks[1].file, None);
+        assert_eq!(opened.file.tracks[0].regions[0].file, "audio/01_Kick.wav");
+        assert_eq!(opened.file.tracks[0].name, "Spoor 1");
+        assert!(opened.file.tracks[1].regions.is_empty());
         assert!(opened.file.tracks[1].mute);
         assert_eq!(opened.file.tracks[1].fader_db, -3.0);
         assert_eq!(opened.file.tracks[1].input, Some(2));
@@ -846,8 +947,8 @@ mod tests {
                 },
             }
         );
-        assert_eq!(opened.file.version, FORMAT_VERSION, "a format 2 file is not upgraded again");
-        assert!(crate::load_wav(&opened.track_source(&opened.file.tracks[0]).unwrap_or_default()).is_ok());
+        assert_eq!(opened.file.version, FORMAT_VERSION, "a format 3 file is not upgraded again");
+        assert!(crate::load_wav(&opened.region_path(&opened.file.tracks[0].regions[0])).is_ok());
         assert_eq!(project_name(&dir), "Mijn liedje");
 
         // Opening via project.json works too.
@@ -865,15 +966,18 @@ mod tests {
         }
         let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let dir = root.path().join("p");
-        let saved =
-            save(&dir, &ProjectSettings::default(), &tracks([Some(first), Some(second)]), Backup::Always).unwrap_or_else(|e| panic!("{e}"));
-        let opened = open(&dir).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/take.wav"));
-        assert_eq!(opened.file.tracks[1].file.as_deref(), Some("audio/take-2.wav"));
-
-        let again = save(&dir, &ProjectSettings::default(), &tracks([saved.sources[0].clone(), saved.sources[1].clone()]), Backup::Always)
+        let saved = save(&dir, &ProjectSettings::default(), &tracks([Some(first.clone()), Some(second.clone())]), Backup::Always)
             .unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(again.sources, saved.sources);
+        let opened = open(&dir).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(opened.file.tracks[0].regions[0].file, "audio/take.wav");
+        assert_eq!(opened.file.tracks[1].regions[0].file, "audio/take-2.wav");
+
+        let (inside_first, inside_second) = (saved.sources.get(&first).cloned(), saved.sources.get(&second).cloned());
+        let again = save(&dir, &ProjectSettings::default(), &tracks([inside_first.clone(), inside_second.clone()]), Backup::Always)
+            .unwrap_or_else(|e| panic!("{e}"));
+        for inside in [inside_first, inside_second].into_iter().flatten() {
+            assert_eq!(again.sources.get(&inside), Some(&inside), "a file in audio/ stays where it is");
+        }
         assert_eq!(fs::read_dir(dir.join(AUDIO_DIR)).map(Iterator::count).unwrap_or(0), 2);
     }
 
@@ -901,7 +1005,81 @@ mod tests {
         let gone = dir.join(AUDIO_DIR).join("weg.wav");
         save(&dir, &ProjectSettings::default(), &tracks([Some(gone), None]), Backup::Always).unwrap_or_else(|e| panic!("{e}"));
         let opened = open(&dir).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/weg.wav"));
+        assert_eq!(opened.file.tracks[0].regions[0].file, "audio/weg.wav");
+    }
+
+    fn write_project(dir: &Path, json: &str) -> PathBuf {
+        let path = dir.join(PROJECT_FILE);
+        fs::write(&path, json).unwrap_or_else(|e| panic!("{e}"));
+        path
+    }
+
+    #[test]
+    fn a_format_2_track_becomes_one_region_without_a_length() {
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        for version in [1, 2] {
+            let json = format!(
+                r#"{{"format":"daw388-project","version":{version},"app_version":"0.16.0","tracks":[{{"number":1,"file":"audio/01_Kick.wav"}}]}}"#
+            );
+            let opened = open(&write_project(root.path(), &json)).unwrap_or_else(|e| panic!("{e}"));
+            let track = &opened.file.tracks[0];
+            assert_eq!(opened.file.version, FORMAT_VERSION);
+            assert_eq!((track.name.as_str(), track.file.as_deref()), ("01_Kick", None));
+            assert_eq!(
+                track.regions,
+                vec![RegionEntry { file: "audio/01_Kick.wav".into(), start: 0.0, offset: 0.0, length: None, name: "01_Kick".into() }]
+            );
+            assert!(opened.warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn regions_survive_save_and_open() {
+        let outside = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (gitaar, bas) = (outside.path().join("gitaar.wav"), outside.path().join("bas.wav"));
+        write_wav(&gitaar);
+        write_wav(&bas);
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("p");
+        let mut list = tracks([None, None]);
+        list[0].regions =
+            vec![region(gitaar.clone(), 0.0, Some(0.001)), RegionToSave { offset: 0.0005, ..region(gitaar.clone(), 1.5, Some(0.0012)) }];
+        list[1].regions = vec![region(bas.clone(), 2.25, Some(0.002))];
+        let saved = save(&dir, &ProjectSettings::default(), &list, Backup::Always).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(fs::read_dir(dir.join(AUDIO_DIR)).map(Iterator::count).unwrap_or(0), 2, "each source is copied once");
+        assert!(saved.sources.get(&gitaar).is_some_and(|p| p.starts_with(dir.join(AUDIO_DIR))));
+        let opened = open(&dir).unwrap_or_else(|e| panic!("{e}"));
+        let regions = &opened.file.tracks[0].regions;
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].file, regions[1].file);
+        assert!((regions[1].start - 1.5).abs() < 1e-9 && (regions[1].offset - 0.0005).abs() < 1e-9);
+        assert_eq!(regions[1].length, Some(0.0012));
+        assert_eq!(opened.file.tracks[1].regions[0].file, "audio/bas.wav");
+    }
+
+    #[test]
+    fn an_unresolved_region_keeps_its_reference() {
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("p");
+        let mut list = tracks([None, None]);
+        list[0].regions = vec![region(dir.join(AUDIO_DIR).join("weg.wav"), 0.0, None)];
+        save(&dir, &ProjectSettings::default(), &list, Backup::Always).unwrap_or_else(|e| panic!("{e}"));
+        let opened = open(&dir).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(opened.file.tracks[0].regions.len(), 1);
+        assert_eq!(opened.file.tracks[0].regions[0].length, None);
+    }
+
+    #[test]
+    fn a_region_without_length_elsewhere_is_dropped() {
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let json = r#"{"format":"daw388-project","version":3,"app_version":"0.17.0","tracks":[{"number":1,"regions":[
+            {"file":"audio/a.wav","start":0.0,"length":1.0,"name":"a"},
+            {"file":"audio/b.wav","start":2.0,"name":"b"},
+            {"file":"audio/c.wav","start":0.5,"length":1.0,"name":"c"}]}]}"#;
+        let opened = open(&write_project(root.path(), json)).unwrap_or_else(|e| panic!("{e}"));
+        let names: Vec<&str> = opened.file.tracks[0].regions.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["a"], "b has no length and c overlaps a");
+        assert_eq!(opened.warnings.len(), 2);
     }
 
     #[test]

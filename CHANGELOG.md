@@ -7,6 +7,18 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.17.0] - 2026-10-28
+
+### Toegevoegd
+- Sporen bestaan uit regio's: stukken van een audiobestand op een plek op de band. Wat op een plek komt, vervangt wat er lag; de bestanden blijven bewaard.
+- Laad zet een bestand als regio op de afspeelpositie en vervangt alleen dat stuk.
+- Cmd+Shift+Z (Bewerken, Opnieuw) doet een ongedaan gemaakte stap opnieuw. Undo en redo gelden voor opnames, laden, importeren en Wis, tot 10 stappen.
+
+### Gewijzigd
+- Een opname wordt een eigen bestand en een regio; het hele spoor wordt niet meer opnieuw geschreven.
+- Projectformaat 3 met regio's per spoor. Projecten van eerdere versies openen gewoon.
+- Elke regio krijgt een fade van 3 ms aan een vrije rand en een crossfade waar twee regio's elkaar raken, zodat een knip nooit tikt. Daardoor hebben ook begin en einde van sporen uit een ouder project nu zo'n korte fade.
+
 ## [0.16.0] - 2026-10-28
 
 ### Toegevoegd
