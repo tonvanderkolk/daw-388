@@ -5,13 +5,15 @@ mod recording;
 
 use daw388_engine::{
     ChannelParams, Command, EQ_DEFAULTS, EchoParams, EchoSync, EngineHandle, EqBand, Listen, Meter, MixerParams, MonitorMode,
-    MonitorParams, Motion, PITCH_RANGE, PlateParams, RecMode, RtnParams, Source, TRACKS, TrackAudio, TransportStyle,
+    MonitorParams, Motion, PITCH_RANGE, PlateParams, RecMode, RtnParams, Source, Speed, TRACKS, TapeKind, TapeParams, TrackAudio,
+    TransportStyle,
 };
 use daw388_project::preferences::{self, Preferences};
 use daw388_project::session::{self, PROJECT_FILE};
 use daw388_project::{
-    Backup, BandEntry, ChannelEntry, ChannelSource, EchoSyncEntry, EqEntry, ListenSwitch, MeterSwitch, MetronomeSettings, MixerEntry,
-    MonSwitch, MonitorEntry, MonoClip, ProjectSettings, RepeatMode, Routing, TrackToSave, TransportSettings,
+    Backup, BandEntry, ChannelEntry, ChannelSource, EchoSyncEntry, EqEntry, KindEntry, ListenSwitch, MeterSwitch, MetronomeSettings,
+    MixerEntry, MonSwitch, MonitorEntry, MonoClip, ProjectSettings, RepeatMode, Routing, SpeedEntry, TapeMode, TapeSettings, TrackToSave,
+    TransportSettings,
 };
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 use recording::{Composed, TakeDone, Underneath};
@@ -280,6 +282,9 @@ pub struct DawApp {
     pitch_percent: f32,
     vari: bool,
     show_settings: bool,
+    /// The tape on playback, saved with the project.
+    tape: TapeSettings,
+    show_tape: bool,
     /// The question before the 388 routing is reset for the simple mode.
     confirm_simple: bool,
     input_devices: Vec<DeviceInfo>,
@@ -377,6 +382,50 @@ fn new_mixer() -> MixerEntry {
     mixer
 }
 
+/// The tape of a new project: the 388 at 7½ IPS on 456.
+fn new_tape() -> TapeSettings {
+    TapeSettings { mode: TapeMode::Machine, ..TapeSettings::default() }
+}
+
+fn tape_params(tape: &TapeSettings) -> TapeParams {
+    TapeParams {
+        on: tape.mode == TapeMode::Machine,
+        speed: match tape.speed {
+            SpeedEntry::Ips3_75 => Speed::Ips3_75,
+            SpeedEntry::Ips7_5 => Speed::Ips7_5,
+            SpeedEntry::Ips15 => Speed::Ips15,
+        },
+        kind: match tape.kind {
+            KindEntry::T456 => TapeKind::T456,
+            KindEntry::T250 => TapeKind::T250,
+            KindEntry::T911 => TapeKind::T911,
+        },
+        saturation: tape.saturation,
+        wow_flutter: tape.wow_flutter,
+        noise: tape.noise,
+        crosstalk: tape.crosstalk,
+        dbx: tape.dbx,
+    }
+}
+
+/// The tape's state in a few characters, for the TAPE key.
+fn tape_label(tape: &TapeSettings) -> String {
+    if tape.mode == TapeMode::Clean {
+        return "TAPE: CLEAN".into();
+    }
+    let speed = match tape.speed {
+        SpeedEntry::Ips3_75 => "3¾",
+        SpeedEntry::Ips7_5 => "7½",
+        SpeedEntry::Ips15 => "15",
+    };
+    let kind = match tape.kind {
+        KindEntry::T456 => "456",
+        KindEntry::T250 => "250",
+        KindEntry::T911 => "911",
+    };
+    format!("TAPE: {speed} IPS {kind}")
+}
+
 fn monitor_params(monitor: &MonitorEntry) -> MonitorParams {
     MonitorParams { gain: db_to_gain(monitor.gain_db), pan: monitor.pan, mute: monitor.mute }
 }
@@ -467,6 +516,8 @@ impl DawApp {
             pitch_percent: 0.0,
             vari: false,
             show_settings: false,
+            tape: new_tape(),
+            show_tape: false,
             confirm_simple: false,
             input_devices,
             insert: false,
@@ -790,6 +841,7 @@ impl DawApp {
         self.insert = false;
         self.auto_punch = false;
         self.metronome = MetronomeSettings::default();
+        self.tape = new_tape();
         self.undo.clear();
         if let Some(engine) = &mut self.engine {
             engine.stop();
@@ -860,6 +912,11 @@ impl DawApp {
             (metronome.beats, metronome.unit) = (4, 4);
         }
         self.metronome = metronome;
+        let mut tape = opened.file.tape;
+        for amount in [&mut tape.saturation, &mut tape.wow_flutter, &mut tape.noise, &mut tape.crosstalk] {
+            *amount = amount.clamp(0.0, 2.0);
+        }
+        self.tape = tape;
         self.send_mix();
         self.send_transport();
         self.project_dir = Some(opened.dir);
@@ -880,6 +937,7 @@ impl DawApp {
         let (insert, auto_punch, monitoring) = (self.insert, self.auto_punch, self.preferences.software_monitoring);
         let offset = f64::from(self.preferences.latency_offset_ms) / 1000.0;
         let metronome = self.metronome;
+        let tape = tape_params(&self.tape);
         let armed: Vec<bool> = self.tracks.iter().map(|t| t.armed).collect();
         if let Some(engine) = &mut self.engine {
             engine.set_zero_seconds(zero);
@@ -896,6 +954,7 @@ impl DawApp {
             engine.send(Command::SetMeter(meter_of(&metronome)));
             engine.send(Command::SetClickVolume(db_to_gain(metronome.volume_db)));
             engine.send(Command::SetCountIn(metronome.count_in));
+            engine.send(Command::SetTape(tape));
             for (index, armed) in armed.into_iter().enumerate() {
                 engine.send(Command::SetArmed(index, armed));
             }
@@ -948,6 +1007,7 @@ impl DawApp {
             transport,
             metronome: self.metronome,
             mixer: self.mixer,
+            tape: self.tape,
         };
         match session::save(&dir, &settings, &tracks, backup) {
             Ok(saved) => {
@@ -1180,6 +1240,9 @@ impl DawApp {
             }
             if ui.add(egui::Button::new("Instellingen...").shortcut_text(command(ui, Key::Comma))).clicked() {
                 self.show_settings = true;
+            }
+            if ui.button("Tape-instellingen...").clicked() {
+                self.show_tape = true;
             }
             ui.separator();
             if ui.add(egui::Button::new("Project sluiten").shortcut_text(command(ui, Key::W))).clicked() {
@@ -2289,6 +2352,11 @@ impl DawApp {
                 self.set_metronome(metronome);
             });
             ui.add_space(4.0);
+            let tape = small_key(ui, &tape_label(&self.tape), self.tape.mode == TapeMode::Machine, vec2(150.0, 22.0));
+            if tape.on_hover_text("Het karakter van de band bij afspelen: snelheid, soort, saturatie, wow, ruis").clicked() {
+                self.show_tape = true;
+            }
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 if transport_key(ui, "RTZ", false, vec2(53.0, 40.0)).on_hover_text("Terug naar het nulpunt (Home)").clicked() {
@@ -2472,6 +2540,73 @@ impl DawApp {
             .color(palette::TEXT_DIM),
         );
         self.set_output(wanted);
+    }
+
+    /// Clean or 388, tape speed and kind, and four amounts from 0 to 200%.
+    fn tape_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_tape;
+        let mut tape = self.tape;
+        egui::Window::new("Tape").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.set_width(340.0);
+            ui.label("Het karakter van de band bij afspelen. Opnames via de ingang blijven schoon.");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut tape.mode, TapeMode::Clean, "Clean").on_hover_text("De band gaat ongemoeid door");
+                ui.selectable_value(&mut tape.mode, TapeMode::Machine, "388").on_hover_text("Het karakter van de 388");
+            });
+            ui.add_space(6.0);
+            ui.add_enabled_ui(tape.mode == TapeMode::Machine, |ui| {
+                egui::Grid::new("tape-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                    ui.label("Snelheid");
+                    ui.horizontal(|ui| {
+                        for (speed, label) in
+                            [(SpeedEntry::Ips3_75, "3¾ IPS"), (SpeedEntry::Ips7_5, "7½ IPS"), (SpeedEntry::Ips15, "15 IPS")]
+                        {
+                            ui.selectable_value(&mut tape.speed, speed, label);
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Tapesoort");
+                    ui.horizontal(|ui| {
+                        for (kind, label, tip) in [
+                            (KindEntry::T456, "456", "Veel ruimte, de standaard"),
+                            (KindEntry::T250, "250", "Warm, verzadigt eerder"),
+                            (KindEntry::T911, "911", "Iets helderder"),
+                        ] {
+                            ui.selectable_value(&mut tape.kind, kind, label).on_hover_text(tip);
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("dbx");
+                    ui.horizontal(|ui| {
+                        let tip = "Ruisonderdrukking: de ruis zakt weg in stiltes en ademt mee met de muziek";
+                        ui.checkbox(&mut tape.dbx[0], "sporen 1-4").on_hover_text(tip);
+                        ui.checkbox(&mut tape.dbx[1], "sporen 5-8").on_hover_text(tip);
+                    });
+                    ui.end_row();
+                    for (label, amount) in [
+                        ("Saturatie", &mut tape.saturation),
+                        ("Wow & flutter", &mut tape.wow_flutter),
+                        ("Ruis", &mut tape.noise),
+                        ("Crosstalk", &mut tape.crosstalk),
+                    ] {
+                        ui.label(label);
+                        let slider = egui::Slider::new(amount, 0.0..=2.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0));
+                        if ui.add(slider).on_hover_text("100% is de machine zoals hij is (dubbelklik: 100%)").double_clicked() {
+                            *amount = 1.0;
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+        });
+        self.show_tape = open;
+        if tape != self.tape {
+            self.tape = tape;
+            let params = tape_params(&tape);
+            self.engine_send(Command::SetTape(params));
+            self.mark_dirty();
+        }
     }
 
     fn settings_window(&mut self, ctx: &egui::Context) {
@@ -2887,6 +3022,7 @@ impl DawApp {
 
         let ctx = ui.ctx().clone();
         self.settings_window(&ctx);
+        self.tape_window(&ctx);
         self.unsaved_dialog(&ctx);
         self.confirm_simple_dialog(&ctx);
         if self.may_close {
@@ -3028,6 +3164,21 @@ mod tests {
             let mut out = vec![0.0; 2 * 64];
             engine.render(&mut out, 2);
         }
+    }
+
+    #[test]
+    fn a_new_project_plays_through_the_388_tape() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        assert_eq!(app.tape.mode, TapeMode::Machine);
+        app.tape = TapeSettings { speed: SpeedEntry::Ips15, kind: KindEntry::T911, noise: 0.5, dbx: [true, false], ..app.tape };
+        let params = tape_params(&app.tape);
+        assert!(params.on && params.speed == Speed::Ips15 && params.kind == TapeKind::T911 && params.noise == 0.5);
+        assert_eq!(params.dbx, [true, false]);
+        assert_eq!(tape_label(&app.tape), "TAPE: 15 IPS 911");
+        app.new_project();
+        assert_eq!(app.tape, new_tape());
+        assert!(!tape_params(&TapeSettings::default()).on, "older projects: Clean");
     }
 
     #[test]

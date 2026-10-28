@@ -27,6 +27,7 @@ mod record;
 
 pub use click::Meter;
 pub use daw388_fx::{EchoParams, EchoSync, PlateParams};
+pub use daw388_tape::{Speed, TapeKind, TapeParams};
 pub use eq::{EQ_DEFAULTS, EqBand};
 pub use mixer::{ChannelParams, Listen, MixerParams, RtnParams, Source};
 pub use monitor::{MonitorMode, MonitorParams};
@@ -34,6 +35,7 @@ pub use record::{RecItem, RecMode, Recorder, input_ring};
 
 use click::Click;
 use daw388_fx::{Echo, Plate};
+use daw388_tape::TapeMachine;
 use mixer::{Channel, pan_gains};
 use monitor::{Monitor, MonitorSource, hears_input, monitor_source};
 
@@ -117,6 +119,8 @@ pub enum Command {
     /// SOLO per track number: while any track is soloed, only soloed tracks are heard (their
     /// L-R channel and their MONITOR row). Buses and recordings are not affected.
     SetSolo(usize, bool),
+    /// The tape's character on playback (Clean by default).
+    SetTape(TapeParams),
     /// PGM MASTERS, MON, MONO, the AUX and EFF masters and outputs, the main output's source
     /// and MONITOR/PHONES.
     SetMixer(MixerParams),
@@ -332,6 +336,7 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         compensation: 0.0,
         click: Click::new(sample_rate),
         plate: Plate::new(sample_rate),
+        tape_machine: TapeMachine::new(sample_rate),
         echo: {
             let mut echo = Echo::new(sample_rate);
             echo.settle(0.5);
@@ -528,6 +533,8 @@ pub struct Engine {
     phones: f32,
     plate: Plate,
     echo: Echo,
+    /// The tape's character on what plays back: wow and flutter, saturation, colour, hiss.
+    tape_machine: TapeMachine,
     /// Smoothed left and right gains of EFFECT RTN 1 (plate) and 2 (echo).
     rtn_gains: [[f32; 2]; 2],
     master: f32,
@@ -794,6 +801,7 @@ impl Engine {
                         monitor.params = params;
                     }
                 }
+                Command::SetTape(params) => self.tape_machine.set(params),
                 Command::SetSolo(index, on) => {
                     if let Some(solo) = self.solo.get_mut(index) {
                         *solo = on;
@@ -927,10 +935,18 @@ impl Engine {
             for (gain, solo) in self.solo_gains.iter_mut().zip(self.solo) {
                 smooth(gain, if any_solo && !solo { 0.0 } else { 1.0 });
             }
+            // The tape: all eight tracks at once, with wow and flutter on the position and the
+            // tape's character on what plays back (nothing on Clean).
+            let wow = if playing { self.tape_machine.wow() } else { 0.0 };
+            let mut has_audio = [false; TRACKS];
             for index in 0..TRACKS {
                 if playing && let Some(audio) = &self.tape[index] {
-                    tape[index] = sample_at(&audio.samples, self.position);
+                    tape[index] = sample_at(&audio.samples, self.position + wow);
+                    has_audio[index] = true;
                 }
+            }
+            self.tape_machine.process(&mut tape, has_audio, playing);
+            for index in 0..TRACKS {
                 let params = self.channels[index].params;
                 let live = params.is_live(input_channels);
                 let hears = hears_input(self.armed[index], self.insert, self.recording[index]);
@@ -1648,6 +1664,29 @@ mod tests {
         let left: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
         let at = (0..left.len()).max_by(|a, b| left[*a].abs().total_cmp(&left[*b].abs())).unwrap_or_default();
         assert!((at as i32 - 4_900).abs() < 30, "the click 4 800 samples later: {at}");
+    }
+
+    #[test]
+    fn the_tape_colours_playback_but_not_a_recording_from_the_input() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        handle.send(Command::SetTape(TapeParams { on: true, noise: 2.0, ..TapeParams::default() }));
+        handle.send(Command::SetTrack(0, audio(vec![0.0; 100_000])));
+        handle.send(Command::SetMonitor(0, left()));
+        settle(&mut engine);
+        handle.play();
+        let out = run(&mut engine, 4_800);
+        assert!(out.chunks(2).any(|f| f[0] != 0.0), "a silent recording hisses on playback");
+        handle.stop();
+        run(&mut engine, 0);
+
+        handle.send(Command::SetChannel(2, line(0)));
+        handle.send(Command::SetArmed(2, true));
+        handle.send(Command::Locate(1_000.0));
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 51);
+        run(&mut engine, 50);
+        let samples = samples_of(&takes(&mut recorder, 2));
+        assert!(samples.iter().enumerate().all(|(n, s)| *s == n as f32), "the input as it came in: {samples:?}");
     }
 
     #[test]

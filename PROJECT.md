@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.12.0
+Versie: 0.14.0
 Laatst bijgewerkt: 28-10-2026
 
 ## Doel
@@ -22,7 +22,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 | Crate | Map | Taak |
 |---|---|---|
 | `daw388-engine` | `crates/engine` | Transport, 8 sporen en stereomix. Platformonafhankelijk, geen allocaties of locks in de audiothread |
-| `daw388-tape` | `crates/tape` | Tape-emulatie en dbx (fase 6, nog leeg) |
+| `daw388-tape` | `crates/tape` | Tape-model bij afspelen (acht sporen tegelijk), met dbx |
 | `daw388-fx` | `crates/fx` | Plate reverb en tape echo: buffers bij het aanmaken, geen allocaties in `process` |
 | `daw388-project` | `crates/project` | WAV- en AIFF-import naar mono, samplerate-conversie en de projectmap (`project.json`, `audio/`, `backups/`). Later export |
 | `daw388-ui` | `crates/ui` | egui-interface, praat met het platform via de `Platform`-trait |
@@ -48,7 +48,7 @@ Mijn liedje/
 └── backups/            # eerdere versies van project.json (laatste 10)
 ```
 
-- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 2), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `mixer` (`mode` simple/388, ontbreekt: 388; `odd_db`, `even_db`, `mon` pgm/cue, `mono`, `aux_master_db`, `eff_master_db`, `phones_db`, `listen` stereo/aux/eff, `meter` lr/aux_eff, `effects` met `plate` (`decay_s`, `predelay_ms`, `tone`), `echo` (`time_ms`, `sync` off/quarter/eighth/dotted_eighth, `feedback`, `tone`) en `rtn` (twee keer `gain_db` en `pan`; ontbreken ze, dan zijn de RTN's dicht)) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `aux_db`, `aux_pre`, `eff_db` (ontbreken ze, dan zijn de sends dicht: `SEND_CLOSED_DB`, -60 dB), `eq` met `low`, `mid` en `high` (elk `freq_hz` en `gain_db`; ontbreekt `eq`, dan is hij vlak), `assign`, `lr`, `direct`, `auto`) en `monitor` (`gain_db`, `pan`, `mute`).
+- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 2), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `tape` (`mode` clean/388, ontbreekt: clean; `speed` 3.75/7.5/15, `kind` 456/250/911, `saturation`, `wow_flutter`, `noise`, `crosstalk` van 0 tot 2, `dbx` twee booleans, ontbreekt: aan), `mixer` (`mode` simple/388, ontbreekt: 388; `odd_db`, `even_db`, `mon` pgm/cue, `mono`, `aux_master_db`, `eff_master_db`, `phones_db`, `listen` stereo/aux/eff, `meter` lr/aux_eff, `effects` met `plate` (`decay_s`, `predelay_ms`, `tone`), `echo` (`time_ms`, `sync` off/quarter/eighth/dotted_eighth, `feedback`, `tone`) en `rtn` (twee keer `gain_db` en `pan`; ontbreken ze, dan zijn de RTN's dicht)) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `aux_db`, `aux_pre`, `eff_db` (ontbreken ze, dan zijn de sends dicht: `SEND_CLOSED_DB`, -60 dB), `eq` met `low`, `mid` en `high` (elk `freq_hz` en `gain_db`; ontbreekt `eq`, dan is hij vlak), `assign`, `lr`, `direct`, `auto`) en `monitor` (`gain_db`, `pan`, `mute`).
 - Een project met formaatversie 1 (0.7.0 en ouder) opent als eenvoudig project: fader, pan en mute blijven de kanaalfader, elk kanaal krijgt de eenvoudige instelling (LINE, AUTO, DIRECT, L-R) en houdt zijn ingang. Een project van 0.8.0 of 0.9.0 (zonder `mode`) opent in de 388-stand.
 - Opslaan kopieert audio van buiten het project naar `audio/`. Het origineel blijft staan. Bij een naamconflict krijgt de kopie een achtervoegsel (`take-2.wav`).
 - `project.json` wordt eerst naar een tijdelijk bestand geschreven en daarna hernoemd, zodat een crash nooit een half bestand achterlaat.
@@ -90,6 +90,15 @@ Naar de handleiding van de 388 (REC FUNCTION, REC, INSERT, Punch-in):
 - Opnemen gaat op normale snelheid; met de pitch-knop op VARI en niet op 0% weigert REC met een melding.
 - Een project zonder map vraagt bij REC eerst om op te slaan.
 - Ingangsapparaat, meeluisteren en latencycorrectie zijn app-voorkeuren; de ingang per kanaal, INSERT en AUTO PUNCH worden per project bewaard.
+
+## Tape
+
+- Het tape-model werkt alleen op de weergave van de band, voor RMX, AUTO en de MONITOR-sectie. Opnames van een ingang blijven schoon, zodat het karakter altijd aan te passen of uit te zetten is. Een pingpong van band naar band neemt de weergave op, en dus het karakter, zoals op een echte machine.
+- Venster Tape (knop TAPE bij de transportsectie, of Bestand, Tape-instellingen): Clean of 388, snelheid 3¾, 7½ of 15 IPS, tapesoort 456, 250 of 911, en SATURATIE, WOW & FLUTTER, RUIS en CROSSTALK van 0 tot 200% (100% is de machine).
+- Per spoor: crosstalk van de buren (-75 dB), saturatie (pre-emphasis, zachte asymmetrische tanh met een aansturing per soort: 456 1,0, 250 1,6, 911 1,2, en de-emphasis), head bump (+1,5 dB op 40, 60 of 100 Hz), soortkleur op 8 kHz (250 -1 dB, 911 +1 dB), afrol in het hoog (10, 15 of 20 kHz), en ruis (-58 dBFS RMS bij 100% zonder dbx, alleen op sporen met audio terwijl de band speelt).
+- dbx per groep (sporen 1-4 en 5-8, standaard aan): coderen voor de band (pre-emphasis, RMS-detector van 10 ms, 2:1 rond -20 dBFS, hooguit 40 dB versterking) en decoderen erna (1:2, de-emphasis). Het signaal komt er vrijwel ongeschonden uit; de ruis wordt mee uitgezet, dus ver weg in stiltes en hoorbaar onder muziek: het ademen. Saturatie en kleur zitten in het gecodeerde deel, wat een lichte mistracking geeft zoals echt.
+- Wow en flutter verschuiven de afspeelpositie van de hele band (0,5 en 6 Hz, samen ongeveer 0,05% WRMS bij 7½ IPS; 3¾ twee keer zoveel, 15 IPS 0,6 keer).
+- Op Clean gaat de band bit voor bit door. Een nieuw project staat op 388, 7½ IPS, 456; een project van 0.12.0 of ouder opent op Clean.
 
 ## Metronoom
 
@@ -160,7 +169,7 @@ Audio wordt op een achtergrondthread gedecodeerd en naar de samplerate van het a
 
 - Import van WAV en AIFF (ongecomprimeerd). Nog geen FLAC, MP3 of andere formaten.
 - Samplerate-conversie gebruikt Hermite-interpolatie: prima voor afluisteren, voor export komt een betere resampler.
-- Nog geen tape-model. Pingpong kan alleen in de 388-stand. Zie de roadmap.
+- Het tape-karakter zit alleen in de weergave; bij export (fase 7) kies je of het meegaat. Pingpong kan alleen in de 388-stand. Zie de roadmap.
 - Een bus die een live ingang en de band tegelijk opneemt, wordt gecompenseerd voor de ingang; het banddeel komt dan de apparaatlatency te vroeg op het nieuwe spoor.
 - Op macOS vraagt het systeem bij het eerste gebruik van een ingang om toegang tot de microfoon. Zolang de app als los programma vanuit de terminal draait, hoort die toestemming bij de terminal.
 - Op macOS is het standaard app-menu uitgezet, zodat Cmd+Q via de opslaan-vraag loopt. Afsluiten door uitloggen of herstarten van de Mac gaat nog wel buiten die vraag om; autosave beperkt dan het verlies tot de laatste 30 seconden.

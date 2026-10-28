@@ -40,6 +40,8 @@ pub struct ProjectFile {
     #[serde(default)]
     pub mixer: MixerEntry,
     #[serde(default)]
+    pub tape: TapeSettings,
+    #[serde(default)]
     pub tracks: Vec<TrackEntry>,
 }
 
@@ -322,6 +324,70 @@ pub struct TransportSettings {
     pub auto_punch: bool,
 }
 
+/// Clean or 388: the tape's character on playback. Missing (older projects): Clean.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TapeMode {
+    #[default]
+    #[serde(rename = "clean")]
+    Clean,
+    #[serde(rename = "388")]
+    Machine,
+}
+
+/// Tape speed in inches per second.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpeedEntry {
+    #[serde(rename = "3.75")]
+    Ips3_75,
+    #[default]
+    #[serde(rename = "7.5")]
+    Ips7_5,
+    #[serde(rename = "15")]
+    Ips15,
+}
+
+/// Tape stock.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KindEntry {
+    #[default]
+    #[serde(rename = "456")]
+    T456,
+    #[serde(rename = "250")]
+    T250,
+    #[serde(rename = "911")]
+    T911,
+}
+
+/// The tape in `project.json`; the four amounts run from 0 to 2, 1 being the machine.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TapeSettings {
+    pub mode: TapeMode,
+    pub speed: SpeedEntry,
+    pub kind: KindEntry,
+    pub saturation: f32,
+    pub wow_flutter: f32,
+    pub noise: f32,
+    pub crosstalk: f32,
+    /// dbx on tracks 1-4 and 5-8; on when missing, as the 388 has it built in.
+    pub dbx: [bool; 2],
+}
+
+impl Default for TapeSettings {
+    fn default() -> Self {
+        Self {
+            mode: TapeMode::Clean,
+            speed: SpeedEntry::Ips7_5,
+            kind: KindEntry::T456,
+            saturation: 1.0,
+            wow_flutter: 1.0,
+            noise: 1.0,
+            crosstalk: 1.0,
+            dbx: [true; 2],
+        }
+    }
+}
+
 /// The metronome in `project.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -355,6 +421,7 @@ pub struct ProjectSettings {
     pub transport: TransportSettings,
     pub metronome: MetronomeSettings,
     pub mixer: MixerEntry,
+    pub tape: TapeSettings,
 }
 
 /// What the UI hands over for one track when saving.
@@ -495,6 +562,7 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
         transport: settings.transport,
         metronome: settings.metronome,
         mixer: settings.mixer,
+        tape: settings.tape,
         tracks: entries,
     };
     let path = dir.join(PROJECT_FILE);
@@ -673,6 +741,16 @@ mod tests {
                     auto_punch: true,
                 },
                 metronome: MetronomeSettings { click: true, always: true, bpm: 96.5, beats: 6, unit: 8, volume_db: -12.0, count_in: 2 },
+                tape: TapeSettings {
+                    mode: TapeMode::Machine,
+                    speed: SpeedEntry::Ips15,
+                    kind: KindEntry::T250,
+                    saturation: 1.5,
+                    wow_flutter: 0.5,
+                    noise: 0.0,
+                    crosstalk: 2.0,
+                    dbx: [false, true],
+                },
                 mixer: MixerEntry {
                     mode: Routing::Simple,
                     odd_db: -2.0,
@@ -712,6 +790,19 @@ mod tests {
         assert_eq!(
             opened.file.metronome,
             MetronomeSettings { click: true, always: true, bpm: 96.5, beats: 6, unit: 8, volume_db: -12.0, count_in: 2 }
+        );
+        assert_eq!(
+            opened.file.tape,
+            TapeSettings {
+                mode: TapeMode::Machine,
+                speed: SpeedEntry::Ips15,
+                kind: KindEntry::T250,
+                saturation: 1.5,
+                wow_flutter: 0.5,
+                noise: 0.0,
+                crosstalk: 2.0,
+                dbx: [false, true],
+            }
         );
         assert_eq!(opened.file.tracks.len(), 2);
         assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/01_Kick.wav"));
@@ -869,6 +960,9 @@ mod tests {
         assert!(!old.file.meter_post && old.file.master_db == -3.0);
         assert_eq!(old.file.transport, TransportSettings::default(), "older projects: zero at the start, no cue, 388 mode, FIX");
         assert_eq!(old.file.metronome.bpm, 120.0, "and 120 BPM in 4/4");
+        assert_eq!(old.file.tape, TapeSettings::default(), "and Clean tape, so it sounds as it was mixed");
+        assert_eq!(old.file.tape.dbx, [true; 2], "dbx is built in");
+        assert_eq!(serde_json::to_string(&SpeedEntry::Ips3_75).unwrap_or_default(), r#""3.75""#);
         fs::write(&path, r#"{"format":"iets-anders","version":1,"app_version":"x"}"#).unwrap_or_else(|e| panic!("{e}"));
         assert!(matches!(open(&path), Err(ProjectError::NotAProject(_))));
         fs::write(&path, r#"{"format":"daw388-project","version":99,"app_version":"x"}"#).unwrap_or_else(|e| panic!("{e}"));

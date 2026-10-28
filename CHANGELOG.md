@@ -7,6 +7,23 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.14.0] - 2026-10-28
+
+### Toegevoegd
+- dbx per groep (sporen 1-4 en 5-8) in het venster Tape, standaard aan. Codering en decodering rond de band, zodat de ruis in stiltes wegzakt en onder de muziek meeademt.
+
+### Gewijzigd
+- Bandruis zonder dbx is nu -58 dBFS bij 100%, zoals een machine zonder ruisonderdrukking. Met dbx aan is de ruis in stiltes zachter dan in 0.13.0 en onder muziek iets hoorbaarder.
+
+## [0.13.0] - 2026-10-28
+
+### Toegevoegd
+- Tape-model bij afspelen: bandsnelheid 3¾, 7½ of 15 IPS, tapesoort 456, 250 of 911, en SATURATIE, WOW & FLUTTER, RUIS en CROSSTALK van 0 tot 200%. Opnames via de ingang blijven schoon.
+- Schakelaar Clean / 388 en een venster Tape, te openen met de knop TAPE bij de transportsectie of via Bestand, Tape-instellingen.
+
+### Gewijzigd
+- Een nieuw project speelt af via de 388-band (7½ IPS, 456). Een project van 0.12.0 of ouder opent op Clean en klinkt zoals het gemixt is.
+
 ## [0.12.0] - 2026-10-28
 
 ### Toegevoegd

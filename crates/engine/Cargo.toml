@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 daw388-fx.workspace = true
+daw388-tape.workspace = true
 rtrb.workspace = true
 
 [lints]
