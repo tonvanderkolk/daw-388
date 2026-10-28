@@ -25,17 +25,18 @@
 - [ ] Opnemen met de pitch-knop op VARI
 
 ## Fase 4: Mixer 8:8:2
-- [ ] Ingangskeuze MIC / LINE / TAPE, trim
+- [x] Ingangskeuze MIC / LINE / TAPE, trim (0.8.0; voorversterker-karakter volgt in 0.9.0)
 - [ ] 3-band sweepable EQ (concentrische knoppen)
 - [ ] AUX-send met PRE/POST, EFF-send post-fader
-- [ ] ASSIGN 1-2, 3-4, 5-6, 7-8 en L-R, busrouting
+- [x] ASSIGN 1-2, 3-4, 5-6, 7-8 en L-R, busrouting (0.8.0)
+- [x] MONITOR-sectie met de omschakellogica van de 388, MON PGM/CUE, MONO (0.8.0)
 - [ ] Master-sectie: EFFECT RTN, MONITOR, AUX- en EFF-masters, STEREO MASTER
 - [ ] Signaalroute controleren met het blokschema uit de handleiding
 
 ## Fase 5: Bewerken
 - [ ] Niet-destructieve regio's: verschuiven, knippen, kopiëren, plakken, splitsen
 - [ ] Undo (maximaal 10 stappen)
-- [ ] Ping-pong bounce naar een vrij spoor
+- [ ] Ping-pong bounce naar een vrij spoor (kan via de bussen sinds 0.8.0)
 
 ## Fase 6: Effecten en tape-model
 - [ ] Plate reverb (aux) en tape echo (eff)

@@ -3,10 +3,16 @@
 
 mod recording;
 
-use daw388_engine::{Command, EngineHandle, Meter, Motion, PITCH_RANGE, RecMode, TRACKS, TrackAudio, TransportStyle};
+use daw388_engine::{
+    ChannelParams, Command, EngineHandle, Meter, MixerParams, MonitorMode, MonitorParams, Motion, PITCH_RANGE, RecMode, Source, TRACKS,
+    TrackAudio, TransportStyle,
+};
 use daw388_project::preferences::{self, Preferences};
 use daw388_project::session::{self, PROJECT_FILE};
-use daw388_project::{Backup, MetronomeSettings, MonoClip, ProjectSettings, RepeatMode, TrackToSave, TransportSettings};
+use daw388_project::{
+    Backup, ChannelEntry, ChannelSource, MetronomeSettings, MixerEntry, MonSwitch, MonitorEntry, MonoClip, ProjectSettings, RepeatMode,
+    TrackToSave, TransportSettings,
+};
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 use recording::{Composed, TakeDone, Underneath};
 use std::collections::VecDeque;
@@ -171,6 +177,8 @@ const PITCH_PERCENT: f32 = (PITCH_RANGE * 100.0) as f32;
 
 const MIN_DB: f32 = -60.0;
 const MAX_DB: f32 = 6.0;
+/// MONITOR GAIN goes up to +10 dB.
+const MONITOR_MAX_DB: f32 = 10.0;
 
 fn db_to_gain(db: f32) -> f32 {
     if db <= MIN_DB { 0.0 } else { 10f32.powf(db / 20.0) }
@@ -206,8 +214,13 @@ struct TrackState {
     meter_db: f32,
     /// REC FUNCTION: the track is ready to record.
     armed: bool,
-    /// The input channel it records from, counted from 1.
+    /// The input channel of its mixer channel (MIC and LINE), counted from 1.
     input: Option<u16>,
+    /// Source, TRIM, ASSIGN, L-R and DIRECT; fader, pan and mute are the fields above.
+    channel: ChannelEntry,
+    monitor: MonitorEntry,
+    /// Displayed TRK/PGM meter level in dB: what the track's MONITOR hears.
+    trk_meter_db: f32,
     /// What the engine plays for this track, and at which rate (a take is laid over this).
     audio: Option<(Arc<TrackAudio>, u32)>,
     /// Changes whenever the track gets other content (load, Wis, undo), but not on a resample;
@@ -227,6 +240,8 @@ pub struct DawApp {
     next_device_check: f64,
     tracks: [TrackState; TRACKS],
     master_db: f32,
+    /// PGM MASTERS, MON and MONO.
+    mixer: MixerEntry,
     /// Track meters after the fader (POST) instead of the track's own level (PRE, as on the 388).
     meter_post: bool,
     master_meter_db: [f32; 2],
@@ -280,9 +295,48 @@ fn meter_of(metronome: &MetronomeSettings) -> Meter {
     Meter { bpm: metronome.bpm, beats: metronome.beats, unit: metronome.unit }
 }
 
-/// Track `index` records from input `index + 1` until the user chooses otherwise.
+/// Channel `index` takes input `index + 1` until the user chooses otherwise.
 fn default_input(index: usize) -> Option<u16> {
     u16::try_from(index + 1).ok()
+}
+
+/// TRIM range per source: more gain on MIC, as on the 388's microphone preamp.
+fn trim_range(source: ChannelSource) -> std::ops::RangeInclusive<f32> {
+    match source {
+        ChannelSource::Mic => 0.0..=40.0,
+        ChannelSource::Line | ChannelSource::Rmx => -10.0..=20.0,
+    }
+}
+
+fn channel_params(track: &TrackState) -> ChannelParams {
+    ChannelParams {
+        source: match track.channel.source {
+            ChannelSource::Mic => Source::Mic,
+            ChannelSource::Line => Source::Line,
+            ChannelSource::Rmx => Source::Remix,
+        },
+        // The engine counts input channels from 0.
+        input: track.input.and_then(|c| c.checked_sub(1)),
+        trim: db_to_gain(track.channel.trim_db),
+        fader: db_to_gain(track.fader_db),
+        pan: track.pan,
+        mute: track.mute,
+        assign: track.channel.assign,
+        lr: track.channel.lr,
+        direct: track.channel.direct,
+    }
+}
+
+fn monitor_params(monitor: &MonitorEntry) -> MonitorParams {
+    MonitorParams { gain: db_to_gain(monitor.gain_db), pan: monitor.pan, mute: monitor.mute }
+}
+
+fn mixer_params(mixer: &MixerEntry) -> MixerParams {
+    let mon = match mixer.mon {
+        MonSwitch::Pgm => MonitorMode::Pgm,
+        MonSwitch::Cue => MonitorMode::Cue,
+    };
+    MixerParams { odd: db_to_gain(mixer.odd_db), even: db_to_gain(mixer.even_db), mon, mono: mixer.mono }
 }
 
 impl DawApp {
@@ -303,6 +357,7 @@ impl DawApp {
             next_device_check: DEVICE_CHECK_EVERY,
             tracks: Default::default(),
             master_db: 0.0,
+            mixer: MixerEntry::default(),
             meter_post: false,
             master_meter_db: [MIN_DB; 2],
             status: String::new(),
@@ -340,6 +395,7 @@ impl DawApp {
         };
         for (index, track) in app.tracks.iter_mut().enumerate() {
             track.meter_db = MIN_DB;
+            track.trk_meter_db = MIN_DB;
             track.input = default_input(index);
         }
         app.open_output();
@@ -389,12 +445,6 @@ impl DawApp {
         self.status = status;
         self.output = output;
         let mut engine = engine;
-        for (index, track) in self.tracks.iter().enumerate() {
-            engine.send(Command::SetGain(index, db_to_gain(track.fader_db)));
-            engine.send(Command::SetPan(index, track.pan));
-            engine.send(Command::SetMute(index, track.mute));
-        }
-        engine.send(Command::SetMaster(db_to_gain(self.master_db)));
         engine.locate_seconds(position);
         // The recorded audio leaves the engine through a writer of its own.
         if let Some(recorder) = engine.take_recorder() {
@@ -402,6 +452,7 @@ impl DawApp {
             self.platform.spawn_service(Box::new(move || recording::run_writer(recorder, dir, rate, tx, ctx)));
         }
         self.engine = Some(engine);
+        self.send_mix();
         self.send_transport();
         if was_playing {
             self.play();
@@ -624,16 +675,20 @@ impl DawApp {
             // A fresh generation drops any load still running for the old project.
             let generation = self.next_generation;
             self.next_generation += 1;
-            self.tracks[index] =
-                TrackState { meter_db, generation, version: generation, input: default_input(index), ..TrackState::default() };
+            self.tracks[index] = TrackState {
+                meter_db,
+                trk_meter_db: MIN_DB,
+                generation,
+                version: generation,
+                input: default_input(index),
+                ..TrackState::default()
+            };
             if let Some(engine) = &mut self.engine {
                 engine.send(Command::SetTrack(index, None));
-                engine.send(Command::SetGain(index, 1.0));
-                engine.send(Command::SetPan(index, 0.0));
-                engine.send(Command::SetMute(index, false));
             }
         }
         self.master_db = 0.0;
+        self.mixer = MixerEntry::default();
         self.meter_post = false;
         self.zero_seconds = 0.0;
         self.cue_seconds = None;
@@ -648,8 +703,8 @@ impl DawApp {
         if let Some(engine) = &mut self.engine {
             engine.stop();
             engine.send(Command::Locate(0.0));
-            engine.send(Command::SetMaster(1.0));
         }
+        self.send_mix();
         self.send_transport();
         self.project_dir = None;
         self.dirty = false;
@@ -681,17 +736,25 @@ impl DawApp {
             track.pan = entry.pan.clamp(-1.0, 1.0);
             track.mute = entry.mute;
             track.input = entry.input;
-            if let Some(engine) = &mut self.engine {
-                engine.send(Command::SetGain(index, db_to_gain(track.fader_db)));
-                engine.send(Command::SetPan(index, track.pan));
-                engine.send(Command::SetMute(index, track.mute));
-            }
+            let mut channel = entry.channel;
+            let range = trim_range(channel.source);
+            channel.trim_db = channel.trim_db.clamp(*range.start(), *range.end());
+            track.channel = channel;
+            track.monitor = MonitorEntry {
+                gain_db: entry.monitor.gain_db.clamp(MIN_DB, MONITOR_MAX_DB),
+                pan: entry.monitor.pan.clamp(-1.0, 1.0),
+                mute: entry.monitor.mute,
+            };
             if let Some(source) = opened.track_source(entry) {
                 self.request_load(index, &source, true);
             }
         }
         self.master_db = opened.file.master_db.clamp(MIN_DB, MAX_DB);
         self.meter_post = opened.file.meter_post;
+        let mut mixer = opened.file.mixer;
+        mixer.odd_db = mixer.odd_db.clamp(MIN_DB, MAX_DB);
+        mixer.even_db = mixer.even_db.clamp(MIN_DB, MAX_DB);
+        self.mixer = mixer;
         let transport = opened.file.transport;
         self.zero_seconds = transport.zero_seconds.max(0.0);
         self.cue_seconds = transport.cue_seconds.map(|c| c.max(0.0));
@@ -706,7 +769,7 @@ impl DawApp {
             (metronome.beats, metronome.unit) = (4, 4);
         }
         self.metronome = metronome;
-        self.engine_send(Command::SetMaster(db_to_gain(self.master_db)));
+        self.send_mix();
         self.send_transport();
         self.project_dir = Some(opened.dir);
         self.dirty = false;
@@ -726,7 +789,7 @@ impl DawApp {
         let (insert, auto_punch, monitoring) = (self.insert, self.auto_punch, self.preferences.software_monitoring);
         let offset = f64::from(self.preferences.latency_offset_ms) / 1000.0;
         let metronome = self.metronome;
-        let tracks: Vec<(bool, Option<u16>)> = self.tracks.iter().map(|t| (t.armed, t.input)).collect();
+        let armed: Vec<bool> = self.tracks.iter().map(|t| t.armed).collect();
         if let Some(engine) = &mut self.engine {
             engine.set_zero_seconds(zero);
             engine.set_cue_seconds(cue);
@@ -742,9 +805,7 @@ impl DawApp {
             engine.send(Command::SetMeter(meter_of(&metronome)));
             engine.send(Command::SetClickVolume(db_to_gain(metronome.volume_db)));
             engine.send(Command::SetCountIn(metronome.count_in));
-            for (index, (armed, input)) in tracks.into_iter().enumerate() {
-                // The engine counts channels from 0.
-                engine.send(Command::SetInputChannel(index, input.and_then(|c| c.checked_sub(1))));
+            for (index, armed) in armed.into_iter().enumerate() {
                 engine.send(Command::SetArmed(index, armed));
             }
         }
@@ -771,7 +832,15 @@ impl DawApp {
         let tracks: Vec<TrackToSave> = self
             .tracks
             .iter()
-            .map(|t| TrackToSave { source: t.source.clone(), fader_db: t.fader_db, pan: t.pan, mute: t.mute, input: t.input })
+            .map(|t| TrackToSave {
+                source: t.source.clone(),
+                fader_db: t.fader_db,
+                pan: t.pan,
+                mute: t.mute,
+                input: t.input,
+                channel: t.channel,
+                monitor: t.monitor,
+            })
             .collect();
         let transport = TransportSettings {
             zero_seconds: self.zero_seconds,
@@ -782,7 +851,13 @@ impl DawApp {
             insert: self.insert,
             auto_punch: self.auto_punch,
         };
-        let settings = ProjectSettings { master_db: self.master_db, meter_post: self.meter_post, transport, metronome: self.metronome };
+        let settings = ProjectSettings {
+            master_db: self.master_db,
+            meter_post: self.meter_post,
+            transport,
+            metronome: self.metronome,
+            mixer: self.mixer,
+        };
         match session::save(&dir, &settings, &tracks, backup) {
             Ok(saved) => {
                 for (track, source) in self.tracks.iter_mut().zip(saved.sources) {
@@ -962,6 +1037,43 @@ impl DawApp {
         }
     }
 
+    fn send_channel(&mut self, index: usize) {
+        let params = channel_params(&self.tracks[index]);
+        self.engine_send(Command::SetChannel(index, params));
+    }
+
+    fn send_monitor(&mut self, index: usize) {
+        let params = monitor_params(&self.tracks[index].monitor);
+        self.engine_send(Command::SetMonitor(index, params));
+    }
+
+    fn send_mixer(&mut self) {
+        let params = mixer_params(&self.mixer);
+        self.engine_send(Command::SetMixer(params));
+    }
+
+    /// Bring the engine's whole mixer in line with the app's.
+    fn send_mix(&mut self) {
+        for index in 0..TRACKS {
+            self.send_channel(index);
+            self.send_monitor(index);
+        }
+        self.send_mixer();
+        self.engine_send(Command::SetMaster(db_to_gain(self.master_db)));
+    }
+
+    /// Whether an armed track gets anything to record: DIRECT from a channel with an input, or
+    /// a channel assigned to its bus. Only for a warning, so it does not look at PAN or at
+    /// whether a RMX channel's track has audio.
+    fn feeds(&self, index: usize) -> bool {
+        let track = &self.tracks[index];
+        if track.channel.direct {
+            track.channel.source != ChannelSource::Rmx && track.input.is_some()
+        } else {
+            self.tracks.iter().any(|t| t.channel.assign[index / 2])
+        }
+    }
+
     fn play(&mut self) {
         self.engine_send(Command::Play);
     }
@@ -1033,18 +1145,17 @@ impl DawApp {
         let armed = !self.tracks[index].armed;
         self.tracks[index].armed = armed;
         self.engine_send(Command::SetArmed(index, armed));
-        if armed && self.tracks[index].input.is_none() {
-            self.status = format!("Spoor {} heeft geen ingang: kies er een in Instellingen, Audio", index + 1);
+        if armed && !self.feeds(index) {
+            self.status = format!(
+                "Spoor {} krijgt niets binnen: zet DIRECT aan met een ingang (MIC of LINE), of ASSIGN een kanaal naar bus {}",
+                index + 1,
+                index + 1
+            );
         }
     }
 
     /// REC: check what recording needs, then start it.
     fn record(&mut self) {
-        let channels = self.engine.as_ref().map_or(0, EngineHandle::input_channels);
-        if channels == 0 {
-            self.status = "Kies eerst een ingang: Bestand, Instellingen, Audio".into();
-            return;
-        }
         if self.vari && self.pitch_percent.abs() > 0.001 {
             self.status = "Opnemen gaat op normale snelheid: zet PITCH op FIX of op 0%".into();
             return;
@@ -1054,6 +1165,10 @@ impl DawApp {
             if !self.save_as() {
                 return;
             }
+        }
+        let silent: Vec<String> = (0..TRACKS).filter(|&i| self.tracks[i].armed && !self.feeds(i)).map(|i| (i + 1).to_string()).collect();
+        if !silent.is_empty() {
+            self.status = format!("Let op: spoor {} krijgt niets binnen en neemt stilte op", silent.join(", "));
         }
         self.engine_send(Command::Record);
     }
@@ -1268,6 +1383,8 @@ impl DawApp {
             let peaks = engine.take_track_peaks(index);
             let peak = gain_to_db(if self.meter_post { peaks.post } else { peaks.pre });
             track.meter_db = peak.max(track.meter_db - fall);
+            let trk = gain_to_db(engine.take_trk_peak(index));
+            track.trk_meter_db = trk.max(track.trk_meter_db - fall);
         }
         let master = engine.take_master_peaks();
         for (shown, peak) in self.master_meter_db.iter_mut().zip(master) {
@@ -1339,9 +1456,10 @@ impl DawApp {
         let mut load = false;
         let mut clear = false;
         let mut arm = false;
-        let mut commands = Vec::new();
+        let mut changed = false;
         let recording = self.engine.as_ref().is_some_and(|e| e.is_recording(index));
         let blink = (self.now * 2.0).fract() < 0.5;
+        let input_channels = self.output.as_ref().and_then(|o| o.input.as_ref()).map_or(0, |i| i.channels);
         let track = &mut self.tracks[index];
         column(ui, 88.0, |ui| {
             ui.label(RichText::new(format!("{}", index + 1)).strong().size(18.0).color(palette::CREAM));
@@ -1367,24 +1485,88 @@ impl DawApp {
                     clear = true;
                 }
             });
-            ui.add_space(6.0);
-            ui.label(RichText::new("PAN").size(10.0).color(palette::TEXT_DIM));
-            let pan = ui.add(egui::Slider::new(&mut track.pan, -1.0..=1.0).show_value(false));
-            if pan.double_clicked() {
-                track.pan = 0.0;
+            ui.add_space(4.0);
+            // INPUT: MIC, LINE or RMX (the tape), the selector at the top of a 388 channel.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (source, label, tip) in [
+                    (ChannelSource::Mic, "MIC", "De ingang via de voorversterker"),
+                    (ChannelSource::Line, "LINE", "De ingang, schoon"),
+                    (ChannelSource::Rmx, "RMX", "De weergave van dit spoor"),
+                ] {
+                    let on = track.channel.source == source;
+                    if toggle(ui, label, on, palette::CREAM).on_hover_text(tip).clicked() && !on {
+                        track.channel.source = source;
+                        let range = trim_range(source);
+                        track.channel.trim_db = track.channel.trim_db.clamp(*range.start(), *range.end());
+                        changed = true;
+                    }
+                }
+            });
+            if track.channel.source != ChannelSource::Rmx {
+                let text = |c: Option<u16>| c.map_or("geen ingang".to_string(), |c| format!("in {c}"));
+                let mut input = track.input;
+                egui::ComboBox::from_id_salt(("strip-input", index)).selected_text(text(input)).width(76.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut input, None, text(None));
+                    for c in 1..=input_channels {
+                        ui.selectable_value(&mut input, Some(c), text(Some(c)));
+                    }
+                });
+                if input != track.input {
+                    track.input = input;
+                    changed = true;
+                }
             }
-            if pan.changed() || pan.double_clicked() {
-                commands.push(Command::SetPan(index, track.pan));
-            }
+            ui.horizontal(|ui| {
+                let trim = knob(ui, &mut track.channel.trim_db, trim_range(track.channel.source), 0.0, palette::RED, 30.0, true)
+                    .on_hover_text(format!("TRIM {:+.1} dB (dubbelklik: 0 dB)", track.channel.trim_db));
+                changed |= trim.changed() || trim.double_clicked();
+                let pan = knob(ui, &mut track.pan, -1.0..=1.0, 0.0, palette::CREAM, 30.0, true).on_hover_text(format!(
+                    "PAN {:+.2}: links naar de oneven bus, rechts naar de even bus (dubbelklik: midden)",
+                    track.pan
+                ));
+                changed |= pan.changed() || pan.double_clicked();
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("TRIM").size(9.0).color(palette::TEXT_DIM));
+                ui.add_space(14.0);
+                ui.label(RichText::new("PAN").size(9.0).color(palette::TEXT_DIM));
+            });
+            ui.label(RichText::new("ASSIGN").size(9.0).color(palette::TEXT_DIM));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for pair in 0..4 {
+                    let (odd, even) = (2 * pair + 1, 2 * pair + 2);
+                    let tip = format!("Naar PGM-bus {odd} (PAN links) en {even} (PAN rechts)");
+                    if toggle(ui, &format!("{odd}{even}"), track.channel.assign[pair], palette::ORANGE).on_hover_text(tip).clicked() {
+                        track.channel.assign[pair] = !track.channel.assign[pair];
+                        changed = true;
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let tip = "L-R: naar de stereobus. Staat er een kanaal op L-R, dan hoor je alleen de L-R-kanalen, niet de MONITOR";
+                if toggle(ui, "L-R", track.channel.lr, palette::ORANGE).on_hover_text(tip).clicked() {
+                    track.channel.lr = !track.channel.lr;
+                    changed = true;
+                }
+                let tip =
+                    format!("DIRECT: spoor {} neemt dit kanaal op (na TRIM, voor de fader) in plaats van PGM-bus {}", index + 1, index + 1);
+                if toggle(ui, "DIRECT", track.channel.direct, palette::GREEN).on_hover_text(tip).clicked() {
+                    track.channel.direct = !track.channel.direct;
+                    changed = true;
+                }
+            });
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 // REC FUNCTION: blinks when ready, lit while recording, as on the 388.
                 let lit = recording || (track.armed && blink);
                 let text = RichText::new("REC").size(11.0).strong().color(if lit { Color32::WHITE } else { palette::LED });
-                let input = track.input.map_or("geen ingang".to_string(), |c| format!("ingang {c}"));
                 let rec =
                     ui.add(egui::Button::new(text).fill(if lit { palette::RED } else { palette::PANEL_DARK }).min_size(vec2(38.0, 18.0)));
-                if rec.on_hover_text(format!("REC FUNCTION: spoor klaar voor opname ({input})")).clicked() {
+                if rec.on_hover_text("REC FUNCTION: spoor klaar voor opname").clicked() {
                     arm = true;
                 }
                 let mute = ui.add(
@@ -1394,14 +1576,14 @@ impl DawApp {
                 );
                 if mute.clicked() {
                     track.mute = !track.mute;
-                    commands.push(Command::SetMute(index, track.mute));
+                    changed = true;
                 }
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let fader = fader(ui, &mut track.fader_db, palette::CREAM);
                 if fader.changed() || fader.double_clicked() {
-                    commands.push(Command::SetGain(index, db_to_gain(track.fader_db)));
+                    changed = true;
                 }
                 meter(ui, track.meter_db, true);
             });
@@ -1410,11 +1592,9 @@ impl DawApp {
         if arm {
             self.toggle_arm(index);
         }
-        if !commands.is_empty() {
+        if changed {
+            self.send_channel(index);
             self.mark_dirty();
-        }
-        for command in commands {
-            self.engine_send(command);
         }
         if load && let Some(path) = self.platform.pick_audio_files(false).first() {
             self.request_load(index, path, false);
@@ -1422,6 +1602,82 @@ impl DawApp {
         }
         if clear {
             self.clear_track(index);
+        }
+    }
+
+    /// PGM MASTERS: ODD for buses 1, 3, 5 and 7, EVEN for 2, 4, 6 and 8.
+    fn pgm_masters(&mut self, ui: &mut Ui) {
+        let mut changed = false;
+        column(ui, 120.0, |ui| {
+            ui.label(RichText::new("PGM").strong().size(14.0).color(palette::CREAM));
+            ui.label(RichText::new("MASTERS").size(9.0).color(palette::TEXT_DIM));
+            ui.horizontal(|ui| {
+                for (label, db) in [("ODD", &mut self.mixer.odd_db), ("EVEN", &mut self.mixer.even_db)] {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(label).size(10.0).color(palette::TEXT_DIM));
+                        let response = fader(ui, db, palette::ORANGE);
+                        changed |= response.changed() || response.double_clicked();
+                        ui.label(RichText::new(format_db(*db)).size(10.0).color(palette::TEXT_DIM));
+                    });
+                }
+            });
+        });
+        if changed {
+            self.send_mixer();
+            self.mark_dirty();
+        }
+    }
+
+    /// The MONITOR section: per track GAIN, PAN, mute and the TRK/PGM meter, plus the MON switch.
+    fn monitor_section(&mut self, ui: &mut Ui) {
+        let mut changed = Vec::new();
+        let mut mixer_changed = false;
+        column(ui, 150.0, |ui| {
+            ui.label(RichText::new("MONITOR").strong().size(14.0).color(palette::CREAM));
+            ui.label(RichText::new("GAIN   PAN    M   TRK/PGM").size(9.0).color(palette::TEXT_DIM));
+            for (index, track) in self.tracks.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.label(RichText::new(format!("{}", index + 1)).size(11.0).color(palette::CREAM));
+                    let monitor = &mut track.monitor;
+                    let gain = knob(ui, &mut monitor.gain_db, MIN_DB..=MONITOR_MAX_DB, 0.0, palette::CREAM, 24.0, true)
+                        .on_hover_text(format!("MONITOR GAIN spoor {}: {} (dubbelklik: 0 dB)", index + 1, format_db(monitor.gain_db)));
+                    let pan = knob(ui, &mut monitor.pan, -1.0..=1.0, 0.0, palette::CREAM, 24.0, true)
+                        .on_hover_text(format!("MONITOR PAN {:+.2} (dubbelklik: midden)", monitor.pan));
+                    let mute = toggle(ui, "M", monitor.mute, palette::ORANGE);
+                    if mute.clicked() {
+                        monitor.mute = !monitor.mute;
+                    }
+                    if gain.changed() || gain.double_clicked() || pan.changed() || pan.double_clicked() || mute.clicked() {
+                        changed.push(index);
+                    }
+                    level_bar(ui, track.trk_meter_db);
+                });
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.label(RichText::new("MON").size(9.0).color(palette::TEXT_DIM));
+                for (mon, label, tip) in [
+                    (MonSwitch::Cue, "CUE", "Band of ingang, volgens REC FUNCTION en INSERT (zoals op de 388)"),
+                    (MonSwitch::Pgm, "PGM", "Altijd de PGM-bussen"),
+                ] {
+                    let on = self.mixer.mon == mon;
+                    if toggle(ui, label, on, palette::ORANGE).on_hover_text(tip).clicked() && !on {
+                        self.mixer.mon = mon;
+                        mixer_changed = true;
+                    }
+                }
+            });
+        });
+        for index in &changed {
+            self.send_monitor(*index);
+        }
+        if mixer_changed {
+            self.send_mixer();
+        }
+        if !changed.is_empty() || mixer_changed {
+            self.mark_dirty();
         }
     }
 
@@ -1433,8 +1689,8 @@ impl DawApp {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 for (post, label, tip) in [
-                    (false, "PRE", "Spoormeters tonen het niveau van het spoor zelf, voor de fader (zoals op de 388)"),
-                    (true, "POST", "Spoormeters tonen het niveau na fader en mute"),
+                    (false, "PRE", "Kanaalmeters tonen het niveau na TRIM, voor de fader (zoals op de 388)"),
+                    (true, "POST", "Kanaalmeters tonen het niveau na fader en mute"),
                 ] {
                     let lit = self.meter_post == post;
                     let text = RichText::new(label).size(10.0).color(if lit { Color32::BLACK } else { palette::TEXT });
@@ -1446,6 +1702,13 @@ impl DawApp {
                     }
                 }
             });
+            ui.add_space(4.0);
+            let mono = toggle(ui, "MONO", self.mixer.mono, palette::ORANGE).on_hover_text("Links en rechts samen op beide kanten");
+            if mono.clicked() {
+                self.mixer.mono = !self.mixer.mono;
+                self.send_mixer();
+                self.mark_dirty();
+            }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let response = fader(ui, &mut self.master_db, palette::RED);
@@ -1597,7 +1860,7 @@ impl DawApp {
                     self.rtz();
                 }
                 ui.add_space(14.0);
-                let knob = knob(ui, &mut self.pitch_percent, -PITCH_PERCENT..=PITCH_PERCENT, self.vari);
+                let knob = knob(ui, &mut self.pitch_percent, -PITCH_PERCENT..=PITCH_PERCENT, 0.0, palette::CREAM, 38.0, self.vari);
                 let knob = knob.on_hover_text("PITCH: snelheid en toonhoogte, plus of min 15% (dubbelklik: 0%)");
                 if knob.changed() || knob.double_clicked() {
                     self.send_pitch();
@@ -1705,13 +1968,13 @@ impl DawApp {
         let channels = self.output.as_ref().and_then(|o| o.input.as_ref()).map_or(0, |i| i.channels);
         if channels > 0 {
             ui.add_space(4.0);
-            ui.label(RichText::new("Ingang per spoor").size(12.0));
+            ui.label(RichText::new("Ingang per kanaal (MIC en LINE)").size(12.0));
             let mut changed = Vec::new();
             egui::Grid::new("track-inputs").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
                 for (index, track) in self.tracks.iter().enumerate() {
                     let mut input = track.input;
                     let text = |c: Option<u16>| c.map_or("geen".to_string(), |c| format!("in {c}"));
-                    ui.label(format!("Spoor {}", index + 1));
+                    ui.label(format!("Kanaal {}", index + 1));
                     egui::ComboBox::from_id_salt(("track-input", index)).selected_text(text(input)).width(70.0).show_ui(ui, |ui| {
                         ui.selectable_value(&mut input, None, text(None));
                         for c in 1..=channels {
@@ -1728,7 +1991,7 @@ impl DawApp {
             });
             for (index, input) in changed {
                 self.tracks[index].input = input;
-                self.engine_send(Command::SetInputChannel(index, input.and_then(|c| c.checked_sub(1))));
+                self.send_channel(index);
                 self.mark_dirty();
             }
         }
@@ -1821,10 +2084,17 @@ fn small_key(ui: &mut Ui, label: &str, lit: bool, size: egui::Vec2) -> egui::Res
     ui.add(egui::Button::new(text).fill(Color32::from_rgb(0x7e, 0x7e, 0x80)).min_size(size).corner_radius(CornerRadius::same(3)))
 }
 
-/// A rotary knob: drag up or down to turn it (Shift for fine), double-click to centre it.
+/// A rotary knob: drag up or down to turn it (Shift for fine), double-click for `default`.
 /// `enabled` false draws it dimmed (the pitch control in FIX).
-fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, enabled: bool) -> egui::Response {
-    let size = 38.0;
+fn knob(
+    ui: &mut Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    default: f32,
+    colour: Color32,
+    size: f32,
+    enabled: bool,
+) -> egui::Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
     let (min, max) = (*range.start(), *range.end());
     if enabled && response.dragged() {
@@ -1834,12 +2104,12 @@ fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, enab
         response.mark_changed();
     }
     if enabled && response.double_clicked() {
-        *value = (min + max) / 2.0;
+        *value = default;
     }
     let painter = ui.painter();
     let centre = rect.center();
     let radius = size / 2.0 - 2.0;
-    let cap = if enabled { palette::CREAM } else { Color32::from_rgb(0x8a, 0x86, 0x7c) };
+    let cap = if enabled { colour } else { Color32::from_rgb(0x8a, 0x86, 0x7c) };
     painter.circle_filled(centre, radius + 2.0, Color32::from_rgb(0x1b, 0x1b, 0x1c));
     painter.circle_filled(centre, radius, cap);
     // From -135 to +135 degrees, 0 at the top.
@@ -1851,6 +2121,28 @@ fn knob(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, enab
         Stroke::new(2.5, Color32::from_rgb(0x2a, 0x26, 0x22)),
     );
     response
+}
+
+/// A small latching switch, lit in `colour` when on.
+fn toggle(ui: &mut Ui, label: &str, on: bool, colour: Color32) -> egui::Response {
+    let text = RichText::new(label).size(9.0).strong().color(if on { Color32::BLACK } else { palette::TEXT });
+    ui.add(egui::Button::new(text).fill(if on { colour } else { palette::PANEL_DARK }).min_size(vec2(20.0, 16.0)))
+}
+
+/// A small horizontal peak meter on the same scale and colours as [`meter`].
+fn level_bar(ui: &mut Ui, db: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(36.0, 6.0), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 1.0, Color32::BLACK);
+    let level = if db > MIN_DB { scale_position(&METER_TAPER, db) } else { 0.0 };
+    let colour = if db > 0.0 {
+        palette::LED
+    } else if db > -6.0 {
+        palette::ORANGE
+    } else {
+        palette::GREEN
+    };
+    painter.rect_filled(egui::Rect::from_min_size(rect.min, vec2(rect.width() * level, rect.height())), 1.0, colour);
 }
 
 /// Fader travel in points; long enough for fine work around 0 dB.
@@ -2043,13 +2335,17 @@ impl DawApp {
                     .inner_margin(Margin::same(14))
                     .stroke(Stroke::new(2.0, palette::EDGE))
                     .show(ui, |ui| {
-                        egui::ScrollArea::horizontal().show(ui, |ui| {
+                        egui::ScrollArea::both().show(ui, |ui| {
                             ui.horizontal_top(|ui| {
                                 for index in 0..TRACKS {
                                     self.channel_strip(ui, index);
                                     ui.separator();
                                 }
                                 ui.add_space(8.0);
+                                self.pgm_masters(ui);
+                                ui.separator();
+                                self.monitor_section(ui);
+                                ui.separator();
                                 self.master_section(ui);
                                 ui.add_space(24.0);
                                 ui.vertical(|ui| {
@@ -2282,6 +2578,9 @@ mod tests {
         app.tracks[1].fader_db = -6.0;
         app.tracks[1].pan = -0.5;
         app.tracks[1].mute = true;
+        app.tracks[1].channel.assign[1] = true;
+        app.tracks[1].monitor.gain_db = -4.0;
+        app.mixer.mon = MonSwitch::Pgm;
         app.master_db = -2.0;
         app.meter_post = true;
         assert!(app.save(Backup::Always), "{}", app.status);
@@ -2300,6 +2599,9 @@ mod tests {
         assert_eq!(app.tracks[1].fader_db, -6.0);
         assert_eq!(app.tracks[1].pan, -0.5);
         assert!(app.tracks[1].mute);
+        assert!(app.tracks[1].channel.assign[1]);
+        assert_eq!(app.tracks[1].monitor.gain_db, -4.0);
+        assert_eq!(app.mixer.mon, MonSwitch::Pgm);
         assert_eq!(app.master_db, -2.0);
         assert!(app.meter_post);
         assert!(app.tracks[2].clip.is_none());
@@ -2462,12 +2764,14 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
         app.record();
-        assert!(app.status.contains("Kies eerst een ingang"), "{}", app.status);
+        assert!(app.status.contains("Sla het project eerst op"), "{}", app.status);
         app.toggle_arm(3);
         assert!(app.tracks[3].armed);
-        app.tracks[4].input = None;
+        assert!(app.status.contains("krijgt niets binnen"), "a new project is RMX without ASSIGN: {}", app.status);
+        app.tracks[4].channel = ChannelEntry { source: ChannelSource::Line, direct: true, ..ChannelEntry::default() };
+        app.status.clear();
         app.toggle_arm(4);
-        assert!(app.status.contains("geen ingang"), "{}", app.status);
+        assert!(app.status.is_empty(), "LINE with DIRECT and an input: {}", app.status);
     }
 
     #[test]

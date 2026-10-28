@@ -19,7 +19,7 @@ pub const MAX_BACKUPS: usize = 10;
 pub const BACKUP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 const FORMAT: &str = "daw388-project";
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 
 /// Contents of `project.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +37,8 @@ pub struct ProjectFile {
     pub transport: TransportSettings,
     #[serde(default)]
     pub metronome: MetronomeSettings,
+    #[serde(default)]
+    pub mixer: MixerEntry,
     #[serde(default)]
     pub tracks: Vec<TrackEntry>,
 }
@@ -58,6 +60,64 @@ pub struct TrackEntry {
     /// The input channel this track records from (counted from 1, as interfaces label them).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<u16>,
+    #[serde(default)]
+    pub channel: ChannelEntry,
+    #[serde(default)]
+    pub monitor: MonitorEntry,
+}
+
+/// Where a channel's signal comes from: the microphone preamp, the line input or the tape (RMX,
+/// the 388's remix position).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelSource {
+    Mic,
+    Line,
+    #[default]
+    Rmx,
+}
+
+/// A mixer channel in `project.json` (the fader, pan, mute and input stay on [`TrackEntry`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelEntry {
+    pub source: ChannelSource,
+    pub trim_db: f32,
+    /// ASSIGN 1-2, 3-4, 5-6 and 7-8.
+    pub assign: [bool; 4],
+    /// ASSIGN L-R: to the stereo bus.
+    pub lr: bool,
+    /// The track records this channel after TRIM instead of its PGM bus.
+    pub direct: bool,
+}
+
+/// A track's MONITOR controls in `project.json`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MonitorEntry {
+    pub gain_db: f32,
+    pub pan: f32,
+    pub mute: bool,
+}
+
+/// The MON switch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MonSwitch {
+    Pgm,
+    #[default]
+    Cue,
+}
+
+/// The master section in `project.json` (the STEREO MASTER is `master_db`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MixerEntry {
+    /// PGM MASTERS ODD and EVEN.
+    pub odd_db: f32,
+    pub even_db: f32,
+    pub mon: MonSwitch,
+    pub mono: bool,
 }
 
 /// How REPEAT (and RTZ and STC) reach their point.
@@ -128,6 +188,7 @@ pub struct ProjectSettings {
     pub meter_post: bool,
     pub transport: TransportSettings,
     pub metronome: MetronomeSettings,
+    pub mixer: MixerEntry,
 }
 
 /// What the UI hands over for one track when saving.
@@ -140,6 +201,8 @@ pub struct TrackToSave {
     pub mute: bool,
     /// Input channel, counted from 1.
     pub input: Option<u16>,
+    pub channel: ChannelEntry,
+    pub monitor: MonitorEntry,
 }
 
 /// The result of a save.
@@ -204,14 +267,35 @@ pub fn open(path: &Path) -> Result<OpenedProject, ProjectError> {
         (path.parent().map(Path::to_path_buf).unwrap_or_default(), path.to_path_buf())
     };
     let text = fs::read_to_string(&file).map_err(io("Lezen van", &file))?;
-    let project: ProjectFile = serde_json::from_str(&text).map_err(ProjectError::Json)?;
+    let mut project: ProjectFile = serde_json::from_str(&text).map_err(ProjectError::Json)?;
     if project.format != FORMAT {
         return Err(ProjectError::NotAProject(file));
     }
     if project.version > FORMAT_VERSION {
         return Err(ProjectError::TooNew(project.version));
     }
+    if project.version < 2 {
+        upgrade_v1(&mut project);
+    }
     Ok(OpenedProject { dir, file: project })
+}
+
+/// Format 1 had one fader, pan and mute per track and recorded straight from the input. In
+/// format 2 these become the MONITOR controls, so the project sounds as before; the channel
+/// starts neutral, and a track that had an input records it through DIRECT on a LINE channel.
+fn upgrade_v1(project: &mut ProjectFile) {
+    for track in &mut project.tracks {
+        track.monitor = MonitorEntry { gain_db: track.fader_db, pan: track.pan, mute: track.mute };
+        track.fader_db = 0.0;
+        track.pan = 0.0;
+        track.mute = false;
+        track.channel = if track.input.is_some() {
+            ChannelEntry { source: ChannelSource::Line, direct: true, ..ChannelEntry::default() }
+        } else {
+            ChannelEntry::default()
+        };
+    }
+    project.version = FORMAT_VERSION;
 }
 
 /// Save a project into `dir` (created when needed). Audio from outside the project is copied
@@ -230,7 +314,16 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
             None => None,
         };
         let file = source.as_ref().and_then(|s| relative(dir, s));
-        entries.push(TrackEntry { number, file, fader_db: track.fader_db, pan: track.pan, mute: track.mute, input: track.input });
+        entries.push(TrackEntry {
+            number,
+            file,
+            fader_db: track.fader_db,
+            pan: track.pan,
+            mute: track.mute,
+            input: track.input,
+            channel: track.channel,
+            monitor: track.monitor,
+        });
         sources.push(source);
     }
 
@@ -242,6 +335,7 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
         meter_post: settings.meter_post,
         transport: settings.transport,
         metronome: settings.metronome,
+        mixer: settings.mixer,
         tracks: entries,
     };
     let path = dir.join(PROJECT_FILE);
@@ -365,7 +459,21 @@ mod tests {
         sources
             .into_iter()
             .enumerate()
-            .map(|(i, source)| TrackToSave { source, fader_db: -3.0 * i as f32, pan: 0.5, mute: i == 1, input: Some(i as u16 + 1) })
+            .map(|(i, source)| TrackToSave {
+                source,
+                fader_db: -3.0 * i as f32,
+                pan: 0.5,
+                mute: i == 1,
+                input: Some(i as u16 + 1),
+                channel: ChannelEntry {
+                    source: ChannelSource::Mic,
+                    trim_db: 12.0,
+                    assign: [false, i == 1, false, false],
+                    lr: i == 0,
+                    direct: i == 1,
+                },
+                monitor: MonitorEntry { gain_db: -4.0, pan: 0.25, mute: i == 0 },
+            })
             .collect()
     }
 
@@ -392,6 +500,7 @@ mod tests {
                     auto_punch: true,
                 },
                 metronome: MetronomeSettings { click: true, always: true, bpm: 96.5, beats: 6, unit: 8, volume_db: -12.0, count_in: 2 },
+                mixer: MixerEntry { odd_db: -2.0, even_db: 1.0, mon: MonSwitch::Pgm, mono: true },
             },
             &tracks([Some(kick.clone()), None]),
             Backup::Always,
@@ -421,6 +530,13 @@ mod tests {
         assert!(opened.file.tracks[1].mute);
         assert_eq!(opened.file.tracks[1].fader_db, -3.0);
         assert_eq!(opened.file.tracks[1].input, Some(2));
+        assert_eq!(
+            opened.file.tracks[1].channel,
+            ChannelEntry { source: ChannelSource::Mic, trim_db: 12.0, assign: [false, true, false, false], lr: false, direct: true }
+        );
+        assert_eq!(opened.file.tracks[0].monitor, MonitorEntry { gain_db: -4.0, pan: 0.25, mute: true });
+        assert_eq!(opened.file.mixer, MixerEntry { odd_db: -2.0, even_db: 1.0, mon: MonSwitch::Pgm, mono: true });
+        assert_eq!(opened.file.version, FORMAT_VERSION, "a format 2 file is not upgraded again");
         assert!(crate::load_wav(&opened.track_source(&opened.file.tracks[0]).unwrap_or_default()).is_ok());
         assert_eq!(project_name(&dir), "Mijn liedje");
 
@@ -476,6 +592,29 @@ mod tests {
         save(&dir, &ProjectSettings::default(), &tracks([Some(gone), None]), Backup::Always).unwrap_or_else(|e| panic!("{e}"));
         let opened = open(&dir).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(opened.file.tracks[0].file.as_deref(), Some("audio/weg.wav"));
+    }
+
+    #[test]
+    fn a_format_1_project_is_upgraded_and_sounds_the_same() {
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let path = root.path().join(PROJECT_FILE);
+        let v1 = r#"{"format":"daw388-project","version":1,"app_version":"0.7.0","tracks":[
+            {"number":1,"fader_db":-6.0,"pan":-0.5,"mute":true},
+            {"number":2,"fader_db":0.0,"pan":0.0,"mute":false,"input":2}]}"#;
+        fs::write(&path, v1).unwrap_or_else(|e| panic!("{e}"));
+        let file = open(&path).unwrap_or_else(|e| panic!("{e}")).file;
+        assert_eq!(file.version, FORMAT_VERSION);
+        let (one, two) = (&file.tracks[0], &file.tracks[1]);
+        assert_eq!(one.monitor, MonitorEntry { gain_db: -6.0, pan: -0.5, mute: true }, "the old fader becomes MONITOR GAIN");
+        assert_eq!((one.fader_db, one.pan, one.mute), (0.0, 0.0, false), "the channel starts neutral");
+        assert_eq!(one.channel, ChannelEntry::default(), "RMX, nothing assigned");
+        assert_eq!(
+            two.channel,
+            ChannelEntry { source: ChannelSource::Line, direct: true, ..ChannelEntry::default() },
+            "it recorded its input"
+        );
+        assert_eq!(two.input, Some(2));
+        assert_eq!(file.mixer, MixerEntry::default());
     }
 
     #[test]

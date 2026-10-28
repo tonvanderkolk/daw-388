@@ -166,7 +166,7 @@ pub fn compose(take: &TakeDone, underneath: &Underneath, dest: &Path) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use daw388_engine::{Command, input_ring};
+    use daw388_engine::{ChannelParams, Command, Source, input_ring};
 
     #[test]
     fn a_recorded_take_is_written_and_laid_over_the_track() {
@@ -176,7 +176,8 @@ mod tests {
         engine.attach_input(rx, 1, 1);
         let mut recorder = handle.take_recorder().unwrap_or_else(|| unreachable!());
         handle.send(Command::SetTrack(0, Some(Arc::new(TrackAudio { name: "oud".into(), samples: vec![0.1; 100] }))));
-        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle
+            .send(Command::SetChannel(0, ChannelParams { source: Source::Line, input: Some(0), direct: true, ..ChannelParams::default() }));
         handle.send(Command::SetArmed(0, true));
         handle.send(Command::Locate(21.0));
         handle.send(Command::Record);
@@ -213,7 +214,8 @@ mod tests {
         let (mut tx, rx) = input_ring(48_000, 1);
         engine.attach_input(rx, 1, 1);
         let mut recorder = handle.take_recorder().unwrap_or_else(|| unreachable!());
-        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle
+            .send(Command::SetChannel(0, ChannelParams { source: Source::Line, input: Some(0), direct: true, ..ChannelParams::default() }));
         handle.send(Command::SetArmed(0, true));
         handle.send(Command::Record);
         for _ in 0..11 {

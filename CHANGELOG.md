@@ -7,6 +7,24 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.8.0] - 2026-10-28
+
+### Toegevoegd
+- Mixer naar het blokschema van de 388. Per kanaal INPUT MIC, LINE of RMX (de band), TRIM, een PAN-knop en ASSIGN 1-2, 3-4, 5-6 en 7-8 naar de PGM-bussen: PAN links gaat naar de oneven bus, rechts naar de even bus.
+- PGM MASTERS ODD en EVEN. Spoor N neemt PGM-bus N op, dus ping-pongen van sporen naar een vrij spoor kan nu.
+- DIRECT per spoor: het spoor neemt zijn eigen kanaal op (na TRIM, voor de fader), zonder bus.
+- MONITOR-sectie met per spoor GAIN, PAN, mute en een TRK/PGM-meter. Wat je hoort volgt de omschakeltabel van de 388: MON op CUE geeft band of ingang volgens REC FUNCTION en INSERT, op PGM altijd de bussen.
+- L-R per kanaal naar de stereobus, voor de remix. Staat er een kanaal op L-R, dan hoor je alleen de L-R-kanalen.
+- MONO-schakelaar bij de STEREO MASTER.
+- Opnemen kan nu ook zonder ingangsapparaat, van band naar band. Zo'n bounce ligt sample-precies onder de bron; alleen opnames van een ingang krijgen latencycompensatie.
+- PROJECT.md legt de routing uit met een schema en recepten voor opnemen, pingpong in mono en stereo en de mixdown.
+
+### Gewijzigd
+- `project.json` heeft formaatversie 2. Een project van een eerdere versie gaat open zoals het klonk: de oude spoorfader, pan en mute staan nu in de MONITOR-sectie, de kanaalfader staat op 0 dB. Een spoor met een ingang (in oude projecten is dat elk spoor) wordt een LINE-kanaal met DIRECT, zodat opnemen werkt als voorheen. Daardoor tonen de kanaalmeters na de omzetting de ingang in plaats van de band; de TRK/PGM-meters in de MONITOR-sectie tonen wat je hoort. Zet een kanaal op RMX om de band weer op de kanaalmeter te zien.
+- Een spoor op REC FUNCTION met INSERT aan is stil zolang de band stilstaat, zoals op de 388. Zet MON op PGM om dan de ingang te horen.
+- REC weigert niet meer zonder ingang, maar waarschuwt als een klaargezet spoor niets binnenkrijgt.
+- De ingang kies je nu per kanaal (voor MIC en LINE), in de kanaalstrook of in de instellingen. Het venster is hoger en scrolt ook verticaal.
+
 ## [0.7.0] - 2026-10-27
 
 ### Toegevoegd

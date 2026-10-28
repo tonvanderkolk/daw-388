@@ -13,17 +13,27 @@
 //! memory, RTZ and STC searches, fast winding and REPEAT between zero and CUE. In
 //! [`TransportStyle::Tape`] searches wind through the tape in time, as on the machine; in
 //! [`TransportStyle::Cycle`] they jump straight there, as in a modern DAW.
+//!
+//! The mixer follows the 388's block diagram (see [`mixer`] and [`monitor`]): eight channels
+//! (MIC, LINE or the tape) with TRIM, fader and PAN, ASSIGN to eight PGM buses through the ODD
+//! and EVEN masters, track N recording bus N (or its channel's DIRECT tap), a MONITOR section
+//! and the stereo bus with the STEREO MASTER.
 
 mod click;
+mod mixer;
+mod monitor;
 mod record;
 
 pub use click::Meter;
+pub use mixer::{ChannelParams, MixerParams, Source};
+pub use monitor::{MonitorMode, MonitorParams};
 pub use record::{RecItem, RecMode, Recorder, input_ring};
 
 use click::Click;
+use mixer::Channel;
+use monitor::{Monitor, MonitorSource, hears_input, monitor_source};
 
 use record::{Input, RecordOut};
-use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
@@ -96,17 +106,16 @@ pub enum Command {
     /// Speed as a ratio: 1.0 is normal, 1.15 is 15% faster.
     SetPitch(f64),
     SetTrack(usize, Option<Arc<TrackAudio>>),
-    /// Linear gain.
-    SetGain(usize, f32),
-    /// -1.0 is hard left, 1.0 is hard right.
-    SetPan(usize, f32),
-    SetMute(usize, bool),
+    /// A channel's source, TRIM, fader, PAN, ASSIGN, L-R and DIRECT.
+    SetChannel(usize, ChannelParams),
+    /// A track's MONITOR GAIN, PAN and mute.
+    SetMonitor(usize, MonitorParams),
+    /// PGM MASTERS, MON and MONO.
+    SetMixer(MixerParams),
     /// Linear gain of the stereo master.
     SetMaster(f32),
     /// REC FUNCTION: make a track ready to record (or safe).
     SetArmed(usize, bool),
-    /// The input channel a track records from (counted from 0), or none.
-    SetInputChannel(usize, Option<u16>),
     /// REC: start recording the armed tracks (from stop it also starts the tape, as REC and
     /// PLAY together do on the 388). Without armed tracks the machine goes record-ready.
     Record,
@@ -144,6 +153,8 @@ struct Shared {
     /// track's own level, as the 388's track meters show it) and after fader and mute.
     track_peaks: [AtomicU32; TRACKS],
     track_peaks_post: [AtomicU32; TRACKS],
+    /// Highest peak per track of what its MONITOR hears (the 388's TRK/PGM meters).
+    trk_peaks: [AtomicU32; TRACKS],
     master_peaks: [AtomicU32; 2],
     rec_mode: AtomicU8,
     /// Bit per track that is recording.
@@ -167,6 +178,7 @@ impl Default for Shared {
             motion: AtomicU8::new(0),
             track_peaks: Default::default(),
             track_peaks_post: Default::default(),
+            trk_peaks: Default::default(),
             master_peaks: Default::default(),
             rec_mode: AtomicU8::new(0),
             recording: AtomicU8::new(0),
@@ -227,7 +239,7 @@ fn store_peak(cell: &AtomicU32, value: f32) {
 
 /// Move a gain one step towards its target, landing on it exactly once it is close (so a closed
 /// fader is truly silent and no denormals build up).
-fn smooth(current: &mut f32, target: f32) {
+pub(crate) fn smooth(current: &mut f32, target: f32) {
     let difference = target - *current;
     if difference.abs() < 1e-6 { *current = target } else { *current += difference * SMOOTH }
 }
@@ -256,8 +268,8 @@ fn sample_at(samples: &[f32], position: f64) -> f32 {
     ((c3 * t + c2) * t + c1) * t + y1
 }
 
-/// A track's peak level before the fader and after fader and mute (pan does not count: the
-/// track is mono).
+/// A channel's peak level after TRIM (before the fader) and after fader and mute (pan does not
+/// count: the channel is mono).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TrackPeaks {
     pub pre: f32,
@@ -275,7 +287,11 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         commands: command_rx,
         garbage: garbage_tx,
         shared,
-        tracks: Default::default(),
+        tape: Default::default(),
+        channels: Default::default(),
+        monitors: Default::default(),
+        mixer: MixerParams::default(),
+        bus_gains: [1.0; 2],
         master: 1.0,
         master_current: 1.0,
         position: 0.0,
@@ -291,7 +307,6 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         latency_source: None,
         latency_offset: 0.0,
         armed: [false; TRACKS],
-        input_channel: [None; TRACKS],
         recording: [false; TRACKS],
         rec_mode: RecMode::Off,
         auto_record: false,
@@ -435,6 +450,11 @@ impl EngineHandle {
         }
     }
 
+    /// Peak of what a track's MONITOR heard since the last call (TRK/PGM meter), linear.
+    pub fn take_trk_peak(&self, track: usize) -> f32 {
+        self.shared.trk_peaks.get(track).map_or(0.0, take_peak)
+    }
+
     /// Peaks of the stereo master since the last call, linear.
     pub fn take_master_peaks(&self) -> [f32; 2] {
         [take_peak(&self.shared.master_peaks[0]), take_peak(&self.shared.master_peaks[1])]
@@ -443,33 +463,6 @@ impl EngineHandle {
     /// Free track buffers the audio thread no longer uses. Call regularly from the UI thread.
     pub fn collect_garbage(&mut self) {
         while self.garbage.pop().is_ok() {}
-    }
-}
-
-#[derive(Debug)]
-struct Track {
-    audio: Option<Arc<TrackAudio>>,
-    gain: f32,
-    pan: f32,
-    mute: bool,
-    /// Smoothed left and right gains.
-    current: [f32; 2],
-}
-
-impl Default for Track {
-    fn default() -> Self {
-        Self { audio: None, gain: 1.0, pan: 0.0, mute: false, current: [0.0; 2] }
-    }
-}
-
-impl Track {
-    /// Constant-power pan: -3 dB per side in the centre.
-    fn target(&self) -> [f32; 2] {
-        if self.mute {
-            return [0.0; 2];
-        }
-        let angle = (self.pan.clamp(-1.0, 1.0) + 1.0) * FRAC_PI_4;
-        [self.gain * angle.cos(), self.gain * angle.sin()]
     }
 }
 
@@ -495,7 +488,13 @@ pub struct Engine {
     commands: rtrb::Consumer<Command>,
     garbage: rtrb::Producer<Arc<TrackAudio>>,
     shared: Arc<Shared>,
-    tracks: [Track; TRACKS],
+    /// What each track plays back.
+    tape: [Option<Arc<TrackAudio>>; TRACKS],
+    channels: [Channel; TRACKS],
+    monitors: [Monitor; TRACKS],
+    mixer: MixerParams,
+    /// Smoothed ODD and EVEN master gains.
+    bus_gains: [f32; 2],
     master: f32,
     /// Smoothed master gain.
     master_current: f32,
@@ -514,7 +513,6 @@ pub struct Engine {
     latency_source: Option<Arc<AtomicU64>>,
     latency_offset: f64,
     armed: [bool; TRACKS],
-    input_channel: [Option<usize>; TRACKS],
     recording: [bool; TRACKS],
     rec_mode: RecMode,
     /// REC was pressed with AUTO PUNCH on: recording follows the zero and CUE points.
@@ -549,17 +547,26 @@ impl Engine {
         self.compensation = ((device + self.latency_offset) * f64::from(self.sample_rate) + fill).max(0.0);
     }
 
-    fn can_record(&self, track: usize) -> bool {
+    /// Whether what track `track` records contains a live source: DIRECT from a live channel,
+    /// or a live channel assigned to its bus. Only then does the take need latency compensation;
+    /// a bounce from tape lines up with its source as it is.
+    fn feeds_live(&self, track: usize) -> bool {
         let channels = self.input.as_ref().map_or(0, |i| i.channels);
-        self.armed[track] && self.input_channel[track].is_some_and(|c| c < channels)
+        let own = &self.channels[track].params;
+        if own.direct {
+            own.is_live(channels)
+        } else {
+            self.channels.iter().any(|c| c.params.assign[track / 2] && c.params.is_live(channels))
+        }
     }
 
     fn punch_in(&mut self, track: usize) {
-        if self.recording[track] || !self.can_record(track) {
+        if self.recording[track] || !self.armed[track] {
             return;
         }
-        let start = self.position - self.compensation;
-        if self.rec_out.tracks[track].push(RecItem::Start(start)).is_err() {
+        // Decided once per take: changing the routing during the take does not move it.
+        let compensation = if self.feeds_live(track) { self.compensation } else { 0.0 };
+        if self.rec_out.tracks[track].push(RecItem::Start(self.position - compensation)).is_err() {
             self.shared.overflow.store(true, Ordering::Relaxed);
             return;
         }
@@ -693,12 +700,6 @@ impl Engine {
                         }
                     }
                 }
-                Command::SetInputChannel(track, channel) => {
-                    if track < TRACKS {
-                        self.punch_out(track);
-                        self.input_channel[track] = channel.map(usize::from);
-                    }
-                }
                 Command::SetInsert(insert) => self.insert = insert,
                 Command::SetMonitoring(monitoring) => self.monitoring = monitoring,
                 Command::SetAutoPunch(auto) => self.auto_punch = auto,
@@ -736,30 +737,26 @@ impl Engine {
                     }
                 }
                 Command::SetTrack(index, audio) => {
-                    if let Some(track) = self.tracks.get_mut(index) {
-                        let old = std::mem::replace(&mut track.audio, audio);
+                    if let Some(slot) = self.tape.get_mut(index) {
+                        let old = std::mem::replace(slot, audio);
                         if let Some(old) = old {
                             // Room was checked above.
                             let _ = self.garbage.push(old);
                         }
                     }
-                    self.end = self.tracks.iter().filter_map(|t| t.audio.as_ref()).map(|a| a.samples.len()).max().unwrap_or(0) as f64;
+                    self.end = self.tape.iter().flatten().map(|a| a.samples.len()).max().unwrap_or(0) as f64;
                 }
-                Command::SetGain(index, gain) => {
-                    if let Some(track) = self.tracks.get_mut(index) {
-                        track.gain = gain.max(0.0);
+                Command::SetChannel(index, params) => {
+                    if let Some(channel) = self.channels.get_mut(index) {
+                        channel.params = params;
                     }
                 }
-                Command::SetPan(index, pan) => {
-                    if let Some(track) = self.tracks.get_mut(index) {
-                        track.pan = pan;
+                Command::SetMonitor(index, params) => {
+                    if let Some(monitor) = self.monitors.get_mut(index) {
+                        monitor.params = params;
                     }
                 }
-                Command::SetMute(index, mute) => {
-                    if let Some(track) = self.tracks.get_mut(index) {
-                        track.mute = mute;
-                    }
-                }
+                Command::SetMixer(params) => self.mixer = params,
                 Command::SetMaster(gain) => self.master = gain.max(0.0),
             }
         }
@@ -848,52 +845,101 @@ impl Engine {
     }
 
     /// Fill an interleaved output buffer with `channels` channels. Channel 0 and 1 get the stereo
-    /// mix, further channels silence; a mono device gets the average of left and right. Winding
-    /// is silent, as on the 388.
+    /// master, further channels silence; a mono device gets the average of left and right.
+    /// Winding is silent, as on the 388.
+    ///
+    /// Per frame, as the 388's block diagram: read the tape, run the channels, sum the PGM buses
+    /// (once as recorded, once as heard), feed the tracks, mix the MONITOR section and the
+    /// stereo bus.
+    #[allow(clippy::needless_range_loop)] // the channels index many parallel arrays
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
         self.apply_commands();
         self.update_compensation();
         let channels = channels.max(1);
+        let input_channels = self.input.as_ref().map_or(0, |i| i.channels);
         let mut track_peaks = [0.0f32; TRACKS];
         let mut track_peaks_post = [0.0f32; TRACKS];
+        let mut trk_peaks = [0.0f32; TRACKS];
         let mut master_peaks = [0.0f32; 2];
 
         for frame in out.chunks_mut(channels) {
-            let mut mix = [0.0f32; 2];
             let playing = self.state == State::Playing;
             if let Some(input) = &mut self.input {
                 input.next_frame();
             }
-            for (index, ((track, peak), peak_post)) in
-                self.tracks.iter_mut().zip(track_peaks.iter_mut()).zip(track_peaks_post.iter_mut()).enumerate()
-            {
-                let target = track.target();
-                smooth(&mut track.current[0], target[0]);
-                smooth(&mut track.current[1], target[1]);
-                let input = self.input.as_ref().zip(self.input_channel[index]).map(|(input, channel)| input.sample(channel));
-                if self.recording[index] {
-                    let value = input.unwrap_or(0.0);
-                    if self.rec_out.tracks[index].push(RecItem::Sample(value)).is_err() {
-                        self.shared.overflow.store(true, Ordering::Relaxed);
+            // Every sum exists twice: what is recorded, and what is heard. They differ only when
+            // the interface does the monitoring: then live sources are recorded but not heard.
+            let mut tape = [0.0f32; TRACKS];
+            let mut bus_recorded = [0.0f32; TRACKS];
+            let mut bus_heard = [0.0f32; TRACKS];
+            let mut direct = [(0.0f32, 0.0f32); TRACKS];
+            let mut stereo = [0.0f32; 2];
+            let mut any_lr = false;
+            for index in 0..TRACKS {
+                if playing && let Some(audio) = &self.tape[index] {
+                    tape[index] = sample_at(&audio.samples, self.position);
+                }
+                let params = self.channels[index].params;
+                let live = params.is_live(input_channels);
+                let sample = match params.source {
+                    // A track that hears its input is not played back into its own channel, so
+                    // bus, track and channel never form a loop.
+                    Source::Remix if hears_input(self.armed[index], self.insert, self.recording[index]) => 0.0,
+                    Source::Remix => tape[index],
+                    Source::Mic | Source::Line => match (&self.input, params.input) {
+                        (Some(input), Some(channel)) if live => input.sample(usize::from(channel)),
+                        _ => 0.0,
+                    },
+                };
+                let taps = self.channels[index].process(sample);
+                track_peaks[index] = track_peaks[index].max(taps.direct.abs());
+                track_peaks_post[index] = track_peaks_post[index].max(taps.post.abs());
+                let audible = if live && !self.monitoring { 0.0 } else { 1.0 };
+                direct[index] = (taps.direct, taps.direct * audible);
+                for (pair, on) in params.assign.into_iter().enumerate() {
+                    if on {
+                        bus_recorded[2 * pair] += taps.left;
+                        bus_recorded[2 * pair + 1] += taps.right;
+                        bus_heard[2 * pair] += taps.left * audible;
+                        bus_heard[2 * pair + 1] += taps.right * audible;
                     }
                 }
-                // What the channel hears, as the 388's switching logic decides: an armed track
-                // hears its input, except with INSERT while the tape plays and it is not (yet)
-                // recording; a recording track never hears the old take.
-                let hears_input = input.is_some() && self.armed[index] && (self.recording[index] || !self.insert || !playing);
-                let sample = if hears_input {
-                    if self.monitoring { input.unwrap_or(0.0) } else { 0.0 }
-                } else if playing {
-                    track.audio.as_ref().map_or(0.0, |a| sample_at(&a.samples, self.position))
+                if params.lr {
+                    any_lr = true;
+                    stereo[0] += taps.left * audible;
+                    stereo[1] += taps.right * audible;
+                }
+            }
+            smooth(&mut self.bus_gains[0], self.mixer.odd);
+            smooth(&mut self.bus_gains[1], self.mixer.even);
+            // Track N records PGM bus N (or the channel's DIRECT tap); its MONITOR hears the input,
+            // the tape or nothing, as the 388's switching logic decides.
+            let mut monitor = [0.0f32; 2];
+            for index in 0..TRACKS {
+                let (recorded, heard) = if self.channels[index].params.direct {
+                    direct[index]
                 } else {
-                    continue;
+                    // Buses 1, 3, 5 and 7 go through the ODD master, 2, 4, 6 and 8 through EVEN.
+                    let master = self.bus_gains[index % 2];
+                    (bus_recorded[index] * master, bus_heard[index] * master)
                 };
-                *peak = peak.max(sample.abs());
-                // Constant-power pan keeps left² + right² equal to the fader gain squared.
-                let gain = track.current[0].hypot(track.current[1]);
-                *peak_post = peak_post.max(sample.abs() * gain);
-                mix[0] += sample * track.current[0];
-                mix[1] += sample * track.current[1];
+                if self.recording[index] && self.rec_out.tracks[index].push(RecItem::Sample(recorded)).is_err() {
+                    self.shared.overflow.store(true, Ordering::Relaxed);
+                }
+                let value = match monitor_source(self.mixer.mon, self.armed[index], self.insert, self.recording[index], playing) {
+                    MonitorSource::Input => heard,
+                    MonitorSource::Tape => tape[index],
+                    MonitorSource::Silent => 0.0,
+                };
+                trk_peaks[index] = trk_peaks[index].max(value.abs());
+                let gains = self.monitors[index].gains();
+                monitor[0] += value * gains[0];
+                monitor[1] += value * gains[1];
+            }
+            // The STEREO MASTER takes the L-R channels, or the MONITOR mix when none is on L-R.
+            if !any_lr {
+                stereo[0] += monitor[0];
+                stereo[1] += monitor[1];
             }
             // The click follows the tape's bar grid; during the count-in the grid runs ahead of the
             // waiting tape, so the beats carry on into the recording without a jump.
@@ -905,8 +951,11 @@ impl Engine {
             self.click.follow(click_at, sounding);
             self.advance();
             smooth(&mut self.master_current, self.master);
-            let left = mix[0] * self.master_current;
-            let right = mix[1] * self.master_current;
+            let (mut left, mut right) = (stereo[0] * self.master_current, stereo[1] * self.master_current);
+            if self.mixer.mono {
+                let mono = 0.5 * (left + right);
+                (left, right) = (mono, mono);
+            }
             master_peaks[0] = master_peaks[0].max(left.abs());
             master_peaks[1] = master_peaks[1].max(right.abs());
             // The click goes to the output only: not into the master meters or a recording.
@@ -939,6 +988,9 @@ impl Engine {
         for (cell, peak) in self.shared.track_peaks_post.iter().zip(track_peaks_post) {
             store_peak(cell, peak);
         }
+        for (cell, peak) in self.shared.trk_peaks.iter().zip(trk_peaks) {
+            store_peak(cell, peak);
+        }
         for (cell, peak) in self.shared.master_peaks.iter().zip(master_peaks) {
             store_peak(cell, peak);
         }
@@ -951,6 +1003,21 @@ mod tests {
 
     fn audio(samples: Vec<f32>) -> Option<Arc<TrackAudio>> {
         Some(Arc::new(TrackAudio { name: "test".into(), samples }))
+    }
+
+    /// MONITOR panned hard left, so a track's monitor ends up on the left output only.
+    fn left() -> MonitorParams {
+        MonitorParams { pan: -1.0, ..MonitorParams::default() }
+    }
+
+    /// A LINE channel on `input` that its track records through DIRECT (the old "input per
+    /// track").
+    fn line(input: u16) -> ChannelParams {
+        ChannelParams { source: Source::Line, input: Some(input), direct: true, ..ChannelParams::default() }
+    }
+
+    fn samples_of(items: &[RecItem]) -> Vec<f32> {
+        items.iter().filter_map(|i| if let RecItem::Sample(v) = i { Some(*v) } else { None }).collect()
     }
 
     /// Let the gain smoothing settle so the next block plays at full target gain.
@@ -975,8 +1042,8 @@ mod tests {
         let (mut handle, mut engine) = create(48_000);
         handle.send(Command::SetTrack(0, audio(vec![0.25; 100_000])));
         handle.send(Command::SetTrack(7, audio(vec![0.5; 100_000])));
-        handle.send(Command::SetPan(0, -1.0));
-        handle.send(Command::SetPan(7, 1.0));
+        handle.send(Command::SetMonitor(0, left()));
+        handle.send(Command::SetMonitor(7, MonitorParams { pan: 1.0, ..MonitorParams::default() }));
         settle(&mut engine);
         handle.play();
         let mut out = vec![0.0; 2 * 4];
@@ -989,6 +1056,7 @@ mod tests {
         assert!(handle.is_playing());
         assert!((handle.take_track_peaks(0).pre - 0.25).abs() < 1e-6);
         assert_eq!(handle.take_track_peaks(0), TrackPeaks::default());
+        assert!((handle.take_trk_peak(7) - 0.5).abs() < 1e-6, "the TRK meter shows what the monitor hears");
     }
 
     #[test]
@@ -1149,7 +1217,7 @@ mod tests {
         let (mut handle, mut engine) = create(48_000);
         let ramp: Vec<f32> = (0..10_000).map(|n| n as f32 / 10_000.0).collect();
         handle.send(Command::SetTrack(0, audio(ramp)));
-        handle.send(Command::SetPan(0, -1.0));
+        handle.send(Command::SetMonitor(0, left()));
         handle.send(Command::SetStyle(TransportStyle::Cycle));
         handle.send(Command::SetCue(Some(2_000.0)));
         handle.send(Command::SetRepeat(true));
@@ -1170,7 +1238,7 @@ mod tests {
         let (mut handle, mut engine) = create(48_000);
         let ramp: Vec<f32> = (0..10_000).map(|n| n as f32 / 10_000.0).collect();
         handle.send(Command::SetTrack(0, audio(ramp)));
-        handle.send(Command::SetPan(0, -1.0));
+        handle.send(Command::SetMonitor(0, left()));
         handle.send(Command::SetPitch(1.1));
         settle(&mut engine);
         handle.play();
@@ -1209,7 +1277,7 @@ mod tests {
     #[test]
     fn rec_records_the_armed_track_from_its_input_and_play_punches_out() {
         let (mut handle, mut engine, mut tx, mut recorder) = with_input();
-        handle.send(Command::SetInputChannel(2, Some(0)));
+        handle.send(Command::SetChannel(2, line(0)));
         handle.send(Command::SetArmed(2, true));
         handle.send(Command::Locate(1_000.0));
         handle.send(Command::Record);
@@ -1226,7 +1294,7 @@ mod tests {
         // Compensation here is the one-frame input fill.
         assert_eq!(items.first(), Some(&RecItem::Start(999.0)));
         assert_eq!(items.last(), Some(&RecItem::Stop));
-        let samples: Vec<f32> = items.iter().filter_map(|i| if let RecItem::Sample(v) = i { Some(*v) } else { None }).collect();
+        let samples = samples_of(&items);
         assert_eq!(samples.len(), 10);
         assert_eq!(samples[0] + 1.0, samples[1], "consecutive input frames");
         assert!(takes(&mut recorder, 1).is_empty(), "safe tracks record nothing");
@@ -1235,7 +1303,7 @@ mod tests {
     #[test]
     fn record_ready_and_rec_function_punch_in_and_out() {
         let (mut handle, mut engine, mut tx, mut recorder) = with_input();
-        handle.send(Command::SetInputChannel(0, Some(1)));
+        handle.send(Command::SetChannel(0, line(1)));
         handle.play();
         handle.send(Command::Record);
         feed(&mut tx, 0, 100);
@@ -1257,7 +1325,7 @@ mod tests {
     #[test]
     fn the_cue_point_punches_out_and_stops() {
         let (mut handle, mut engine, mut tx, mut recorder) = with_input();
-        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetChannel(0, line(0)));
         handle.send(Command::SetArmed(0, true));
         handle.send(Command::SetCue(Some(50.0)));
         handle.send(Command::Record);
@@ -1273,7 +1341,7 @@ mod tests {
     #[test]
     fn auto_punch_records_between_zero_and_cue_on_every_pass() {
         let (mut handle, mut engine, mut tx, mut recorder) = with_input();
-        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetChannel(0, line(0)));
         handle.send(Command::SetArmed(0, true));
         handle.send(Command::SetStyle(TransportStyle::Cycle));
         handle.send(Command::SetZero(100.0));
@@ -1298,8 +1366,8 @@ mod tests {
     fn monitoring_follows_the_388_switching_logic() {
         let (mut handle, mut engine, mut tx, _recorder) = with_input();
         handle.send(Command::SetTrack(0, audio(vec![0.25; 10_000])));
-        handle.send(Command::SetPan(0, -1.0));
-        handle.send(Command::SetInputChannel(0, Some(1)));
+        handle.send(Command::SetMonitor(0, left()));
+        handle.send(Command::SetChannel(0, line(1)));
         settle(&mut engine);
         let left = |engine: &mut Engine, tx: &mut rtrb::Producer<f32>| {
             feed(tx, 0, 4);
@@ -1320,7 +1388,7 @@ mod tests {
     #[test]
     fn no_recording_at_varispeed() {
         let (mut handle, mut engine, mut tx, _recorder) = with_input();
-        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetChannel(0, line(0)));
         handle.send(Command::SetArmed(0, true));
         handle.send(Command::SetPitch(1.05));
         handle.send(Command::Record);
@@ -1350,7 +1418,7 @@ mod tests {
         assert_eq!(handle.take_master_peaks(), [0.0, 0.0], "the click stays out of the mix meters");
         handle.send(Command::SetClickAlways(false));
         handle.stop();
-        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetChannel(0, line(0)));
         handle.send(Command::SetArmed(0, true));
         handle.locate_seconds(0.0);
         handle.send(Command::Record);
@@ -1362,7 +1430,7 @@ mod tests {
     #[test]
     fn count_in_waits_and_then_records_on_the_beat() {
         let (mut handle, mut engine, mut tx, mut recorder) = with_input();
-        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetChannel(0, line(0)));
         handle.send(Command::SetArmed(0, true));
         handle.send(Command::SetCountIn(1));
         // The count-in clicks either way; the metronome during the take needs CLICK on.
@@ -1389,7 +1457,7 @@ mod tests {
     #[test]
     fn stop_during_the_count_in_records_nothing() {
         let (mut handle, mut engine, _tx, mut recorder) = with_input();
-        handle.send(Command::SetInputChannel(0, Some(0)));
+        handle.send(Command::SetChannel(0, line(0)));
         handle.send(Command::SetArmed(0, true));
         handle.send(Command::SetCountIn(2));
         handle.send(Command::Record);
@@ -1427,13 +1495,13 @@ mod tests {
     fn mute_and_master_apply() {
         let (mut handle, mut engine) = create(48_000);
         handle.send(Command::SetTrack(0, audio(vec![1.0; 100_000])));
-        handle.send(Command::SetMute(0, true));
+        handle.send(Command::SetMonitor(0, MonitorParams { mute: true, ..MonitorParams::default() }));
         settle(&mut engine);
         handle.play();
         let mut out = vec![0.0; 2];
         engine.render(&mut out, 2);
         assert!(out[0].abs() < 1e-4);
-        handle.send(Command::SetMute(0, false));
+        handle.send(Command::SetMonitor(0, MonitorParams::default()));
         handle.send(Command::SetMaster(0.0));
         settle(&mut engine);
         engine.render(&mut out, 2);
@@ -1444,8 +1512,7 @@ mod tests {
     fn post_fader_meter_follows_fader_and_mute_but_not_pan() {
         let (mut handle, mut engine) = create(48_000);
         handle.send(Command::SetTrack(0, audio(vec![0.8; 100_000])));
-        handle.send(Command::SetGain(0, 0.5));
-        handle.send(Command::SetPan(0, 1.0));
+        handle.send(Command::SetChannel(0, ChannelParams { fader: 0.5, pan: 1.0, ..ChannelParams::default() }));
         settle(&mut engine);
         handle.play();
         let mut out = vec![0.0; 2 * 64];
@@ -1453,7 +1520,7 @@ mod tests {
         let peaks = handle.take_track_peaks(0);
         assert!((peaks.pre - 0.8).abs() < 1e-6, "pre is the track itself");
         assert!((peaks.post - 0.4).abs() < 1e-3, "post follows the fader: {}", peaks.post);
-        handle.send(Command::SetMute(0, true));
+        handle.send(Command::SetChannel(0, ChannelParams { fader: 0.5, pan: 1.0, mute: true, ..ChannelParams::default() }));
         settle(&mut engine);
         // Forget the peaks of the fade-out itself.
         handle.take_track_peaks(0);
@@ -1467,7 +1534,7 @@ mod tests {
     fn master_changes_are_smoothed() {
         let (mut handle, mut engine) = create(48_000);
         handle.send(Command::SetTrack(0, audio(vec![1.0; 100_000])));
-        handle.send(Command::SetPan(0, -1.0));
+        handle.send(Command::SetMonitor(0, left()));
         settle(&mut engine);
         handle.play();
         handle.send(Command::SetMaster(0.0));
@@ -1483,7 +1550,7 @@ mod tests {
     fn mono_and_multichannel_devices() {
         let (mut handle, mut engine) = create(48_000);
         handle.send(Command::SetTrack(0, audio(vec![1.0; 100_000])));
-        handle.send(Command::SetPan(0, -1.0));
+        handle.send(Command::SetMonitor(0, left()));
         settle(&mut engine);
         handle.play();
         let mut mono = vec![0.0; 1];
@@ -1493,5 +1560,184 @@ mod tests {
         engine.render(&mut four, 4);
         assert!((four[0] - 1.0).abs() < 1e-4);
         assert_eq!(&four[1..], &[0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn pan_sends_a_channel_to_the_odd_or_even_bus_and_track_n_records_bus_n() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        // Channel 5 on LINE from input 2 (always -1.0), assigned to 1-2, panned hard left.
+        let params = ChannelParams {
+            source: Source::Line,
+            input: Some(1),
+            assign: [true, false, false, false],
+            pan: -1.0,
+            ..ChannelParams::default()
+        };
+        handle.send(Command::SetChannel(4, params));
+        handle.send(Command::SetMixer(MixerParams { odd: 0.5, ..MixerParams::default() }));
+        handle.send(Command::SetArmed(0, true));
+        handle.send(Command::SetArmed(1, true));
+        settle(&mut engine);
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 101);
+        run(&mut engine, 100);
+        let odd = samples_of(&takes(&mut recorder, 0));
+        let even = samples_of(&takes(&mut recorder, 1));
+        assert_eq!(odd.len(), 100);
+        assert!(odd.iter().all(|s| (s + 0.5).abs() < 1e-3), "bus 1 through the ODD master at half: {:?}", &odd[..3]);
+        assert!(even.iter().all(|s| s.abs() < 1e-6), "hard left: nothing on bus 2");
+    }
+
+    #[test]
+    fn direct_records_the_channel_after_trim_and_before_the_fader() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        handle.send(Command::SetChannel(2, ChannelParams { trim: 2.0, fader: 0.0, ..line(1) }));
+        handle.send(Command::SetArmed(2, true));
+        settle(&mut engine);
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 51);
+        run(&mut engine, 50);
+        let samples = samples_of(&takes(&mut recorder, 2));
+        assert_eq!(samples.len(), 50);
+        assert!(samples.iter().all(|s| (s + 2.0).abs() < 1e-3), "TRIM counts, the closed fader does not");
+    }
+
+    #[test]
+    fn a_bounce_from_tape_needs_no_input_and_lines_up_with_its_source() {
+        // The input ring adds a frame of latency compensation, which a bounce must not get.
+        let (mut handle, mut engine, _tx, mut recorder) = with_input();
+        let ramp: Vec<f32> = (0..1_000).map(|n| n as f32 / 1_000.0).collect();
+        handle.send(Command::SetTrack(0, audio(ramp)));
+        // Channel 1 plays track 1 into bus 3 (ASSIGN 3-4, hard left); track 3 records it.
+        handle.send(Command::SetChannel(0, ChannelParams { assign: [false, true, false, false], pan: -1.0, ..ChannelParams::default() }));
+        handle.send(Command::SetArmed(2, true));
+        settle(&mut engine);
+        handle.send(Command::Locate(100.0));
+        handle.send(Command::Record);
+        run(&mut engine, 50);
+        handle.stop();
+        run(&mut engine, 0);
+        let items = takes(&mut recorder, 2);
+        assert_eq!(items.first(), Some(&RecItem::Start(100.0)), "no latency compensation for tape");
+        let samples = samples_of(&items);
+        assert!((samples[0] - 0.1).abs() < 1e-4 && (samples[10] - 0.11).abs() < 1e-4, "sample for sample under its source");
+
+        // Without any input device recording works too.
+        let (mut handle, mut engine) = create(48_000);
+        let mut recorder = handle.take_recorder().unwrap_or_else(|| unreachable!());
+        handle.send(Command::SetArmed(0, true));
+        handle.send(Command::Record);
+        run(&mut engine, 10);
+        assert_eq!(handle.rec_mode(), RecMode::Recording);
+        assert_eq!(samples_of(&takes(&mut recorder, 0)).len(), 10);
+    }
+
+    #[test]
+    fn live_input_is_compensated_also_through_a_bus() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        handle.send(Command::SetChannel(
+            5,
+            ChannelParams { source: Source::Line, input: Some(0), assign: [true, false, false, false], ..ChannelParams::default() },
+        ));
+        handle.send(Command::SetArmed(0, true));
+        handle.send(Command::Locate(1_000.0));
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 11);
+        run(&mut engine, 10);
+        assert_eq!(takes(&mut recorder, 0).first(), Some(&RecItem::Start(999.0)), "one frame of input fill");
+    }
+
+    #[test]
+    fn a_remix_channel_is_silent_while_its_track_hears_its_input() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.25; 100_000])));
+        handle.send(Command::SetChannel(0, ChannelParams { lr: true, pan: -1.0, ..ChannelParams::default() }));
+        settle(&mut engine);
+        handle.play();
+        assert!((run(&mut engine, 2)[2] - 0.25).abs() < 1e-4, "the tape through L-R");
+        handle.send(Command::SetArmed(0, true));
+        assert!(run(&mut engine, 2)[2].abs() < 1e-6, "armed: no loop from bus to track to channel");
+        handle.send(Command::SetInsert(true));
+        assert!((run(&mut engine, 2)[2] - 0.25).abs() < 1e-4, "with INSERT the tape plays until the punch-in");
+    }
+
+    #[test]
+    fn l_r_takes_the_stereo_master_from_the_monitor_mix() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.25; 100_000])));
+        handle.send(Command::SetTrack(1, audio(vec![0.5; 100_000])));
+        handle.send(Command::SetMonitor(0, left()));
+        handle.send(Command::SetMonitor(1, left()));
+        settle(&mut engine);
+        handle.play();
+        assert!((run(&mut engine, 2)[2] - 0.75).abs() < 1e-4, "both tracks through the monitor");
+        handle.send(Command::SetChannel(1, ChannelParams { lr: true, pan: -1.0, ..ChannelParams::default() }));
+        settle(&mut engine);
+        assert!((run(&mut engine, 2)[2] - 0.5).abs() < 1e-4, "only the L-R channel");
+    }
+
+    #[test]
+    fn mon_pgm_hears_the_bus_instead_of_the_tape() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.25; 100_000])));
+        handle.send(Command::SetMonitor(0, left()));
+        settle(&mut engine);
+        handle.play();
+        assert!((run(&mut engine, 2)[2] - 0.25).abs() < 1e-4, "CUE: the tape");
+        handle.send(Command::SetMixer(MixerParams { mon: MonitorMode::Pgm, ..MixerParams::default() }));
+        assert!(run(&mut engine, 2)[2].abs() < 1e-6, "PGM: bus 1, still empty");
+        handle.send(Command::SetTrack(1, audio(vec![0.5; 100_000])));
+        handle.send(Command::SetChannel(1, ChannelParams { assign: [true, false, false, false], pan: -1.0, ..ChannelParams::default() }));
+        settle(&mut engine);
+        assert!((run(&mut engine, 2)[2] - 0.5).abs() < 1e-4, "PGM: channel 2 on bus 1");
+    }
+
+    #[test]
+    fn during_the_count_in_a_safe_track_is_silent_on_cue() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.25; 200_000])));
+        handle.send(Command::SetCountIn(1));
+        settle(&mut engine);
+        handle.send(Command::Record);
+        let out = run(&mut engine, 1_000);
+        assert_eq!(handle.motion(), Motion::CountingIn);
+        // Only the click sounds: the tape waits, so the monitor of a safe track hears nothing.
+        assert_eq!(handle.take_trk_peak(0), 0.0);
+        assert!(out.chunks(2).all(|f| f[0] == f[1]), "nothing but the (centred) click");
+    }
+
+    #[test]
+    fn mono_averages_left_and_right() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![1.0; 100_000])));
+        handle.send(Command::SetMonitor(0, left()));
+        handle.send(Command::SetMixer(MixerParams { mono: true, ..MixerParams::default() }));
+        settle(&mut engine);
+        handle.play();
+        let out = run(&mut engine, 1);
+        assert!((out[0] - 0.5).abs() < 1e-4 && (out[1] - 0.5).abs() < 1e-4);
+    }
+
+    #[test]
+    fn without_software_monitoring_a_live_source_is_recorded_but_not_heard() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        let params = ChannelParams {
+            source: Source::Line,
+            input: Some(1),
+            assign: [true, false, false, false],
+            lr: true,
+            pan: -1.0,
+            ..ChannelParams::default()
+        };
+        handle.send(Command::SetChannel(0, params));
+        handle.send(Command::SetMonitoring(false));
+        handle.send(Command::SetArmed(0, true));
+        settle(&mut engine);
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 11);
+        let out = run(&mut engine, 10);
+        assert!(out.iter().all(|s| *s == 0.0), "nothing heard: not on L-R, not in the monitor");
+        let samples = samples_of(&takes(&mut recorder, 0));
+        assert!(samples.len() == 10 && samples.iter().all(|s| (s + 1.0).abs() < 1e-3), "but recorded");
     }
 }
