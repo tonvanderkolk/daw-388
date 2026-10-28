@@ -857,7 +857,7 @@ checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
 
 [[package]]
 name = "daw388"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "cpal",
  "daw388-engine",
@@ -873,18 +873,19 @@ dependencies = [
 
 [[package]]
 name = "daw388-engine"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
+ "daw388-fx",
  "rtrb",
 ]
 
 [[package]]
 name = "daw388-fx"
-version = "0.11.0"
+version = "0.12.0"
 
 [[package]]
 name = "daw388-project"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "chrono",
  "hound",
@@ -896,11 +897,11 @@ dependencies = [
 
 [[package]]
 name = "daw388-tape"
-version = "0.11.0"
+version = "0.12.0"
 
 [[package]]
 name = "daw388-ui"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "daw388-engine",
  "daw388-project",

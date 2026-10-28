@@ -171,6 +171,71 @@ pub enum MonSwitch {
     Cue,
 }
 
+/// The plate reverb on AUX.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PlateEntry {
+    pub decay_s: f32,
+    pub predelay_ms: f32,
+    pub tone: f32,
+}
+
+impl Default for PlateEntry {
+    fn default() -> Self {
+        Self { decay_s: 2.0, predelay_ms: 20.0, tone: 0.5 }
+    }
+}
+
+/// The echo's TIME from the metronome, or free.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EchoSyncEntry {
+    #[default]
+    Off,
+    Quarter,
+    Eighth,
+    DottedEighth,
+}
+
+/// The tape echo on EFF.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EchoEntry {
+    pub time_ms: f32,
+    pub sync: EchoSyncEntry,
+    pub feedback: f32,
+    pub tone: f32,
+}
+
+impl Default for EchoEntry {
+    fn default() -> Self {
+        Self { time_ms: 300.0, sync: EchoSyncEntry::Off, feedback: 0.35, tone: 0.5 }
+    }
+}
+
+/// An EFFECT RTN; closed when missing, so an older project's AUX headphone mix gets no reverb.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RtnEntry {
+    pub gain_db: f32,
+    pub pan: f32,
+}
+
+impl Default for RtnEntry {
+    fn default() -> Self {
+        Self { gain_db: SEND_CLOSED_DB, pan: 0.0 }
+    }
+}
+
+/// The built-in effects and their returns: RTN 1 is the plate, RTN 2 the echo.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EffectsEntry {
+    pub plate: PlateEntry,
+    pub echo: EchoEntry,
+    pub rtn: [RtnEntry; 2],
+}
+
 /// What the main output carries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -218,6 +283,7 @@ pub struct MixerEntry {
     pub phones_db: f32,
     pub listen: ListenSwitch,
     pub meter: MeterSwitch,
+    pub effects: EffectsEntry,
 }
 
 /// How REPEAT (and RTZ and STC) reach their point.
@@ -618,6 +684,11 @@ mod tests {
                     phones_db: -3.0,
                     listen: ListenSwitch::Aux,
                     meter: MeterSwitch::AuxEff,
+                    effects: EffectsEntry {
+                        plate: PlateEntry { decay_s: 4.0, predelay_ms: 35.0, tone: 0.2 },
+                        echo: EchoEntry { time_ms: 120.0, sync: EchoSyncEntry::Eighth, feedback: 0.6, tone: 0.8 },
+                        rtn: [RtnEntry { gain_db: -3.0, pan: 0.25 }, RtnEntry { gain_db: 0.0, pan: -0.5 }],
+                    },
                 },
             },
             &tracks([Some(kick.clone()), None]),
@@ -677,6 +748,11 @@ mod tests {
                 phones_db: -3.0,
                 listen: ListenSwitch::Aux,
                 meter: MeterSwitch::AuxEff,
+                effects: EffectsEntry {
+                    plate: PlateEntry { decay_s: 4.0, predelay_ms: 35.0, tone: 0.2 },
+                    echo: EchoEntry { time_ms: 120.0, sync: EchoSyncEntry::Eighth, feedback: 0.6, tone: 0.8 },
+                    rtn: [RtnEntry { gain_db: -3.0, pan: 0.25 }, RtnEntry { gain_db: 0.0, pan: -0.5 }]
+                },
             }
         );
         assert_eq!(opened.file.version, FORMAT_VERSION, "a format 2 file is not upgraded again");
@@ -766,6 +842,10 @@ mod tests {
         assert_eq!((mixer.aux_master_db, mixer.eff_master_db, mixer.phones_db), (0.0, 0.0, 0.0));
         assert_eq!((mixer.listen, mixer.meter), (ListenSwitch::Stereo, MeterSwitch::Lr));
         assert_eq!(serde_json::to_string(&MeterSwitch::AuxEff).unwrap_or_default(), r#""aux_eff""#);
+        assert_eq!(mixer.effects.rtn, [RtnEntry::default(); 2], "older projects: the returns stay closed");
+        assert_eq!(mixer.effects.rtn[0].gain_db, SEND_CLOSED_DB);
+        assert_eq!((mixer.effects.plate, mixer.effects.echo), (PlateEntry::default(), EchoEntry::default()));
+        assert_eq!(serde_json::to_string(&EchoSyncEntry::DottedEighth).unwrap_or_default(), r#""dotted_eighth""#);
     }
 
     #[test]

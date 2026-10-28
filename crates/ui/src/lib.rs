@@ -4,14 +4,14 @@
 mod recording;
 
 use daw388_engine::{
-    ChannelParams, Command, EQ_DEFAULTS, EngineHandle, EqBand, Listen, Meter, MixerParams, MonitorMode, MonitorParams, Motion, PITCH_RANGE,
-    RecMode, Source, TRACKS, TrackAudio, TransportStyle,
+    ChannelParams, Command, EQ_DEFAULTS, EchoParams, EchoSync, EngineHandle, EqBand, Listen, Meter, MixerParams, MonitorMode,
+    MonitorParams, Motion, PITCH_RANGE, PlateParams, RecMode, RtnParams, Source, TRACKS, TrackAudio, TransportStyle,
 };
 use daw388_project::preferences::{self, Preferences};
 use daw388_project::session::{self, PROJECT_FILE};
 use daw388_project::{
-    Backup, BandEntry, ChannelEntry, ChannelSource, EqEntry, ListenSwitch, MeterSwitch, MetronomeSettings, MixerEntry, MonSwitch,
-    MonitorEntry, MonoClip, ProjectSettings, RepeatMode, Routing, TrackToSave, TransportSettings,
+    Backup, BandEntry, ChannelEntry, ChannelSource, EchoSyncEntry, EqEntry, ListenSwitch, MeterSwitch, MetronomeSettings, MixerEntry,
+    MonSwitch, MonitorEntry, MonoClip, ProjectSettings, RepeatMode, Routing, TrackToSave, TransportSettings,
 };
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 use recording::{Composed, TakeDone, Underneath};
@@ -369,7 +369,12 @@ fn channel_params(track: &TrackState) -> ChannelParams {
 
 /// The mix of a new project: the simple mode.
 fn new_mixer() -> MixerEntry {
-    MixerEntry { mode: Routing::Simple, ..MixerEntry::default() }
+    let mut mixer = MixerEntry { mode: Routing::Simple, ..MixerEntry::default() };
+    // Open returns: turn a send up and you hear the effect.
+    for rtn in &mut mixer.effects.rtn {
+        rtn.gain_db = 0.0;
+    }
+    mixer
 }
 
 fn monitor_params(monitor: &MonitorEntry) -> MonitorParams {
@@ -387,6 +392,7 @@ fn mixer_params(mixer: &MixerEntry, preferences: &Preferences, output_channels: 
         MonSwitch::Pgm => MonitorMode::Pgm,
         MonSwitch::Cue => MonitorMode::Cue,
     };
+    let effects = &mixer.effects;
     let listen = match mixer.listen {
         ListenSwitch::Stereo => Listen::Stereo,
         ListenSwitch::Aux => Listen::Aux,
@@ -403,6 +409,19 @@ fn mixer_params(mixer: &MixerEntry, preferences: &Preferences, output_channels: 
         phones: db_to_gain(mixer.phones_db),
         aux_out: send_output(preferences.aux_output, output_channels),
         eff_out: send_output(preferences.eff_output, output_channels),
+        plate: PlateParams { decay_s: effects.plate.decay_s, predelay_ms: effects.plate.predelay_ms, tone: effects.plate.tone },
+        echo: EchoParams {
+            time_ms: effects.echo.time_ms,
+            sync: match effects.echo.sync {
+                EchoSyncEntry::Off => EchoSync::Off,
+                EchoSyncEntry::Quarter => EchoSync::Quarter,
+                EchoSyncEntry::Eighth => EchoSync::Eighth,
+                EchoSyncEntry::DottedEighth => EchoSync::DottedEighth,
+            },
+            feedback: effects.echo.feedback,
+            tone: effects.echo.tone,
+        },
+        rtn: effects.rtn.map(|r| RtnParams { gain: db_to_gain(r.gain_db), pan: r.pan }),
     }
 }
 
@@ -1945,9 +1964,100 @@ impl DawApp {
         }
     }
 
+    /// The plate on AUX and the echo on EFF: a few knobs each and their EFFECT RTN.
+    fn effects_controls(&mut self, ui: &mut Ui) -> bool {
+        let mut changed = false;
+        let quarter = 60.0 / self.metronome.bpm.clamp(20.0, 400.0) as f32;
+        let effects = &mut self.mixer.effects;
+        let labels = |ui: &mut Ui, names: &[&str]| {
+            ui.horizontal(|ui| {
+                for name in names {
+                    ui.add_sized(vec2(34.0, 10.0), egui::Label::new(RichText::new(*name).size(8.0).color(palette::TEXT_DIM)));
+                }
+            });
+        };
+        let mut turn = |ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, default: f32, colour, enabled, tip: String| {
+            let response = knob(ui, value, range, default, colour, 30.0, enabled).on_hover_text(tip);
+            changed |= response.changed() || response.double_clicked();
+        };
+
+        ui.label(RichText::new("PLATE (AUX)").strong().size(12.0).color(palette::CREAM));
+        let plate = &mut effects.plate;
+        ui.horizontal(|ui| {
+            let tip = format!("DECAY {:.1} s: hoe lang de galm duurt (dubbelklik: 2 s)", plate.decay_s);
+            turn(ui, &mut plate.decay_s, 0.5..=6.0, 2.0, palette::GREEN, true, tip);
+            let tip = format!("PRE-DELAY {:.0} ms: wachttijd voor de galm begint (dubbelklik: 20 ms)", plate.predelay_ms);
+            turn(ui, &mut plate.predelay_ms, 0.0..=100.0, 20.0, palette::GREEN, true, tip);
+            let tip = format!("TONE {:.0}%: van donker naar helder (dubbelklik: midden)", plate.tone * 100.0);
+            turn(ui, &mut plate.tone, 0.0..=1.0, 0.5, palette::GREEN, true, tip);
+        });
+        labels(ui, &["DECAY", "PRE", "TONE"]);
+
+        ui.label(RichText::new("ECHO (EFF)").strong().size(12.0).color(palette::CREAM));
+        let echo = &mut effects.echo;
+        let synced = echo.sync != EchoSyncEntry::Off;
+        let sync_ms = 1000.0
+            * match echo.sync {
+                EchoSyncEntry::Off => echo.time_ms / 1000.0,
+                EchoSyncEntry::Quarter => quarter,
+                EchoSyncEntry::Eighth => quarter / 2.0,
+                EchoSyncEntry::DottedEighth => quarter * 0.75,
+            };
+        ui.horizontal(|ui| {
+            let tip = if synced {
+                format!("TIME {:.0} ms, volgt het tempo (zet SYNC uit om zelf te kiezen)", sync_ms.min(2000.0))
+            } else {
+                format!("TIME {:.0} ms (dubbelklik: 300 ms)", echo.time_ms)
+            };
+            turn(ui, &mut echo.time_ms, 40.0..=800.0, 300.0, palette::BLUE, !synced, tip);
+            let tip = format!("FEEDBACK {:.0}%: hoeveel herhalingen (dubbelklik: 35%)", echo.feedback * 100.0);
+            turn(ui, &mut echo.feedback, 0.0..=0.9, 0.35, palette::BLUE, true, tip);
+            let tip = format!("TONE {:.0}%: hoe donker de herhalingen worden (dubbelklik: midden)", echo.tone * 100.0);
+            turn(ui, &mut echo.tone, 0.0..=1.0, 0.5, palette::BLUE, true, tip);
+        });
+        labels(ui, &["TIME", "FEEDB.", "TONE"]);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (sync, label, tip) in [
+                (EchoSyncEntry::Off, "VRIJ", "TIME in milliseconden"),
+                (EchoSyncEntry::Quarter, "1/4", "Een kwartnoot van het metronoomtempo"),
+                (EchoSyncEntry::Eighth, "1/8", "Een achtste noot van het metronoomtempo"),
+                (EchoSyncEntry::DottedEighth, "1/8.", "Een gepunteerde achtste van het metronoomtempo"),
+            ] {
+                let on = echo.sync == sync;
+                if toggle(ui, label, on, palette::BLUE).on_hover_text(tip).clicked() && !on {
+                    echo.sync = sync;
+                    changed = true;
+                }
+            }
+        });
+
+        ui.label(RichText::new("EFFECT RTN").size(9.0).color(palette::TEXT_DIM));
+        ui.horizontal(|ui| {
+            for (index, name) in ["plate", "echo"].into_iter().enumerate() {
+                let rtn = &mut effects.rtn[index];
+                let tip = format!("RTN {} ({name}) {} (dubbelklik: 0 dB)", index + 1, format_db(rtn.gain_db));
+                let response = knob(ui, &mut rtn.gain_db, MIN_DB..=MAX_DB, 0.0, palette::ORANGE, 26.0, true).on_hover_text(tip);
+                changed |= response.changed() || response.double_clicked();
+                let tip = format!("PAN RTN {} {:+.2} (dubbelklik: midden)", index + 1, rtn.pan);
+                let response = knob(ui, &mut rtn.pan, -1.0..=1.0, 0.0, palette::CREAM, 26.0, true).on_hover_text(tip);
+                changed |= response.changed() || response.double_clicked();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for name in ["RTN 1", "PAN", "RTN 2", "PAN"] {
+                ui.add_sized(vec2(28.0, 10.0), egui::Label::new(RichText::new(name).size(8.0).color(palette::TEXT_DIM)));
+            }
+        });
+        changed
+    }
+
     fn master_section(&mut self, ui: &mut Ui) {
         let mut mixer_changed = false;
         column(ui, 136.0, |ui| {
+            mixer_changed |= self.effects_controls(ui);
+            ui.add_space(6.0);
             // AUX MASTER and EFF MASTER, to their own interface outputs (Instellingen, Audio).
             ui.label(RichText::new("AUX / EFF").strong().size(14.0).color(palette::CREAM));
             ui.horizontal(|ui| {
@@ -2918,6 +3028,18 @@ mod tests {
             let mut out = vec![0.0; 2 * 64];
             engine.render(&mut out, 2);
         }
+    }
+
+    #[test]
+    fn a_new_project_opens_the_effect_returns() {
+        let ctx = egui::Context::default();
+        let app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        assert!(app.mixer.effects.rtn.iter().all(|r| r.gain_db == 0.0));
+        let mut mixer = app.mixer;
+        mixer.effects.echo.sync = EchoSyncEntry::DottedEighth;
+        mixer.effects.rtn[1].gain_db = MIN_DB;
+        let params = mixer_params(&mixer, &Preferences::default(), 2);
+        assert_eq!((params.echo.sync, params.rtn[0].gain, params.rtn[1].gain), (EchoSync::DottedEighth, 1.0, 0.0));
     }
 
     #[test]

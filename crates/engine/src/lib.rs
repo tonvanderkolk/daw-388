@@ -26,13 +26,15 @@ mod monitor;
 mod record;
 
 pub use click::Meter;
+pub use daw388_fx::{EchoParams, EchoSync, PlateParams};
 pub use eq::{EQ_DEFAULTS, EqBand};
-pub use mixer::{ChannelParams, Listen, MixerParams, Source};
+pub use mixer::{ChannelParams, Listen, MixerParams, RtnParams, Source};
 pub use monitor::{MonitorMode, MonitorParams};
 pub use record::{RecItem, RecMode, Recorder, input_ring};
 
 use click::Click;
-use mixer::Channel;
+use daw388_fx::{Echo, Plate};
+use mixer::{Channel, pan_gains};
 use monitor::{Monitor, MonitorSource, hears_input, monitor_source};
 
 use record::{Input, RecordOut};
@@ -329,6 +331,13 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         rec_out,
         compensation: 0.0,
         click: Click::new(sample_rate),
+        plate: Plate::new(sample_rate),
+        echo: {
+            let mut echo = Echo::new(sample_rate);
+            echo.settle(0.5);
+            echo
+        },
+        rtn_gains: [[0.0; 2]; 2],
     };
     (handle, engine)
 }
@@ -517,6 +526,10 @@ pub struct Engine {
     send_gains: [f32; 2],
     /// Smoothed MONITOR/PHONES level.
     phones: f32,
+    plate: Plate,
+    echo: Echo,
+    /// Smoothed left and right gains of EFFECT RTN 1 (plate) and 2 (echo).
+    rtn_gains: [[f32; 2]; 2],
     master: f32,
     /// Smoothed master gain.
     master_current: f32,
@@ -907,6 +920,8 @@ impl Engine {
             let mut stereo = [0.0f32; 2];
             // AUX and EFF, mono. SOLO does not touch them: a headphone mix stays as it is.
             let mut sends = [0.0f32; 2];
+            // The same sends for the built-in effects, but only from tracks you hear (SOLO).
+            let mut fx_sends = [0.0f32; 2];
             let mut any_lr = false;
             let any_solo = self.solo.contains(&true);
             for (gain, solo) in self.solo_gains.iter_mut().zip(self.solo) {
@@ -944,6 +959,8 @@ impl Engine {
                 direct[index] = (taps.direct, taps.direct * audible);
                 sends[0] += taps.aux * audible;
                 sends[1] += taps.eff * audible;
+                fx_sends[0] += taps.aux * audible * self.solo_gains[index];
+                fx_sends[1] += taps.eff * audible * self.solo_gains[index];
                 for (pair, on) in params.assign.into_iter().enumerate() {
                     if on {
                         bus_recorded[2 * pair] += taps.left;
@@ -997,6 +1014,23 @@ impl Engine {
                 stereo[0] += monitor[0];
                 stereo[1] += monitor[1];
             }
+            // The plate on AUX and the echo on EFF, back through EFFECT RTN 1 and 2.
+            self.plate.params = self.mixer.plate;
+            self.echo.params = self.mixer.echo;
+            let quarter = (self.click.meter.beat_seconds() * f64::from(self.click.meter.unit) / 4.0) as f32;
+            let [plate_l, plate_r] = self.plate.process(fx_sends[0] * self.send_gains[0]);
+            let echo = self.echo.process(fx_sends[1] * self.send_gains[1], quarter);
+            let [plate_rtn, echo_rtn] = self.mixer.rtn;
+            let targets = [
+                [plate_rtn.gain * (1.0 - plate_rtn.pan).min(1.0), plate_rtn.gain * (1.0 + plate_rtn.pan).min(1.0)],
+                pan_gains(echo_rtn.gain, echo_rtn.pan),
+            ];
+            for (current, target) in self.rtn_gains.iter_mut().zip(targets) {
+                smooth(&mut current[0], target[0]);
+                smooth(&mut current[1], target[1]);
+            }
+            stereo[0] += plate_l * self.rtn_gains[0][0] + echo * self.rtn_gains[1][0];
+            stereo[1] += plate_r * self.rtn_gains[0][1] + echo * self.rtn_gains[1][1];
             // The click follows the tape's bar grid; during the count-in the grid runs ahead of the
             // waiting tape, so the beats carry on into the recording without a jump.
             let (click_at, sounding) = match self.state {
@@ -1554,6 +1588,66 @@ mod tests {
         let out = run(&mut engine, 10);
         assert!(out.iter().all(|s| *s == 0.0), "{out:?}");
         assert_eq!(handle.take_send_peaks(), [0.0, 0.0]);
+    }
+
+    /// A MONITOR row that is muted, so only the effect returns reach the stereo bus.
+    fn silent_monitor() -> MonitorParams {
+        MonitorParams { mute: true, ..MonitorParams::default() }
+    }
+
+    #[test]
+    fn aux_feeds_the_plate_back_into_the_stereo_bus() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio((0..100_000).map(|i| if i % 4_800 == 0 { 0.5 } else { 0.0 }).collect())));
+        handle.send(Command::SetChannel(0, ChannelParams { aux: 1.0, aux_pre: true, ..ChannelParams::default() }));
+        handle.send(Command::SetMonitor(0, silent_monitor()));
+        let rtn = [RtnParams { gain: 1.0, pan: 0.0 }, RtnParams::default()];
+        handle.send(Command::SetMixer(MixerParams { rtn, ..MixerParams::default() }));
+        settle(&mut engine);
+        handle.play();
+        let out = run(&mut engine, 24_000);
+        assert!(out.iter().any(|s| s.abs() > 1e-3), "the track is heard through the plate only");
+        handle.send(Command::SetMixer(MixerParams::default()));
+        settle(&mut engine);
+        assert!(run(&mut engine, 1_000).iter().all(|s| *s == 0.0), "RTN closed: silence");
+    }
+
+    #[test]
+    fn solo_takes_a_track_out_of_the_effects_but_not_out_of_the_aux_output() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 100_000])));
+        handle.send(Command::SetChannel(0, ChannelParams { aux: 1.0, aux_pre: true, ..ChannelParams::default() }));
+        handle.send(Command::SetSolo(1, true));
+        let rtn = [RtnParams { gain: 1.0, pan: 0.0 }; 2];
+        handle.send(Command::SetMixer(MixerParams { rtn, aux_out: Some(2), ..MixerParams::default() }));
+        let mut scratch = vec![0.0; 4 * 20_000];
+        engine.render(&mut scratch, 4);
+        handle.play();
+        let mut out = vec![0.0; 4 * 2_000];
+        engine.render(&mut out, 4);
+        assert!(out.chunks(4).skip(10).all(|f| (f[2] - 0.5).abs() < 1e-4), "the AUX output keeps track 1");
+        assert!(out.chunks(4).all(|f| f[0] == 0.0 && f[1] == 0.0), "no plate, no monitor: track 2 is soloed");
+    }
+
+    #[test]
+    fn eff_comes_back_through_the_echo_after_its_time() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio((0..100_000).map(|i| if i == 100 { 0.5 } else { 0.0 }).collect())));
+        handle.send(Command::SetChannel(0, ChannelParams { eff: 1.0, ..ChannelParams::default() }));
+        handle.send(Command::SetMonitor(0, silent_monitor()));
+        let echo = EchoParams { time_ms: 100.0, feedback: 0.0, tone: 1.0, sync: EchoSync::Off };
+        let rtn = [RtnParams::default(), RtnParams { gain: 1.0, pan: -1.0 }];
+        handle.send(Command::SetMixer(MixerParams { echo, rtn, ..MixerParams::default() }));
+        // TIME glides like a tape motor: give it a couple of seconds to arrive at 100 ms.
+        for _ in 0..5 {
+            settle(&mut engine);
+        }
+        handle.locate_seconds(0.0);
+        handle.play();
+        let out = run(&mut engine, 10_000);
+        let left: Vec<f32> = out.chunks(2).map(|f| f[0]).collect();
+        let at = (0..left.len()).max_by(|a, b| left[*a].abs().total_cmp(&left[*b].abs())).unwrap_or_default();
+        assert!((at as i32 - 4_900).abs() < 30, "the click 4 800 samples later: {at}");
     }
 
     #[test]

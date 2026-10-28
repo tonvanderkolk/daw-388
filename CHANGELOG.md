@@ -7,6 +7,16 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.12.0] - 2026-10-28
+
+### Toegevoegd
+- Ingebouwde plate reverb op AUX en tape echo op EFF, terug op de stereobus via EFFECT RTN 1 en 2 (GAIN en PAN), zoals op de 388.
+- Plate: DECAY, PRE-DELAY en TONE. Echo: TIME (vrij of SYNC 1/4, 1/8, 1/8 gepunteerd op het tempo), FEEDBACK en TONE. TIME glijdt zoals een bandmotor; de herhalingen worden donkerder en een tikje verzadigd.
+- SOLO haalt een spoor uit de effecten, maar niet uit de AUX-uitgang naar de interface.
+
+### Gewijzigd
+- Een project van 0.11.0 of ouder opent met de RTN's dicht, zodat een koptelefoonmix op AUX niet ineens galm geeft. Een nieuw project heeft de RTN's open.
+
 ## [0.11.0] - 2026-10-28
 
 ### Toegevoegd

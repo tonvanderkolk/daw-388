@@ -41,10 +41,10 @@
 - [ ] Ping-pong bounce naar een vrij spoor (kan via de bussen sinds 0.8.0)
 
 ## Fase 6: Effecten en tape-model
-- [ ] Plate reverb (aux) en tape echo (eff)
-- [ ] Tape-model 388: 3¾, 7½ en 15 IPS, tapesoorten 456-, 250- en 911-stijl
+- [x] Plate reverb (aux) en tape echo (eff), met EFFECT RTN (0.12.0)
+- [ ] Tape-model 388 (0.13.0): 3¾, 7½ en 15 IPS, tapesoorten 456-, 250- en 911-stijl
 - [ ] Saturatie, wow en flutter, ruis, crosstalk, varispeed
-- [ ] dbx per groep, schakelaar Clean / 388
+- [ ] dbx per groep, schakelaar Clean / 388 (0.14.0)
 
 ## Fase 7: Export, import, autosave
 - [ ] Stereo bounce en stems, verwerkingsopties, WAV/AIFF, 16/24/32-bit float, 44,1/48/96 kHz

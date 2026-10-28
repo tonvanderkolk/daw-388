@@ -5,6 +5,7 @@
 use crate::eq::{EQ_DEFAULTS, Eq, EqBand};
 use crate::monitor::MonitorMode;
 use crate::smooth;
+use daw388_fx::{EchoParams, PlateParams};
 use std::f32::consts::FRAC_PI_4;
 
 /// Where a channel's signal comes from.
@@ -89,6 +90,13 @@ pub enum Listen {
     Eff,
 }
 
+/// An EFFECT RTN: linear gain and pan (a balance for the stereo plate).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RtnParams {
+    pub gain: f32,
+    pub pan: f32,
+}
+
 /// The master section's settings, sent whole with [`crate::Command::SetMixer`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MixerParams {
@@ -107,6 +115,10 @@ pub struct MixerParams {
     /// The interface channels (from 0) that carry AUX and EFF, if any.
     pub aux_out: Option<usize>,
     pub eff_out: Option<usize>,
+    /// The plate on AUX and the echo on EFF, and their returns (closed by default).
+    pub plate: PlateParams,
+    pub echo: EchoParams,
+    pub rtn: [RtnParams; 2],
 }
 
 impl Default for MixerParams {
@@ -122,6 +134,9 @@ impl Default for MixerParams {
             phones: 1.0,
             aux_out: None,
             eff_out: None,
+            plate: PlateParams::default(),
+            echo: EchoParams::default(),
+            rtn: [RtnParams::default(); 2],
         }
     }
 }

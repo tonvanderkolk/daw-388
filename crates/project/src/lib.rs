@@ -9,8 +9,9 @@ pub mod session;
 pub mod take;
 
 pub use session::{
-    Backup, BandEntry, ChannelEntry, ChannelSource, EqEntry, ListenSwitch, MeterSwitch, MetronomeSettings, MixerEntry, MonSwitch,
-    MonitorEntry, OpenedProject, ProjectError, ProjectSettings, RepeatMode, Routing, SEND_CLOSED_DB, Saved, TrackToSave, TransportSettings,
+    Backup, BandEntry, ChannelEntry, ChannelSource, EchoEntry, EchoSyncEntry, EffectsEntry, EqEntry, ListenSwitch, MeterSwitch,
+    MetronomeSettings, MixerEntry, MonSwitch, MonitorEntry, OpenedProject, PlateEntry, ProjectError, ProjectSettings, RepeatMode, Routing,
+    RtnEntry, SEND_CLOSED_DB, Saved, TrackToSave, TransportSettings,
 };
 
 use std::fmt;

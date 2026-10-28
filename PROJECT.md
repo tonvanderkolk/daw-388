@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.11.0
+Versie: 0.12.0
 Laatst bijgewerkt: 28-10-2026
 
 ## Doel
@@ -23,7 +23,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 |---|---|---|
 | `daw388-engine` | `crates/engine` | Transport, 8 sporen en stereomix. Platformonafhankelijk, geen allocaties of locks in de audiothread |
 | `daw388-tape` | `crates/tape` | Tape-emulatie en dbx (fase 6, nog leeg) |
-| `daw388-fx` | `crates/fx` | Plate reverb en tape echo (fase 6, nog leeg) |
+| `daw388-fx` | `crates/fx` | Plate reverb en tape echo: buffers bij het aanmaken, geen allocaties in `process` |
 | `daw388-project` | `crates/project` | WAV- en AIFF-import naar mono, samplerate-conversie en de projectmap (`project.json`, `audio/`, `backups/`). Later export |
 | `daw388-ui` | `crates/ui` | egui-interface, praat met het platform via de `Platform`-trait |
 | `daw388` | `crates/app-desktop` | Desktop-entrypoint: cpal-uitvoer, bestandsdialogen en het eframe-venster |
@@ -48,7 +48,7 @@ Mijn liedje/
 └── backups/            # eerdere versies van project.json (laatste 10)
 ```
 
-- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 2), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `mixer` (`mode` simple/388, ontbreekt: 388; `odd_db`, `even_db`, `mon` pgm/cue, `mono`, `aux_master_db`, `eff_master_db`, `phones_db`, `listen` stereo/aux/eff, `meter` lr/aux_eff) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `aux_db`, `aux_pre`, `eff_db` (ontbreken ze, dan zijn de sends dicht: `SEND_CLOSED_DB`, -60 dB), `eq` met `low`, `mid` en `high` (elk `freq_hz` en `gain_db`; ontbreekt `eq`, dan is hij vlak), `assign`, `lr`, `direct`, `auto`) en `monitor` (`gain_db`, `pan`, `mute`).
+- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 2), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `mixer` (`mode` simple/388, ontbreekt: 388; `odd_db`, `even_db`, `mon` pgm/cue, `mono`, `aux_master_db`, `eff_master_db`, `phones_db`, `listen` stereo/aux/eff, `meter` lr/aux_eff, `effects` met `plate` (`decay_s`, `predelay_ms`, `tone`), `echo` (`time_ms`, `sync` off/quarter/eighth/dotted_eighth, `feedback`, `tone`) en `rtn` (twee keer `gain_db` en `pan`; ontbreken ze, dan zijn de RTN's dicht)) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `aux_db`, `aux_pre`, `eff_db` (ontbreken ze, dan zijn de sends dicht: `SEND_CLOSED_DB`, -60 dB), `eq` met `low`, `mid` en `high` (elk `freq_hz` en `gain_db`; ontbreekt `eq`, dan is hij vlak), `assign`, `lr`, `direct`, `auto`) en `monitor` (`gain_db`, `pan`, `mute`).
 - Een project met formaatversie 1 (0.7.0 en ouder) opent als eenvoudig project: fader, pan en mute blijven de kanaalfader, elk kanaal krijgt de eenvoudige instelling (LINE, AUTO, DIRECT, L-R) en houdt zijn ingang. Een project van 0.8.0 of 0.9.0 (zonder `mode`) opent in de 388-stand.
 - Opslaan kopieert audio van buiten het project naar `audio/`. Het origineel blijft staan. Bij een naamconflict krijgt de kopie een achtervoegsel (`take-2.wav`).
 - `project.json` wordt eerst naar een tijdelijk bestand geschreven en daarna hernoemd, zodat een crash nooit een half bestand achterlaat.
@@ -125,7 +125,10 @@ Naar het blokschema en Features and Controls in de handleiding van de 388:
 - Sends, in beide standen: AUX met PRE (na TRIM en voorversterker, voor EQ, fader en MUTE) of POST (na fader en MUTE, voor PAN), en EFF na fader en MUTE. Ze vloeien over zoals de fader. Een live bron gaat bij meeluisteren via de interface ook niet naar AUX of EFF. SOLO raakt de sends niet, zodat een koptelefoonmix blijft staan.
 - AUX MASTER en EFF MASTER gaan elk naar een eigen interface-uitgang (vanaf 3; app-voorkeuren `aux_output` en `eff_output`). Een uitgang die het apparaat niet heeft wordt overgeslagen. AUX en EFF op dezelfde uitgang worden opgeteld.
 - Hoofduitgang: STEREO, AUX of EFF (mono op beide kanten), dan MONITOR/PHONES, dan de klik met zijn eigen volume. De stereometers meten voor PHONES; met METER op AUX-EFF tonen ze AUX en EFF na hun master.
-- EFFECT RTN komt met de effecten in fase 6.
+- Effecten (ingebouwd): een plate reverb op AUX en een tape echo op EFF, zoals op de 388. Ze krijgen de AUX- en EFF-som na de masters, maar alleen van sporen die je hoort (SOLO); de interface-uitgangen houden alles. De returns gaan via EFFECT RTN 1 (plate, stereo, PAN als balans) en RTN 2 (echo, mono) naar de stereobus voor de STEREO MASTER, ook als de MONITOR-mix de stereobus vult. Effecten komen nooit op een opname of bus.
+- Plate: topologie naar Dattorro (pre-delay, diffusie, een tank van twee helften), DECAY 0,5 tot 6 s, PRE-DELAY 0 tot 100 ms, TONE.
+- Echo: maximaal 2 s, TIME 40 tot 800 ms of SYNC 1/4, 1/8, 1/8 gepunteerd op het metronoomtempo, FEEDBACK tot 0,9, TONE. TIME glijdt naar een nieuwe waarde zoals een bandmotor; de lus wordt donkerder, verzadigt zacht en heeft een lichte wow.
+- Wie AUX als koptelefoonmix gebruikt, draait RTN 1 dicht. Een fysiek effect kan ook: AUX of EFF naar een interface-uitgang, terug via een kanaal op LINE.
 
 ### Routing in de praktijk
 
@@ -157,7 +160,7 @@ Audio wordt op een achtergrondthread gedecodeerd en naar de samplerate van het a
 
 - Import van WAV en AIFF (ongecomprimeerd). Nog geen FLAC, MP3 of andere formaten.
 - Samplerate-conversie gebruikt Hermite-interpolatie: prima voor afluisteren, voor export komt een betere resampler.
-- Nog geen effecten of tape-model. Pingpong kan alleen in de 388-stand. Zie de roadmap.
+- Nog geen tape-model. Pingpong kan alleen in de 388-stand. Zie de roadmap.
 - Een bus die een live ingang en de band tegelijk opneemt, wordt gecompenseerd voor de ingang; het banddeel komt dan de apparaatlatency te vroeg op het nieuwe spoor.
 - Op macOS vraagt het systeem bij het eerste gebruik van een ingang om toegang tot de microfoon. Zolang de app als los programma vanuit de terminal draait, hoort die toestemming bij de terminal.
 - Op macOS is het standaard app-menu uitgezet, zodat Cmd+Q via de opslaan-vraag loopt. Afsluiten door uitloggen of herstarten van de Mac gaat nog wel buiten die vraag om; autosave beperkt dan het verlies tot de laatste 30 seconden.
