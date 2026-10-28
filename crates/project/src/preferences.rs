@@ -27,6 +27,11 @@ pub struct Preferences {
     /// Extra latency compensation in milliseconds on top of what the device reports.
     #[serde(default)]
     pub latency_offset_ms: f32,
+    /// The interface channels (from 1) for the AUX and EFF masters; `None`: not sent anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aux_output: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eff_output: Option<u16>,
 }
 
 fn yes() -> bool {
@@ -42,6 +47,8 @@ impl Default for Preferences {
             input_device: None,
             software_monitoring: true,
             latency_offset_ms: 0.0,
+            aux_output: None,
+            eff_output: None,
         }
     }
 }
@@ -78,6 +85,8 @@ mod tests {
             input_device: Some("Scarlett 2i2".into()),
             software_monitoring: false,
             latency_offset_ms: 1.5,
+            aux_output: Some(3),
+            eff_output: Some(4),
         };
         save(&path, &preferences).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(load(&path), preferences);
@@ -86,5 +95,6 @@ mod tests {
         // A file from before the input settings existed keeps monitoring on.
         fs::write(&path, r#"{"output_device":"X"}"#).unwrap_or_else(|e| panic!("{e}"));
         assert!(load(&path).software_monitoring);
+        assert_eq!((load(&path).aux_output, load(&path).eff_output), (None, None), "no AUX or EFF output yet");
     }
 }

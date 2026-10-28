@@ -27,11 +27,12 @@
 ## Fase 4: Mixer 8:8:2
 - [x] Ingangskeuze MIC / LINE / TAPE, trim (0.8.0; voorversterker-karakter in 0.9.0)
 - [x] 3-band sweepable EQ (concentrische knoppen) (0.9.0)
-- [ ] AUX-send met PRE/POST, EFF-send post-fader (0.11.0)
+- [x] AUX-send met PRE/POST, EFF-send post-fader (0.11.0)
 - [x] ASSIGN 1-2, 3-4, 5-6, 7-8 en L-R, busrouting (0.8.0)
 - [x] MONITOR-sectie met de omschakellogica van de 388, MON PGM/CUE, MONO (0.8.0)
 - [x] Eenvoudige stand naast de 388-routering, met AUTO per kanaal (0.10.0)
-- [ ] Master-sectie: EFFECT RTN, MONITOR, AUX- en EFF-masters, STEREO MASTER (0.11.0)
+- [x] SOLO per spoor, alleen voor wat je hoort (0.10.1)
+- [x] Master-sectie: MONITOR/PHONES, AUX- en EFF-masters naar interface-uitgangen, STEREO/AUX/EFF, METER, STEREO MASTER (0.11.0; EFFECT RTN in fase 6)
 - [ ] Signaalroute controleren met het blokschema uit de handleiding
 
 ## Fase 5: Bewerken

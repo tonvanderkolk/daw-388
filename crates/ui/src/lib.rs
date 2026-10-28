@@ -4,14 +4,14 @@
 mod recording;
 
 use daw388_engine::{
-    ChannelParams, Command, EQ_DEFAULTS, EngineHandle, EqBand, Meter, MixerParams, MonitorMode, MonitorParams, Motion, PITCH_RANGE,
+    ChannelParams, Command, EQ_DEFAULTS, EngineHandle, EqBand, Listen, Meter, MixerParams, MonitorMode, MonitorParams, Motion, PITCH_RANGE,
     RecMode, Source, TRACKS, TrackAudio, TransportStyle,
 };
 use daw388_project::preferences::{self, Preferences};
 use daw388_project::session::{self, PROJECT_FILE};
 use daw388_project::{
-    Backup, BandEntry, ChannelEntry, ChannelSource, EqEntry, MetronomeSettings, MixerEntry, MonSwitch, MonitorEntry, MonoClip,
-    ProjectSettings, RepeatMode, Routing, TrackToSave, TransportSettings,
+    Backup, BandEntry, ChannelEntry, ChannelSource, EqEntry, ListenSwitch, MeterSwitch, MetronomeSettings, MixerEntry, MonSwitch,
+    MonitorEntry, MonoClip, ProjectSettings, RepeatMode, Routing, TrackToSave, TransportSettings,
 };
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 use recording::{Composed, TakeDone, Underneath};
@@ -61,6 +61,8 @@ pub struct OutputInfo {
     pub sample_rate: u32,
     /// `None` when the device chose the buffer size itself.
     pub buffer_frames: Option<u32>,
+    /// Interface channels of the output (AUX and EFF can use 3 and up).
+    pub channels: u16,
     pub input: Option<InputInfo>,
     /// Why the requested input could not be opened.
     pub input_error: Option<String>,
@@ -169,6 +171,7 @@ mod palette {
     pub const RED: Color32 = Color32::from_rgb(0xc8, 0x40, 0x2a);
     pub const ORANGE: Color32 = Color32::from_rgb(0xe5, 0x83, 0x2c);
     pub const GREEN: Color32 = Color32::from_rgb(0x9f, 0xd3, 0x9a);
+    pub const BLUE: Color32 = Color32::from_rgb(0x7f, 0xa8, 0xcc);
     pub const KEY: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9c);
 }
 
@@ -221,6 +224,8 @@ struct TrackState {
     monitor: MonitorEntry,
     /// Displayed TRK/PGM meter level in dB: what the track's MONITOR hears.
     trk_meter_db: f32,
+    /// SOLO: only what you hear, and not saved with the project.
+    solo: bool,
     /// OL stays lit until this time (`DawApp::now`).
     ol_until: f64,
     /// What the engine plays for this track, and at which rate (a take is laid over this).
@@ -247,6 +252,8 @@ pub struct DawApp {
     /// Track meters after the fader (POST) instead of the track's own level (PRE, as on the 388).
     meter_post: bool,
     master_meter_db: [f32; 2],
+    /// Displayed AUX and EFF meter levels in dB (the METER switch).
+    send_meter_db: [f32; 2],
     status: String,
     /// The project folder, once saved or opened.
     project_dir: Option<PathBuf>,
@@ -346,6 +353,9 @@ fn channel_params(track: &TrackState) -> ChannelParams {
         // The engine counts input channels from 0.
         input: track.input.and_then(|c| c.checked_sub(1)),
         trim: db_to_gain(track.channel.trim_db),
+        aux: db_to_gain(track.channel.aux_db),
+        aux_pre: track.channel.aux_pre,
+        eff: db_to_gain(track.channel.eff_db),
         eq: bands(&track.channel.eq).map(|b| EqBand { freq: b.freq_hz, gain_db: b.gain_db }),
         fader: db_to_gain(track.fader_db),
         pan: track.pan,
@@ -366,12 +376,34 @@ fn monitor_params(monitor: &MonitorEntry) -> MonitorParams {
     MonitorParams { gain: db_to_gain(monitor.gain_db), pan: monitor.pan, mute: monitor.mute }
 }
 
-fn mixer_params(mixer: &MixerEntry) -> MixerParams {
+/// An AUX or EFF output preference (from 1) as the engine's channel (from 0): only channel 3 and
+/// up, and only when the open output has it.
+fn send_output(preference: Option<u16>, output_channels: u16) -> Option<usize> {
+    preference.filter(|c| (3..=output_channels).contains(c)).map(|c| usize::from(c) - 1)
+}
+
+fn mixer_params(mixer: &MixerEntry, preferences: &Preferences, output_channels: u16) -> MixerParams {
     let mon = match mixer.mon {
         MonSwitch::Pgm => MonitorMode::Pgm,
         MonSwitch::Cue => MonitorMode::Cue,
     };
-    MixerParams { odd: db_to_gain(mixer.odd_db), even: db_to_gain(mixer.even_db), mon, mono: mixer.mono }
+    let listen = match mixer.listen {
+        ListenSwitch::Stereo => Listen::Stereo,
+        ListenSwitch::Aux => Listen::Aux,
+        ListenSwitch::Eff => Listen::Eff,
+    };
+    MixerParams {
+        odd: db_to_gain(mixer.odd_db),
+        even: db_to_gain(mixer.even_db),
+        mon,
+        mono: mixer.mono,
+        aux_master: db_to_gain(mixer.aux_master_db),
+        eff_master: db_to_gain(mixer.eff_master_db),
+        listen,
+        phones: db_to_gain(mixer.phones_db),
+        aux_out: send_output(preferences.aux_output, output_channels),
+        eff_out: send_output(preferences.eff_output, output_channels),
+    }
 }
 
 impl DawApp {
@@ -395,6 +427,7 @@ impl DawApp {
             mixer: new_mixer(),
             meter_post: false,
             master_meter_db: [MIN_DB; 2],
+            send_meter_db: [MIN_DB; 2],
             status: String::new(),
             project_dir: None,
             dirty: false,
@@ -553,8 +586,9 @@ impl DawApp {
         if reopen {
             self.open_output();
         } else {
-            // Monitoring and latency offset only need telling the engine.
+            // Monitoring, latency offset and the AUX and EFF outputs only need telling the engine.
             self.send_transport();
+            self.send_mixer();
         }
     }
 
@@ -975,15 +1009,18 @@ impl DawApp {
         }
     }
 
-    /// Every channel to the simple setting; fader, pan, mute, EQ, TRIM and input stay.
+    /// Every channel to the simple setting; fader, pan, mute, EQ, TRIM, the sends and input stay.
     fn apply_simple(&mut self) {
         self.confirm_simple = false;
         for track in &mut self.tracks {
             let channel = ChannelEntry::simple(track.channel.source);
-            track.channel = ChannelEntry { trim_db: track.channel.trim_db, eq: track.channel.eq, ..channel };
+            let old = track.channel;
+            track.channel =
+                ChannelEntry { trim_db: old.trim_db, eq: old.eq, aux_db: old.aux_db, aux_pre: old.aux_pre, eff_db: old.eff_db, ..channel };
             track.monitor = MonitorEntry::default();
         }
-        self.mixer = MixerEntry { mode: Routing::Simple, mono: self.mixer.mono, ..MixerEntry::default() };
+        // Only the 388 routing goes back; MONO, the sends' masters and PHONES stay.
+        self.mixer = MixerEntry { mode: Routing::Simple, odd_db: 0.0, even_db: 0.0, mon: MonSwitch::Cue, ..self.mixer };
         self.send_mix();
         self.mark_dirty();
     }
@@ -1152,7 +1189,8 @@ impl DawApp {
     }
 
     fn send_mixer(&mut self) {
-        let params = mixer_params(&self.mixer);
+        let output_channels = self.output.as_ref().map_or(0, |o| o.channels);
+        let params = mixer_params(&self.mixer, &self.preferences, output_channels);
         self.engine_send(Command::SetMixer(params));
     }
 
@@ -1161,6 +1199,8 @@ impl DawApp {
         for index in 0..TRACKS {
             self.send_channel(index);
             self.send_monitor(index);
+            let solo = self.tracks[index].solo;
+            self.engine_send(Command::SetSolo(index, solo));
         }
         self.send_mixer();
         self.engine_send(Command::SetMaster(db_to_gain(self.master_db)));
@@ -1501,6 +1541,10 @@ impl DawApp {
         for (shown, peak) in self.master_meter_db.iter_mut().zip(master) {
             *shown = gain_to_db(peak).max(*shown - fall);
         }
+        let sends = engine.take_send_peaks();
+        for (shown, peak) in self.send_meter_db.iter_mut().zip(sends) {
+            *shown = gain_to_db(peak).max(*shown - fall);
+        }
     }
 
     fn handle_keys(&mut self, ui: &Ui) {
@@ -1582,6 +1626,7 @@ impl DawApp {
         let mut clear = false;
         let mut arm = false;
         let mut changed = false;
+        let mut solo = false;
         let recording = self.engine.as_ref().is_some_and(|e| e.is_recording(index));
         let blink = (self.now * 2.0).fract() < 0.5;
         let now = self.now;
@@ -1699,6 +1744,31 @@ impl DawApp {
                     ui.add_sized(vec2(34.0, 10.0), egui::Label::new(RichText::new(name).size(8.0).color(palette::TEXT_DIM)));
                 }
             });
+            // The sends: AUX (PRE or POST) and EFF, in both modes.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let channel = &mut track.channel;
+                let aux = knob(ui, &mut channel.aux_db, MIN_DB..=MAX_DB, MIN_DB, palette::GREEN, 26.0, true).on_hover_text(format!(
+                    "AUX {}: PRE voor EQ en fader, POST na de fader (dubbelklik: dicht)",
+                    format_db(channel.aux_db)
+                ));
+                changed |= aux.changed() || aux.double_clicked();
+                let tip = "PRE: de AUX-send hangt niet af van EQ, fader en MUTE (een koptelefoonmix)";
+                if toggle(ui, "PRE", channel.aux_pre, palette::GREEN).on_hover_text(tip).clicked() {
+                    channel.aux_pre = !channel.aux_pre;
+                    changed = true;
+                }
+                let eff = knob(ui, &mut channel.eff_db, MIN_DB..=MAX_DB, MIN_DB, palette::BLUE, 26.0, true).on_hover_text(format!(
+                    "EFF {}: na de fader. De effecten zelf komen in fase 6 (dubbelklik: dicht)",
+                    format_db(channel.eff_db)
+                ));
+                changed |= eff.changed() || eff.double_clicked();
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("AUX").size(9.0).color(palette::TEXT_DIM));
+                ui.add_space(42.0);
+                ui.label(RichText::new("EFF").size(9.0).color(palette::TEXT_DIM));
+            });
             if !simple {
                 ui.label(RichText::new("ASSIGN").size(9.0).color(palette::TEXT_DIM));
                 ui.horizontal(|ui| {
@@ -1740,23 +1810,33 @@ impl DawApp {
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+                // Three keys side by side: tight padding keeps the strip at its width.
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().button_padding = vec2(3.0, 1.0);
                 // REC FUNCTION: blinks when ready, lit while recording, as on the 388.
                 let lit = recording || (track.armed && blink);
-                let text = RichText::new("REC").size(11.0).strong().color(if lit { Color32::WHITE } else { palette::LED });
+                let text = RichText::new("REC").size(10.0).strong().color(if lit { Color32::WHITE } else { palette::LED });
                 let rec =
-                    ui.add(egui::Button::new(text).fill(if lit { palette::RED } else { palette::PANEL_DARK }).min_size(vec2(38.0, 18.0)));
+                    ui.add(egui::Button::new(text).fill(if lit { palette::RED } else { palette::PANEL_DARK }).min_size(vec2(30.0, 18.0)));
                 if rec.on_hover_text("REC FUNCTION: spoor klaar voor opname").clicked() {
                     arm = true;
                 }
                 let mute = ui.add(
-                    egui::Button::new(RichText::new("MUTE").size(11.0).color(if track.mute { Color32::BLACK } else { palette::TEXT }))
+                    egui::Button::new(RichText::new("MUTE").size(10.0).color(if track.mute { Color32::BLACK } else { palette::TEXT }))
                         .fill(if track.mute { palette::ORANGE } else { palette::PANEL_DARK })
-                        .min_size(vec2(38.0, 18.0)),
+                        .min_size(vec2(30.0, 18.0)),
                 );
                 if mute.clicked() {
                     track.mute = !track.mute;
                     changed = true;
+                }
+                // SOLO is a DAW habit, not a 388 control: it only changes what you hear.
+                let text = RichText::new("SOLO").size(10.0).color(if track.solo { Color32::BLACK } else { palette::TEXT });
+                let button =
+                    egui::Button::new(text).fill(if track.solo { palette::CREAM } else { palette::PANEL_DARK }).min_size(vec2(30.0, 18.0));
+                if ui.add(button).on_hover_text("SOLO: alleen de gesoloode sporen horen. Opnames en bussen merken er niets van").clicked() {
+                    track.solo = !track.solo;
+                    solo = true;
                 }
             });
             ui.add_space(6.0);
@@ -1771,6 +1851,10 @@ impl DawApp {
         });
         if arm {
             self.toggle_arm(index);
+        }
+        if solo {
+            let on = self.tracks[index].solo;
+            self.engine_send(Command::SetSolo(index, on));
         }
         if changed {
             self.send_channel(index);
@@ -1812,7 +1896,7 @@ impl DawApp {
     fn monitor_section(&mut self, ui: &mut Ui) {
         let mut changed = Vec::new();
         let mut mixer_changed = false;
-        column(ui, 150.0, |ui| {
+        column(ui, 136.0, |ui| {
             ui.label(RichText::new("MONITOR").strong().size(14.0).color(palette::CREAM));
             ui.label(RichText::new("GAIN   PAN    M   TRK/PGM").size(9.0).color(palette::TEXT_DIM));
             for (index, track) in self.tracks.iter_mut().enumerate() {
@@ -1862,7 +1946,63 @@ impl DawApp {
     }
 
     fn master_section(&mut self, ui: &mut Ui) {
-        column(ui, 100.0, |ui| {
+        let mut mixer_changed = false;
+        column(ui, 136.0, |ui| {
+            // AUX MASTER and EFF MASTER, to their own interface outputs (Instellingen, Audio).
+            ui.label(RichText::new("AUX / EFF").strong().size(14.0).color(palette::CREAM));
+            ui.horizontal(|ui| {
+                let aux =
+                    knob(ui, &mut self.mixer.aux_master_db, MIN_DB..=MAX_DB, 0.0, palette::ORANGE, 30.0, true).on_hover_text(format!(
+                        "AUX MASTER {} (dubbelklik: 0 dB). De uitgang kies je in Instellingen, Audio",
+                        format_db(self.mixer.aux_master_db)
+                    ));
+                mixer_changed |= aux.changed() || aux.double_clicked();
+                let eff =
+                    knob(ui, &mut self.mixer.eff_master_db, MIN_DB..=MAX_DB, 0.0, palette::ORANGE, 30.0, true).on_hover_text(format!(
+                        "EFF MASTER {} (dubbelklik: 0 dB). De uitgang kies je in Instellingen, Audio",
+                        format_db(self.mixer.eff_master_db)
+                    ));
+                mixer_changed |= eff.changed() || eff.double_clicked();
+                let phones = knob(ui, &mut self.mixer.phones_db, MIN_DB..=MAX_DB, 0.0, palette::CREAM, 30.0, true).on_hover_text(format!(
+                    "MONITOR/PHONES {}: niveau van de hoofduitgang. De klik heeft zijn eigen volume (dubbelklik: 0 dB)",
+                    format_db(self.mixer.phones_db)
+                ));
+                mixer_changed |= phones.changed() || phones.double_clicked();
+            });
+            ui.horizontal(|ui| {
+                for name in ["AUX", "EFF", "PHONES"] {
+                    ui.add_sized(vec2(34.0, 10.0), egui::Label::new(RichText::new(name).size(8.0).color(palette::TEXT_DIM)));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (listen, label, tip) in [
+                    (ListenSwitch::Stereo, "STEREO", "De hoofduitgang krijgt de STEREO MASTER"),
+                    (ListenSwitch::Aux, "AUX", "De hoofduitgang krijgt AUX, mono op beide kanten"),
+                    (ListenSwitch::Eff, "EFF", "De hoofduitgang krijgt EFF, mono op beide kanten"),
+                ] {
+                    let on = self.mixer.listen == listen;
+                    if toggle(ui, label, on, palette::ORANGE).on_hover_text(tip).clicked() && !on {
+                        self.mixer.listen = listen;
+                        mixer_changed = true;
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.label(RichText::new("METER").size(9.0).color(palette::TEXT_DIM));
+                for (meter, label, tip) in [
+                    (MeterSwitch::Lr, "L-R", "De stereometers tonen links en rechts"),
+                    (MeterSwitch::AuxEff, "AUX-EFF", "De stereometers tonen AUX en EFF na hun master"),
+                ] {
+                    let on = self.mixer.meter == meter;
+                    if toggle(ui, label, on, palette::ORANGE).on_hover_text(tip).clicked() && !on {
+                        self.mixer.meter = meter;
+                        mixer_changed = true;
+                    }
+                }
+            });
+            ui.add_space(8.0);
             ui.label(RichText::new("STEREO").strong().size(14.0).color(palette::CREAM));
             ui.add_space(4.0);
             ui.label(RichText::new("TRACK METERS").size(9.0).color(palette::TEXT_DIM));
@@ -1897,11 +2037,16 @@ impl DawApp {
                     self.engine_send(Command::SetMaster(gain));
                     self.mark_dirty();
                 }
-                meter(ui, self.master_meter_db[0], true);
-                meter(ui, self.master_meter_db[1], false);
+                let shown = if self.mixer.meter == MeterSwitch::AuxEff { self.send_meter_db } else { self.master_meter_db };
+                meter(ui, shown[0], true);
+                meter(ui, shown[1], false);
             });
             ui.label(RichText::new(format_db(self.master_db)).size(11.0).color(palette::TEXT_DIM));
         });
+        if mixer_changed {
+            self.send_mixer();
+            self.mark_dirty();
+        }
     }
 
     fn transport(&mut self, ui: &mut Ui) {
@@ -2135,6 +2280,26 @@ impl DawApp {
             ui.label("Meeluisteren");
             ui.checkbox(&mut wanted.software_monitoring, "Via DAW 388 (uit: direct monitoring van de interface)");
             ui.end_row();
+
+            // AUX and EFF to free outputs of the interface; 1 and 2 carry the main output.
+            let output_channels = self.output.as_ref().map_or(0, |o| o.channels);
+            let output_text = |c: Option<u16>| match c {
+                None => "Geen".to_string(),
+                Some(c) if c > output_channels => format!("Uitgang {c} (niet op dit apparaat)"),
+                Some(c) => format!("Uitgang {c}"),
+            };
+            for (label, id, choice) in
+                [("AUX-uitgang", "aux-output", &mut wanted.aux_output), ("EFF-uitgang", "eff-output", &mut wanted.eff_output)]
+            {
+                ui.label(label);
+                egui::ComboBox::from_id_salt(id).selected_text(output_text(*choice)).width(260.0).show_ui(ui, |ui| {
+                    ui.selectable_value(choice, None, output_text(None));
+                    for c in 3..=output_channels {
+                        ui.selectable_value(choice, Some(c), output_text(Some(c)));
+                    }
+                });
+                ui.end_row();
+            }
 
             ui.label("Latency");
             ui.horizontal(|ui| {
@@ -2702,7 +2867,14 @@ mod tests {
             self.engines.borrow_mut().push(engine);
             Ok((
                 handle,
-                OutputInfo { device: name, sample_rate: rate, buffer_frames: request.buffer_frames, input: None, input_error: None },
+                OutputInfo {
+                    device: name,
+                    sample_rate: rate,
+                    buffer_frames: request.buffer_frames,
+                    channels: 4,
+                    input: None,
+                    input_error: None,
+                },
             ))
         }
         fn open_silent(&mut self, sample_rate: u32) -> EngineHandle {
@@ -2749,6 +2921,27 @@ mod tests {
     }
 
     #[test]
+    fn aux_and_eff_outputs_skip_the_main_pair_and_missing_channels() {
+        assert_eq!(send_output(Some(3), 8), Some(2));
+        assert_eq!(send_output(Some(8), 8), Some(7));
+        assert_eq!(send_output(Some(9), 8), None, "not on this device");
+        assert_eq!(send_output(Some(2), 8), None, "1 and 2 are the main output");
+        assert_eq!(send_output(None, 8), None);
+        let mixer = MixerEntry { listen: ListenSwitch::Eff, phones_db: MIN_DB, ..MixerEntry::default() };
+        let preferences = Preferences { aux_output: Some(4), ..Preferences::default() };
+        let params = mixer_params(&mixer, &preferences, 2);
+        assert_eq!((params.aux_out, params.listen, params.phones), (None, Listen::Eff, 0.0));
+        assert_eq!(mixer_params(&mixer, &preferences, 4).aux_out, Some(3));
+    }
+
+    #[test]
+    fn a_new_channel_has_its_sends_closed() {
+        let track = TrackState { channel: ChannelEntry::simple(ChannelSource::Line), ..TrackState::default() };
+        let params = channel_params(&track);
+        assert_eq!((params.aux, params.eff), (0.0, 0.0));
+    }
+
+    #[test]
     fn a_new_project_is_simple() {
         let ctx = egui::Context::default();
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
@@ -2776,8 +2969,11 @@ mod tests {
         track.channel.eq.mid.gain_db = 6.0;
         track.channel.trim_db = 12.0;
         track.fader_db = -4.0;
+        track.channel.aux_db = -10.0;
         app.tracks[5].channel.source = ChannelSource::Rmx;
         app.tracks[5].channel.auto = false;
+        app.mixer.phones_db = -6.0;
+        app.mixer.odd_db = -3.0;
         app.set_routing(Routing::Simple);
         assert!(app.confirm_simple, "the 388 routing would be lost: ask first");
         assert_eq!(app.mixer.mode, Routing::Classic);
@@ -2788,6 +2984,8 @@ mod tests {
         assert_eq!(channel.source, ChannelSource::Mic, "MIC stays MIC");
         assert_eq!((channel.eq.mid.gain_db, channel.trim_db, app.tracks[2].fader_db), (6.0, 12.0, -4.0), "the sound stays");
         assert_eq!(app.tracks[5].channel.source, ChannelSource::Line, "RMX becomes LINE");
+        assert_eq!((app.mixer.odd_db, app.mixer.phones_db), (0.0, -6.0), "the buses go back, PHONES stays");
+        assert_eq!(app.tracks[2].channel.aux_db, -10.0, "the sends stay");
     }
 
     #[test]
@@ -2910,6 +3108,7 @@ mod tests {
         app.tracks[1].monitor.gain_db = -4.0;
         app.mixer.mon = MonSwitch::Pgm;
         app.mixer.mode = Routing::Classic;
+        app.tracks[1].solo = true;
         app.master_db = -2.0;
         app.meter_post = true;
         assert!(app.save(Backup::Always), "{}", app.status);
@@ -2932,6 +3131,7 @@ mod tests {
         assert_eq!(app.tracks[1].monitor.gain_db, -4.0);
         assert_eq!(app.mixer.mon, MonSwitch::Pgm);
         assert_eq!(app.mixer.mode, Routing::Classic, "a new project is simple, so this came from the file");
+        assert!(!app.tracks[1].solo, "SOLO is for listening only and is not saved");
         assert_eq!(app.master_db, -2.0);
         assert!(app.meter_post);
         assert!(app.tracks[2].clip.is_none());

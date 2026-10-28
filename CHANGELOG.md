@@ -7,6 +7,25 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.11.0] - 2026-10-28
+
+### Toegevoegd
+- AUX-send met PRE/POST en EFF-send per kanaal, in beide standen. PRE hangt niet af van EQ, fader en MUTE: handig voor een koptelefoonmix.
+- AUX MASTER en EFF MASTER, elk naar een vrije uitgang van de interface (Instellingen, Audio).
+- STEREO, AUX of EFF op de hoofduitgang, en MONITOR/PHONES voor het niveau. De klik houdt zijn eigen volume.
+- METER-schakelaar: de stereometers tonen L-R of AUX en EFF.
+
+### Gewijzigd
+- SOLO raakt de sends niet, zodat een koptelefoonmix blijft staan.
+- Van 388 naar Eenvoudig laat de sends, de AUX- en EFF-masters en PHONES staan.
+- Compactere REC-, MUTE- en SOLO-knoppen en een iets breder venster bij de start, zodat de transportsectie in beeld past.
+- EFFECT RTN komt met de effecten in fase 6.
+
+## [0.10.1] - 2026-10-28
+
+### Toegevoegd
+- SOLO per spoor, naast MUTE, in beide standen. Zolang er een spoor gesoloed is, hoor je alleen de gesoloode sporen. Opnames, bussen en pingpong merken er niets van. SOLO wordt niet in het project bewaard.
+
 ## [0.10.0] - 2026-10-28
 
 ### Toegevoegd

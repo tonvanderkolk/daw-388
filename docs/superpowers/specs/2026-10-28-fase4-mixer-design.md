@@ -171,7 +171,7 @@ Na elke stap test Ton; er wordt pas gecommit na "commit en push".
    *Handmatig*: een bestaand project openen (klinkt en neemt op als voorheen), opnemen via een bus, opnemen via DIRECT, ping-pong van 1-3 naar spoor 4 (sample-precies), INSERT met MON op CUE en PGM, remix met L-R.
 2. **0.9.0 Kanaalklank**: EQ met concentrische knoppen, MIC-verzadiging, OL-lampje.
    *Handmatig*: EQ op een drumspoor sweepen zonder tikken, MIC hard aansturen tot OL.
-3. **0.11.0 Sends en masters** (0.10.0 werd de eenvoudige stand, zie `2026-10-28-eenvoudige-stand-design.md`): AUX PRE/POST, EFF, AUX- en EFF-masters naar interface-uitgangen, STEREO/AUX/EFF, MONITOR/PHONES, METER-schakelaar, EFFECT RTN (stil).
+3. **0.11.0 Sends en masters** (0.10.0 werd de eenvoudige stand, zie `2026-10-28-eenvoudige-stand-design.md`): AUX PRE/POST, EFF, AUX- en EFF-masters naar interface-uitgangen, STEREO/AUX/EFF, MONITOR/PHONES, METER-schakelaar. EFFECT RTN gaat naar fase 6, samen met de effecten.
    *Handmatig*: koptelefoonmix op uitgang 3 met de fader dicht (PRE), EFF zakt mee met de fader, STEREO/AUX/EFF wisselen.
 
 ## Testen

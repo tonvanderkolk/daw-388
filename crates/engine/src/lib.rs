@@ -16,8 +16,8 @@
 //!
 //! The mixer follows the 388's block diagram (see [`mixer`] and [`monitor`]): eight channels
 //! (MIC, LINE or the tape) with TRIM, EQ, fader and PAN, ASSIGN to eight PGM buses through the ODD
-//! and EVEN masters, track N recording bus N (or its channel's DIRECT tap), a MONITOR section
-//! and the stereo bus with the STEREO MASTER.
+//! and EVEN masters, track N recording bus N (or its channel's DIRECT tap), a MONITOR section,
+//! the stereo bus with the STEREO MASTER, and AUX and EFF to their own interface channels.
 
 mod click;
 mod eq;
@@ -27,7 +27,7 @@ mod record;
 
 pub use click::Meter;
 pub use eq::{EQ_DEFAULTS, EqBand};
-pub use mixer::{ChannelParams, MixerParams, Source};
+pub use mixer::{ChannelParams, Listen, MixerParams, Source};
 pub use monitor::{MonitorMode, MonitorParams};
 pub use record::{RecItem, RecMode, Recorder, input_ring};
 
@@ -112,7 +112,11 @@ pub enum Command {
     SetChannel(usize, ChannelParams),
     /// A track's MONITOR GAIN, PAN and mute.
     SetMonitor(usize, MonitorParams),
-    /// PGM MASTERS, MON and MONO.
+    /// SOLO per track number: while any track is soloed, only soloed tracks are heard (their
+    /// L-R channel and their MONITOR row). Buses and recordings are not affected.
+    SetSolo(usize, bool),
+    /// PGM MASTERS, MON, MONO, the AUX and EFF masters and outputs, the main output's source
+    /// and MONITOR/PHONES.
     SetMixer(MixerParams),
     /// Linear gain of the stereo master.
     SetMaster(f32),
@@ -158,6 +162,8 @@ struct Shared {
     /// Highest peak per track of what its MONITOR hears (the 388's TRK/PGM meters).
     trk_peaks: [AtomicU32; TRACKS],
     master_peaks: [AtomicU32; 2],
+    /// AUX and EFF after their masters (the METER switch).
+    send_peaks: [AtomicU32; 2],
     rec_mode: AtomicU8,
     /// Bit per track that is recording.
     recording: AtomicU8,
@@ -182,6 +188,7 @@ impl Default for Shared {
             track_peaks_post: Default::default(),
             trk_peaks: Default::default(),
             master_peaks: Default::default(),
+            send_peaks: Default::default(),
             rec_mode: AtomicU8::new(0),
             recording: AtomicU8::new(0),
             input_channels: AtomicU32::new(0),
@@ -294,6 +301,8 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         monitors: Default::default(),
         mixer: MixerParams::default(),
         bus_gains: [1.0; 2],
+        send_gains: [1.0; 2],
+        phones: 1.0,
         master: 1.0,
         master_current: 1.0,
         position: 0.0,
@@ -309,6 +318,8 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         latency_source: None,
         latency_offset: 0.0,
         armed: [false; TRACKS],
+        solo: [false; TRACKS],
+        solo_gains: [1.0; TRACKS],
         recording: [false; TRACKS],
         rec_mode: RecMode::Off,
         auto_record: false,
@@ -462,6 +473,11 @@ impl EngineHandle {
         [take_peak(&self.shared.master_peaks[0]), take_peak(&self.shared.master_peaks[1])]
     }
 
+    /// Peaks of AUX and EFF after their masters since the last call, linear.
+    pub fn take_send_peaks(&self) -> [f32; 2] {
+        [take_peak(&self.shared.send_peaks[0]), take_peak(&self.shared.send_peaks[1])]
+    }
+
     /// Free track buffers the audio thread no longer uses. Call regularly from the UI thread.
     pub fn collect_garbage(&mut self) {
         while self.garbage.pop().is_ok() {}
@@ -497,6 +513,10 @@ pub struct Engine {
     mixer: MixerParams,
     /// Smoothed ODD and EVEN master gains.
     bus_gains: [f32; 2],
+    /// Smoothed AUX and EFF master gains.
+    send_gains: [f32; 2],
+    /// Smoothed MONITOR/PHONES level.
+    phones: f32,
     master: f32,
     /// Smoothed master gain.
     master_current: f32,
@@ -515,6 +535,9 @@ pub struct Engine {
     latency_source: Option<Arc<AtomicU64>>,
     latency_offset: f64,
     armed: [bool; TRACKS],
+    solo: [bool; TRACKS],
+    /// Smoothed: 1.0 while a track is heard, 0.0 while another track is soloed.
+    solo_gains: [f32; TRACKS],
     recording: [bool; TRACKS],
     rec_mode: RecMode,
     /// REC was pressed with AUTO PUNCH on: recording follows the zero and CUE points.
@@ -758,6 +781,11 @@ impl Engine {
                         monitor.params = params;
                     }
                 }
+                Command::SetSolo(index, on) => {
+                    if let Some(solo) = self.solo.get_mut(index) {
+                        *solo = on;
+                    }
+                }
                 Command::SetMixer(params) => self.mixer = params,
                 Command::SetMaster(gain) => self.master = gain.max(0.0),
             }
@@ -863,6 +891,7 @@ impl Engine {
         let mut track_peaks_post = [0.0f32; TRACKS];
         let mut trk_peaks = [0.0f32; TRACKS];
         let mut master_peaks = [0.0f32; 2];
+        let mut send_peaks = [0.0f32; 2];
 
         for frame in out.chunks_mut(channels) {
             let playing = self.state == State::Playing;
@@ -876,7 +905,13 @@ impl Engine {
             let mut bus_heard = [0.0f32; TRACKS];
             let mut direct = [(0.0f32, 0.0f32); TRACKS];
             let mut stereo = [0.0f32; 2];
+            // AUX and EFF, mono. SOLO does not touch them: a headphone mix stays as it is.
+            let mut sends = [0.0f32; 2];
             let mut any_lr = false;
+            let any_solo = self.solo.contains(&true);
+            for (gain, solo) in self.solo_gains.iter_mut().zip(self.solo) {
+                smooth(gain, if any_solo && !solo { 0.0 } else { 1.0 });
+            }
             for index in 0..TRACKS {
                 if playing && let Some(audio) = &self.tape[index] {
                     tape[index] = sample_at(&audio.samples, self.position);
@@ -907,6 +942,8 @@ impl Engine {
                 // monitoring; an AUTO channel playing the tape stays audible.
                 let audible = if from_input && !self.monitoring { 0.0 } else { 1.0 };
                 direct[index] = (taps.direct, taps.direct * audible);
+                sends[0] += taps.aux * audible;
+                sends[1] += taps.eff * audible;
                 for (pair, on) in params.assign.into_iter().enumerate() {
                     if on {
                         bus_recorded[2 * pair] += taps.left;
@@ -917,12 +954,19 @@ impl Engine {
                 }
                 if params.lr {
                     any_lr = true;
-                    stereo[0] += taps.left * audible;
-                    stereo[1] += taps.right * audible;
+                    let heard = audible * self.solo_gains[index];
+                    stereo[0] += taps.left * heard;
+                    stereo[1] += taps.right * heard;
                 }
             }
             smooth(&mut self.bus_gains[0], self.mixer.odd);
             smooth(&mut self.bus_gains[1], self.mixer.even);
+            smooth(&mut self.send_gains[0], self.mixer.aux_master);
+            smooth(&mut self.send_gains[1], self.mixer.eff_master);
+            smooth(&mut self.phones, self.mixer.phones);
+            let (aux, eff) = (sends[0] * self.send_gains[0], sends[1] * self.send_gains[1]);
+            send_peaks[0] = send_peaks[0].max(aux.abs());
+            send_peaks[1] = send_peaks[1].max(eff.abs());
             // Track N records PGM bus N (or the channel's DIRECT tap); its MONITOR hears the input,
             // the tape or nothing, as the 388's switching logic decides.
             let mut monitor = [0.0f32; 2];
@@ -944,8 +988,9 @@ impl Engine {
                 };
                 trk_peaks[index] = trk_peaks[index].max(value.abs());
                 let gains = self.monitors[index].gains();
-                monitor[0] += value * gains[0];
-                monitor[1] += value * gains[1];
+                let heard = value * self.solo_gains[index];
+                monitor[0] += heard * gains[0];
+                monitor[1] += heard * gains[1];
             }
             // The STEREO MASTER takes the L-R channels, or the MONITOR mix when none is on L-R.
             if !any_lr {
@@ -969,7 +1014,15 @@ impl Engine {
             }
             master_peaks[0] = master_peaks[0].max(left.abs());
             master_peaks[1] = master_peaks[1].max(right.abs());
-            // The click goes to the output only: not into the master meters or a recording.
+            // The main output: STEREO, AUX or EFF, then MONITOR/PHONES.
+            let (left, right) = match self.mixer.listen {
+                Listen::Stereo => (left, right),
+                Listen::Aux => (aux, aux),
+                Listen::Eff => (eff, eff),
+            };
+            let (left, right) = (left * self.phones, right * self.phones);
+            // The click goes to the output only, at its own volume: not into the master meters,
+            // a recording or PHONES.
             let click = self.click.next();
             let (left, right) = (left + click, right + click);
             match frame {
@@ -980,6 +1033,12 @@ impl Engine {
                     rest.fill(0.0);
                 }
                 [] => {}
+            }
+            // AUX and EFF on their own interface channels; added, so they may share one.
+            for (channel, value) in [(self.mixer.aux_out, aux), (self.mixer.eff_out, eff)] {
+                if let Some(slot) = channel.and_then(|c| frame.get_mut(c)) {
+                    *slot += value;
+                }
             }
         }
 
@@ -1003,6 +1062,9 @@ impl Engine {
             store_peak(cell, peak);
         }
         for (cell, peak) in self.shared.master_peaks.iter().zip(master_peaks) {
+            store_peak(cell, peak);
+        }
+        for (cell, peak) in self.shared.send_peaks.iter().zip(send_peaks) {
             store_peak(cell, peak);
         }
     }
@@ -1439,6 +1501,62 @@ mod tests {
     }
 
     #[test]
+    fn aux_and_eff_go_to_their_own_outputs_through_their_masters() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 100_000])));
+        handle.send(Command::SetChannel(0, ChannelParams { aux: 1.0, aux_pre: true, eff: 0.5, ..ChannelParams::default() }));
+        handle.send(Command::SetMixer(MixerParams { aux_master: 0.5, aux_out: Some(2), eff_out: Some(3), ..MixerParams::default() }));
+        let mut scratch = vec![0.0; 4 * 20_000];
+        engine.render(&mut scratch, 4);
+        handle.play();
+        let mut out = vec![0.0; 4 * 4];
+        engine.render(&mut out, 4);
+        assert!((out[4 * 3 + 2] - 0.25).abs() < 1e-4, "AUX: 0.5 times send 1 times master 0.5: {out:?}");
+        assert!((out[4 * 3 + 3] - 0.25).abs() < 1e-4, "EFF: 0.5 times send 0.5 times master 1: {out:?}");
+        let peaks = handle.take_send_peaks();
+        assert!((peaks[0] - 0.25).abs() < 1e-4 && (peaks[1] - 0.25).abs() < 1e-4, "for the METER switch: {peaks:?}");
+    }
+
+    #[test]
+    fn listen_puts_aux_on_the_main_output_and_phones_leaves_the_click_alone() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.5; 100_000])));
+        handle.send(Command::SetChannel(0, ChannelParams { aux: 1.0, aux_pre: true, lr: true, ..ChannelParams::default() }));
+        handle.send(Command::SetMixer(MixerParams { listen: Listen::Aux, phones: 0.5, ..MixerParams::default() }));
+        settle(&mut engine);
+        handle.play();
+        let out = run(&mut engine, 4);
+        assert!((out[6] - 0.25).abs() < 1e-4 && (out[7] - 0.25).abs() < 1e-4, "AUX in mono, times PHONES: {out:?}");
+
+        // On empty tape the output is the click alone: PHONES must not change it.
+        let click_peak = |phones: f32| {
+            let (mut handle, mut engine) = create(48_000);
+            handle.send(Command::SetMixer(MixerParams { phones, ..MixerParams::default() }));
+            handle.send(Command::SetClick(true));
+            handle.send(Command::SetClickAlways(true));
+            settle(&mut engine);
+            handle.play();
+            run(&mut engine, 48_000).iter().fold(0.0f32, |p, s| p.max(s.abs()))
+        };
+        let (full, half) = (click_peak(1.0), click_peak(0.5));
+        assert!(full > 0.0 && (full - half).abs() < 1e-6, "{full} {half}");
+    }
+
+    #[test]
+    fn a_live_source_without_software_monitoring_stays_off_the_sends() {
+        let (mut handle, mut engine, mut tx, _recorder) = with_input();
+        handle.send(Command::SetMonitoring(false));
+        let channel = ChannelParams { source: Source::Line, input: Some(1), aux: 1.0, aux_pre: true, eff: 1.0, ..ChannelParams::default() };
+        handle.send(Command::SetChannel(0, channel));
+        handle.send(Command::SetMixer(MixerParams { listen: Listen::Aux, aux_out: Some(1), ..MixerParams::default() }));
+        settle(&mut engine);
+        feed(&mut tx, 0, 11);
+        let out = run(&mut engine, 10);
+        assert!(out.iter().all(|s| *s == 0.0), "{out:?}");
+        assert_eq!(handle.take_send_peaks(), [0.0, 0.0]);
+    }
+
+    #[test]
     fn count_in_waits_and_then_records_on_the_beat() {
         let (mut handle, mut engine, mut tx, mut recorder) = with_input();
         handle.send(Command::SetChannel(0, line(0)));
@@ -1764,6 +1882,41 @@ mod tests {
         handle.send(Command::SetChannel(1, ChannelParams { lr: true, pan: -1.0, ..ChannelParams::default() }));
         settle(&mut engine);
         assert!((run(&mut engine, 2)[2] - 0.5).abs() < 1e-4, "only the L-R channel");
+    }
+
+    #[test]
+    fn solo_only_changes_what_is_heard() {
+        let (mut handle, mut engine, _tx, mut recorder) = with_input();
+        handle.send(Command::SetTrack(0, audio(vec![0.25; 100_000])));
+        handle.send(Command::SetTrack(1, audio(vec![0.5; 100_000])));
+        handle.send(Command::SetTrack(2, audio(vec![0.125; 100_000])));
+        // Channels 1 and 2 on L-R and on bus 4; track 4 records the bus.
+        let both = ChannelParams { lr: true, pan: -1.0, ..ChannelParams::default() };
+        handle.send(Command::SetChannel(0, both));
+        handle.send(Command::SetChannel(1, ChannelParams { assign: [false, true, false, false], pan: 1.0, ..both }));
+        handle.send(Command::SetArmed(3, true));
+        handle.send(Command::SetSolo(1, true));
+        settle(&mut engine);
+        handle.play();
+        let out = run(&mut engine, 2);
+        assert!((out[2] - 0.0).abs() < 1e-4 && (out[3] - 0.5).abs() < 1e-4, "only the soloed L-R channel: {out:?}");
+        handle.send(Command::Record);
+        run(&mut engine, 10);
+        assert!(samples_of(&takes(&mut recorder, 3)).iter().all(|s| (s - 0.5).abs() < 1e-4), "the bus records as before");
+
+        // Without L-R, solo works on the MONITOR rows by track number.
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.25; 100_000])));
+        handle.send(Command::SetTrack(1, audio(vec![0.5; 100_000])));
+        handle.send(Command::SetMonitor(0, left()));
+        handle.send(Command::SetMonitor(1, left()));
+        handle.send(Command::SetSolo(0, true));
+        settle(&mut engine);
+        handle.play();
+        assert!((run(&mut engine, 2)[2] - 0.25).abs() < 1e-4, "only track 1 through the monitor");
+        handle.send(Command::SetSolo(0, false));
+        settle(&mut engine);
+        assert!((run(&mut engine, 2)[2] - 0.75).abs() < 1e-4, "no solo: everything again");
     }
 
     #[test]

@@ -301,7 +301,7 @@ pub fn open(host: &cpal::Host, request: &OutputRequest) -> Result<(EngineHandle,
     let stream = built.map_err(|e| e.to_string())?;
     stream.play().map_err(|e| e.to_string())?;
     log::info!("audio output: {name}, {} Hz, buffer {:?}, {} channels, {format}", handle.sample_rate(), buffer_frames, config.channels);
-    let info = OutputInfo { device: name, sample_rate: handle.sample_rate(), buffer_frames, input, input_error };
+    let info = OutputInfo { device: name, sample_rate: handle.sample_rate(), buffer_frames, channels: config.channels, input, input_error };
     Ok((handle, info, Output::Stream { _stream: Box::new(stream), _input: input_stream.map(Box::new), lost }))
 }
 

@@ -1,6 +1,6 @@
 //! The 388's input channels: a source (MIC, LINE or the tape in the RMX position), TRIM, the
-//! MIC preamp, EQ, the channel fader, PAN and the taps the buses take from. The sends follow in
-//! 0.10.
+//! MIC preamp, EQ, the channel fader, PAN, the AUX and EFF sends and the taps the buses take
+//! from.
 
 use crate::eq::{EQ_DEFAULTS, Eq, EqBand};
 use crate::monitor::MonitorMode;
@@ -34,6 +34,12 @@ pub struct ChannelParams {
     /// -1.0 is hard left (the odd buses), 1.0 hard right (the even buses).
     pub pan: f32,
     pub mute: bool,
+    /// Linear AUX send. PRE takes it after TRIM and the preamp (before EQ, fader and mute), POST
+    /// after fader and mute.
+    pub aux: f32,
+    pub aux_pre: bool,
+    /// Linear EFF send, after fader and mute.
+    pub eff: f32,
     /// ASSIGN 1-2, 3-4, 5-6 and 7-8.
     pub assign: [bool; 4],
     /// ASSIGN L-R: to the stereo bus.
@@ -56,6 +62,9 @@ impl Default for ChannelParams {
             fader: 1.0,
             pan: 0.0,
             mute: false,
+            aux: 0.0,
+            aux_pre: false,
+            eff: 0.0,
             assign: [false; 4],
             lr: false,
             direct: false,
@@ -71,6 +80,15 @@ impl ChannelParams {
     }
 }
 
+/// What the main output carries: the stereo master, or AUX or EFF in mono on both sides.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Listen {
+    #[default]
+    Stereo,
+    Aux,
+    Eff,
+}
+
 /// The master section's settings, sent whole with [`crate::Command::SetMixer`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MixerParams {
@@ -80,11 +98,31 @@ pub struct MixerParams {
     pub mon: MonitorMode,
     /// Left and right averaged on both sides after the STEREO MASTER.
     pub mono: bool,
+    /// Linear gains of the AUX MASTER and EFF MASTER.
+    pub aux_master: f32,
+    pub eff_master: f32,
+    pub listen: Listen,
+    /// Linear MONITOR/PHONES level of the main output; the click comes after it.
+    pub phones: f32,
+    /// The interface channels (from 0) that carry AUX and EFF, if any.
+    pub aux_out: Option<usize>,
+    pub eff_out: Option<usize>,
 }
 
 impl Default for MixerParams {
     fn default() -> Self {
-        Self { odd: 1.0, even: 1.0, mon: MonitorMode::Cue, mono: false }
+        Self {
+            odd: 1.0,
+            even: 1.0,
+            mon: MonitorMode::Cue,
+            mono: false,
+            aux_master: 1.0,
+            eff_master: 1.0,
+            listen: Listen::Stereo,
+            phones: 1.0,
+            aux_out: None,
+            eff_out: None,
+        }
     }
 }
 
@@ -125,6 +163,9 @@ pub(crate) struct Taps {
     pub(crate) direct: f32,
     /// After fader and mute, before PAN: the POST meter.
     pub(crate) post: f32,
+    /// The AUX and EFF sends, mono.
+    pub(crate) aux: f32,
+    pub(crate) eff: f32,
     /// After PAN: left to the odd buses, right to the even ones; both to the stereo bus.
     pub(crate) left: f32,
     pub(crate) right: f32,
@@ -136,6 +177,8 @@ pub(crate) struct Channel {
     pub(crate) params: ChannelParams,
     trim: f32,
     current: [f32; 2],
+    /// Smoothed AUX and EFF sends.
+    sends: [f32; 2],
     eq: Eq,
 }
 
@@ -143,7 +186,7 @@ impl Channel {
     /// TRIM starts at its target so a recording through DIRECT is exact from the first sample;
     /// the fader fades in, as before.
     pub(crate) fn new(sample_rate: u32) -> Self {
-        Self { params: ChannelParams::default(), trim: 1.0, current: [0.0; 2], eq: Eq::new(sample_rate) }
+        Self { params: ChannelParams::default(), trim: 1.0, current: [0.0; 2], sends: [0.0; 2], eq: Eq::new(sample_rate) }
     }
 
     /// Run one sample of the channel's source through it. `from_input`: the sample comes from
@@ -153,6 +196,8 @@ impl Channel {
         let target = if self.params.mute { [0.0; 2] } else { pan_gains(self.params.fader, self.params.pan) };
         smooth(&mut self.current[0], target[0]);
         smooth(&mut self.current[1], target[1]);
+        smooth(&mut self.sends[0], self.params.aux);
+        smooth(&mut self.sends[1], self.params.eff);
         // With AUTO the tape skips TRIM and the preamp: they belong to the input.
         let gained = if from_input || !self.params.auto { sample * self.trim } else { sample };
         let shaped = if from_input && self.params.source == Source::Mic { preamp(gained) } else { gained };
@@ -165,7 +210,9 @@ impl Channel {
         };
         // Constant-power pan keeps left² + right² equal to the fader gain squared.
         let post = pre * self.current[0].hypot(self.current[1]);
-        Taps { pre, direct, post, left: pre * self.current[0], right: pre * self.current[1] }
+        let aux = self.sends[0] * if self.params.aux_pre { shaped } else { post };
+        let eff = self.sends[1] * post;
+        Taps { pre, direct, post, aux, eff, left: pre * self.current[0], right: pre * self.current[1] }
     }
 }
 
@@ -260,6 +307,32 @@ mod tests {
         let auto = ChannelParams { source: Source::Remix, auto: true, input: Some(0), ..ChannelParams::default() };
         assert!(auto.is_live(1));
         assert!(!ChannelParams { input: None, ..auto }.is_live(1));
+    }
+
+    /// The taps after `n` samples of a constant `x` from the input.
+    fn steady(channel: &mut Channel, x: f32, n: usize) -> Taps {
+        let mut taps = Taps::default();
+        for _ in 0..n {
+            taps = channel.process(x, true);
+        }
+        taps
+    }
+
+    #[test]
+    fn aux_pre_ignores_eq_fader_and_mute_and_post_follows_the_fader_not_the_pan() {
+        let mut eq = EQ_DEFAULTS;
+        eq[1].gain_db = 15.0;
+        let base = ChannelParams { source: Source::Line, aux: 0.5, eff: 0.25, fader: 0.5, pan: -1.0, eq, ..ChannelParams::default() };
+        let mut pre = settled(ChannelParams { aux_pre: true, mute: true, ..base });
+        let taps = steady(&mut pre, 1.0, 1);
+        assert!((taps.aux - 0.5).abs() < 1e-4, "PRE: TRIM only, then the send, at once: {}", taps.aux);
+        assert_eq!(taps.eff, 0.0, "EFF is after mute");
+
+        // DC passes a peaking EQ unchanged, so after a while the constant shows the fader.
+        let mut post = settled(ChannelParams { aux_pre: false, ..base });
+        let taps = steady(&mut post, 1.0, 5_000);
+        assert!((taps.aux - 0.25).abs() < 1e-3, "POST: fader 0.5 times send 0.5, PAN does not count: {}", taps.aux);
+        assert!((taps.eff - 0.125).abs() < 1e-3, "EFF: fader 0.5 times send 0.25: {}", taps.eff);
     }
 
     #[test]

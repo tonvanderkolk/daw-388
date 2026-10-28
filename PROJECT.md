@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.10.0
+Versie: 0.11.0
 Laatst bijgewerkt: 28-10-2026
 
 ## Doel
@@ -48,7 +48,7 @@ Mijn liedje/
 └── backups/            # eerdere versies van project.json (laatste 10)
 ```
 
-- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 2), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `mixer` (`mode` simple/388, ontbreekt: 388; `odd_db`, `even_db`, `mon` pgm/cue, `mono`) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `eq` met `low`, `mid` en `high` (elk `freq_hz` en `gain_db`; ontbreekt `eq`, dan is hij vlak), `assign`, `lr`, `direct`, `auto`) en `monitor` (`gain_db`, `pan`, `mute`).
+- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 2), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `mixer` (`mode` simple/388, ontbreekt: 388; `odd_db`, `even_db`, `mon` pgm/cue, `mono`, `aux_master_db`, `eff_master_db`, `phones_db`, `listen` stereo/aux/eff, `meter` lr/aux_eff) en per spoor `number`, `file` (relatief pad), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `aux_db`, `aux_pre`, `eff_db` (ontbreken ze, dan zijn de sends dicht: `SEND_CLOSED_DB`, -60 dB), `eq` met `low`, `mid` en `high` (elk `freq_hz` en `gain_db`; ontbreekt `eq`, dan is hij vlak), `assign`, `lr`, `direct`, `auto`) en `monitor` (`gain_db`, `pan`, `mute`).
 - Een project met formaatversie 1 (0.7.0 en ouder) opent als eenvoudig project: fader, pan en mute blijven de kanaalfader, elk kanaal krijgt de eenvoudige instelling (LINE, AUTO, DIRECT, L-R) en houdt zijn ingang. Een project van 0.8.0 of 0.9.0 (zonder `mode`) opent in de 388-stand.
 - Opslaan kopieert audio van buiten het project naar `audio/`. Het origineel blijft staan. Bij een naamconflict krijgt de kopie een achtervoegsel (`take-2.wav`).
 - `project.json` wordt eerst naar een tijdelijk bestand geschreven en daarna hernoemd, zodat een crash nooit een half bestand achterlaat.
@@ -105,6 +105,7 @@ Twee standen, per project, met de schakelaar Eenvoudig | 388 in de bovenbalk:
 
 - **Eenvoudig** (standaard voor een nieuw project): per spoor één strook met ingang (MIC of LINE), TRIM, EQ, PAN, REC, MUTE en fader. Elk kanaal staat op AUTO met DIRECT en L-R; de PGM-bussen, de MONITOR-sectie en MON zijn verborgen.
 - **388**: de volledige routering hieronder. Van Eenvoudig naar 388 verandert niets aan het geluid. Van 388 naar Eenvoudig vraagt de app eerst als de 388-routering daarbij verdwijnt; fader, PAN, MUTE, EQ, TRIM en ingang blijven, RMX wordt LINE.
+- **SOLO** per spoor (een DAW-gewoonte, de 388 heeft hem niet): zolang er een spoor gesoloed is, hoor je alleen de gesoloode sporen, via hun L-R-kanaal en hun MONITOR-rij. Bussen en opnames merken er niets van. SOLO wordt niet in het project bewaard en vloeit kort over, zodat er geen tik is.
 - **AUTO** (een afwijking van de 388, zoals DIRECT): het kanaal speelt de band, en de ingang zodra zijn spoor de ingang hoort (op REC, met INSERT pas vanaf het inprikpunt). De ingang gaat door TRIM en de voorversterker, dan naar DIRECT, dan door de EQ; de band gaat alleen door de EQ. De opname krijgt dus geen EQ, en bij het afspelen zit hij er één keer op. Een AUTO-kanaal zonder ingang speelt de band en neemt stilte op.
 
 Naar het blokschema en Features and Controls in de handleiding van de 388:
@@ -121,7 +122,10 @@ Naar het blokschema en Features and Controls in de handleiding van de 388:
 - EQ: drie RBJ-piekfilters met Q 0,9, elk ±15 dB. LOW 50 Hz tot 1 kHz (standaard 100 Hz), MID 500 Hz tot 5 kHz (1 kHz), HIGH 2,5 tot 15 kHz (8 kHz). De engine krijgt frequentie en gain, vloeit ze per sample over en rekent elke 32 samples de coëfficiënten opnieuw uit op zijn eigen samplerate. Een band die vlak staat wordt overgeslagen, dus een vlakke EQ laat het signaal bit voor bit door.
 - In de strook is elke band één concentrische knop: slepen in het midden is gain, op de ring frequentie (logaritmisch). Dubbelklik zet het aangeklikte deel terug.
 - OL: de PRE-piek van het kanaal (na de EQ) boven -3 dBFS, 0,5 s nagloeiend. De UI leidt hem af uit de PRE-meterwaarde; er is geen apart signaal voor.
-- De sends (AUX en EFF) volgen in 0.11.0.
+- Sends, in beide standen: AUX met PRE (na TRIM en voorversterker, voor EQ, fader en MUTE) of POST (na fader en MUTE, voor PAN), en EFF na fader en MUTE. Ze vloeien over zoals de fader. Een live bron gaat bij meeluisteren via de interface ook niet naar AUX of EFF. SOLO raakt de sends niet, zodat een koptelefoonmix blijft staan.
+- AUX MASTER en EFF MASTER gaan elk naar een eigen interface-uitgang (vanaf 3; app-voorkeuren `aux_output` en `eff_output`). Een uitgang die het apparaat niet heeft wordt overgeslagen. AUX en EFF op dezelfde uitgang worden opgeteld.
+- Hoofduitgang: STEREO, AUX of EFF (mono op beide kanten), dan MONITOR/PHONES, dan de klik met zijn eigen volume. De stereometers meten voor PHONES; met METER op AUX-EFF tonen ze AUX en EFF na hun master.
+- EFFECT RTN komt met de effecten in fase 6.
 
 ### Routing in de praktijk
 
@@ -144,7 +148,7 @@ Audio wordt op een achtergrondthread gedecodeerd en naar de samplerate van het a
 
 ## Audio-uitvoer
 
-- De gekozen uitvoer (apparaat, samplerate, buffergrootte) is een app-voorkeur, geen projectinstelling. Ze staat in `settings.json` in de configuratiemap van het systeem (macOS: `~/Library/Application Support/DAW 388/`, Windows: `%APPDATA%\DAW 388\`).
+- De gekozen uitvoer (apparaat, samplerate, buffergrootte, en de uitgangen voor AUX en EFF) is een app-voorkeur, geen projectinstelling. Ze staat in `settings.json` in de configuratiemap van het systeem (macOS: `~/Library/Application Support/DAW 388/`, Windows: `%APPDATA%\DAW 388\`).
 - Openen gaat in deze volgorde: het gekozen apparaat, anders het standaardapparaat (met een melding), anders de stille klok. De stille klok laat de engine in echte tijd draaien zonder geluid, zodat transport, teller en meters blijven werken.
 - Meldt cpal dat het apparaat weg is (`DeviceNotAvailable` of `StreamInvalidated`), dan opent de app meteen opnieuw volgens die volgorde, op dezelfde bandpositie. Zolang de uitvoer niet het gekozen apparaat is, kijkt de app elke 2 seconden of het terug is en schakelt dan terug.
 - Een samplerate die het apparaat niet biedt, of een buffergrootte buiten zijn bereik, valt terug op de standaard van het apparaat.
@@ -153,7 +157,7 @@ Audio wordt op een achtergrondthread gedecodeerd en naar de samplerate van het a
 
 - Import van WAV en AIFF (ongecomprimeerd). Nog geen FLAC, MP3 of andere formaten.
 - Samplerate-conversie gebruikt Hermite-interpolatie: prima voor afluisteren, voor export komt een betere resampler.
-- Nog geen sends, effecten of tape-model. Pingpong kan alleen in de 388-stand. Zie de roadmap.
+- Nog geen effecten of tape-model. Pingpong kan alleen in de 388-stand. Zie de roadmap.
 - Een bus die een live ingang en de band tegelijk opneemt, wordt gecompenseerd voor de ingang; het banddeel komt dan de apparaatlatency te vroeg op het nieuwe spoor.
 - Op macOS vraagt het systeem bij het eerste gebruik van een ingang om toegang tot de microfoon. Zolang de app als los programma vanuit de terminal draait, hoort die toestemming bij de terminal.
 - Op macOS is het standaard app-menu uitgezet, zodat Cmd+Q via de opslaan-vraag loopt. Afsluiten door uitloggen of herstarten van de Mac gaat nog wel buiten die vraag om; autosave beperkt dan het verlies tot de laatste 30 seconden.

@@ -77,13 +77,21 @@ pub enum ChannelSource {
     Rmx,
 }
 
+/// A closed send: the bottom of its knob, which the UI shows as -inf.
+pub const SEND_CLOSED_DB: f32 = -60.0;
+
 /// A mixer channel in `project.json` (the fader, pan, mute and input stay on [`TrackEntry`]).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChannelEntry {
     pub source: ChannelSource,
     pub trim_db: f32,
     pub eq: EqEntry,
+    /// AUX send, PRE (before EQ and fader) or POST; closed by default.
+    pub aux_db: f32,
+    pub aux_pre: bool,
+    /// EFF send, after the fader; closed by default.
+    pub eff_db: f32,
     /// ASSIGN 1-2, 3-4, 5-6 and 7-8.
     pub assign: [bool; 4],
     /// ASSIGN L-R: to the stereo bus.
@@ -92,6 +100,23 @@ pub struct ChannelEntry {
     pub direct: bool,
     /// AUTO: the tape, and the input while the track hears it.
     pub auto: bool,
+}
+
+impl Default for ChannelEntry {
+    fn default() -> Self {
+        Self {
+            source: ChannelSource::default(),
+            trim_db: 0.0,
+            eq: EqEntry::default(),
+            aux_db: SEND_CLOSED_DB,
+            aux_pre: false,
+            eff_db: SEND_CLOSED_DB,
+            assign: [false; 4],
+            lr: false,
+            direct: false,
+            auto: false,
+        }
+    }
 }
 
 impl ChannelEntry {
@@ -146,6 +171,25 @@ pub enum MonSwitch {
     Cue,
 }
 
+/// What the main output carries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListenSwitch {
+    #[default]
+    Stereo,
+    Aux,
+    Eff,
+}
+
+/// What the two stereo meters show.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeterSwitch {
+    #[default]
+    Lr,
+    AuxEff,
+}
+
 /// Which routing the mixer shows: one strip per track, or the 388's buses and MONITOR section.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Routing {
@@ -168,6 +212,12 @@ pub struct MixerEntry {
     pub even_db: f32,
     pub mon: MonSwitch,
     pub mono: bool,
+    pub aux_master_db: f32,
+    pub eff_master_db: f32,
+    /// MONITOR/PHONES: the main output's level.
+    pub phones_db: f32,
+    pub listen: ListenSwitch,
+    pub meter: MeterSwitch,
 }
 
 /// How REPEAT (and RTZ and STC) reach their point.
@@ -512,6 +562,9 @@ mod tests {
                     source: ChannelSource::Mic,
                     trim_db: 12.0,
                     eq: EqEntry { mid: BandEntry { freq_hz: 2500.0, gain_db: -4.5 }, ..EqEntry::default() },
+                    aux_db: if i == 1 { -6.0 } else { SEND_CLOSED_DB },
+                    aux_pre: i == 1,
+                    eff_db: if i == 1 { -12.0 } else { SEND_CLOSED_DB },
                     assign: [false, i == 1, false, false],
                     lr: i == 0,
                     direct: i == 1,
@@ -554,7 +607,18 @@ mod tests {
                     auto_punch: true,
                 },
                 metronome: MetronomeSettings { click: true, always: true, bpm: 96.5, beats: 6, unit: 8, volume_db: -12.0, count_in: 2 },
-                mixer: MixerEntry { mode: Routing::Simple, odd_db: -2.0, even_db: 1.0, mon: MonSwitch::Pgm, mono: true },
+                mixer: MixerEntry {
+                    mode: Routing::Simple,
+                    odd_db: -2.0,
+                    even_db: 1.0,
+                    mon: MonSwitch::Pgm,
+                    mono: true,
+                    aux_master_db: -1.0,
+                    eff_master_db: -2.0,
+                    phones_db: -3.0,
+                    listen: ListenSwitch::Aux,
+                    meter: MeterSwitch::AuxEff,
+                },
             },
             &tracks([Some(kick.clone()), None]),
             Backup::Always,
@@ -590,6 +654,9 @@ mod tests {
                 source: ChannelSource::Mic,
                 trim_db: 12.0,
                 eq: EqEntry { mid: BandEntry { freq_hz: 2500.0, gain_db: -4.5 }, ..EqEntry::default() },
+                aux_db: -6.0,
+                aux_pre: true,
+                eff_db: -12.0,
                 assign: [false, true, false, false],
                 lr: false,
                 direct: true,
@@ -597,7 +664,21 @@ mod tests {
             }
         );
         assert_eq!(opened.file.tracks[0].monitor, MonitorEntry { gain_db: -4.0, pan: 0.25, mute: true });
-        assert_eq!(opened.file.mixer, MixerEntry { mode: Routing::Simple, odd_db: -2.0, even_db: 1.0, mon: MonSwitch::Pgm, mono: true });
+        assert_eq!(
+            opened.file.mixer,
+            MixerEntry {
+                mode: Routing::Simple,
+                odd_db: -2.0,
+                even_db: 1.0,
+                mon: MonSwitch::Pgm,
+                mono: true,
+                aux_master_db: -1.0,
+                eff_master_db: -2.0,
+                phones_db: -3.0,
+                listen: ListenSwitch::Aux,
+                meter: MeterSwitch::AuxEff,
+            }
+        );
         assert_eq!(opened.file.version, FORMAT_VERSION, "a format 2 file is not upgraded again");
         assert!(crate::load_wav(&opened.track_source(&opened.file.tracks[0]).unwrap_or_default()).is_ok());
         assert_eq!(project_name(&dir), "Mijn liedje");
@@ -673,6 +754,18 @@ mod tests {
         assert_eq!(one.channel, ChannelEntry::simple(ChannelSource::Line));
         assert_eq!(two.channel, ChannelEntry::simple(ChannelSource::Line));
         assert_eq!(two.input, Some(2));
+    }
+
+    #[test]
+    fn sends_start_closed_and_the_master_section_at_its_defaults() {
+        let channel: ChannelEntry = serde_json::from_str(r#"{"source":"line"}"#).unwrap_or_default();
+        assert_eq!((channel.aux_db, channel.eff_db, channel.aux_pre), (SEND_CLOSED_DB, SEND_CLOSED_DB, false));
+        assert_eq!(ChannelEntry::default().aux_db, SEND_CLOSED_DB);
+        assert_eq!(ChannelEntry::simple(ChannelSource::Line).eff_db, SEND_CLOSED_DB);
+        let mixer: MixerEntry = serde_json::from_str("{}").unwrap_or_default();
+        assert_eq!((mixer.aux_master_db, mixer.eff_master_db, mixer.phones_db), (0.0, 0.0, 0.0));
+        assert_eq!((mixer.listen, mixer.meter), (ListenSwitch::Stereo, MeterSwitch::Lr));
+        assert_eq!(serde_json::to_string(&MeterSwitch::AuxEff).unwrap_or_default(), r#""aux_eff""#);
     }
 
     #[test]
