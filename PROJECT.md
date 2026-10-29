@@ -1,7 +1,7 @@
 # PROJECT - DAW 388
 
-Versie: 0.25.0
-Laatst bijgewerkt: 29-10-2026
+Versie: 0.25.1
+Laatst bijgewerkt: 30-10-2026
 
 ## Doel
 
@@ -205,10 +205,12 @@ Een bron (audiobestand) wordt op een achtergrondthread gedecodeerd en naar de sa
 - Het tape-karakter zit alleen in de weergave; bij de export kies je of het meegaat. Pingpong kan alleen in de 388-stand. Zie de roadmap.
 - Een bus die een live ingang en de band tegelijk opneemt, wordt gecompenseerd voor de ingang; het banddeel komt dan de apparaatlatency te vroeg op het nieuwe spoor.
 - Op macOS vraagt het systeem bij het eerste gebruik van een ingang om toegang tot de microfoon. Zolang de app als los programma vanuit de terminal draait, hoort die toestemming bij de terminal.
+- De app is niet ondertekend (geen Apple Developer-account). Op macOS kiest de gebruiker bij de eerste keer openen Gereed (niet Verplaats naar prullenmand) en daarna Open Anyway in Privacy en beveiliging; de stappen staan in de README en bij elke release. Versies die ooit wel ondertekend en genotariseerd worden, blijven werken als het lidmaatschap later stopt.
+- Windows: 10 en 11, 64-bit. Windows 7 en 8 kan niet (Rust ondersteunt ze niet meer). Op Windows op ARM draait de x64-versie via emulatie, niet getest. Audio loopt via WASAPI; ASIO wordt nog niet ondersteund, dus de vertraging bij opnemen kan hoger zijn dan in een DAW met ASIO.
 - Op macOS is het standaard app-menu uitgezet, zodat Cmd+Q via de opslaan-vraag loopt. Afsluiten door uitloggen of herstarten van de Mac gaat nog wel buiten die vraag om; autosave beperkt dan het verlies tot de laatste 30 seconden.
 
 ## Versiebeheer
 
-- GitHub: privé repo `tonvanderkolk/daw-388`
+- GitHub: privé repo `tonvanderkolk/daw-388`, met een Engelse beschrijving. Ton maakt hem pas openbaar na verder testen; tot die tijd kan alleen hij de release downloaden.
 - `design/ref/` (handleiding en foto's) staat in `.gitignore` en hoort niet in de repo.
 - Wachtwoorden en tokens horen in `CREDENTIALS.md` (staat in `.gitignore`).

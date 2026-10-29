@@ -4,7 +4,11 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-10-30
+
 ### Gewijzigd
+- De installatie op macOS staat in de README en bij de release in vier stappen: bij de waarschuwing op Done (Gereed) klikken, niet op Move to Trash, en daarna Open Anyway in Privacy en beveiliging. Met het `xattr`-commando als alternatief voor de Terminal. De release v0.25.0 heeft de nieuwe uitleg ook gekregen.
+- De beschrijving van de GitHub-repository is Engels.
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
 ## [0.25.0] - 2026-10-29
