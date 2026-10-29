@@ -15,8 +15,9 @@ use crate::TRACKS;
 /// What the audio thread hands the writer for one track.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RecItem {
-    /// A take starts at this tape position (in samples at the engine rate).
-    Start(f64),
+    /// A take starts at this tape position (in samples at the engine rate), with the tape
+    /// running at this speed (1.0 normal, VARI otherwise; fixed for the take).
+    Start(f64, f64),
     Sample(f32),
     Stop,
 }

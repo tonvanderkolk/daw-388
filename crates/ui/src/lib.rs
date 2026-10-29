@@ -1446,10 +1446,6 @@ impl DawApp {
 
     /// REC: check what recording needs, then start it.
     fn record(&mut self) {
-        if self.vari && self.pitch_percent.abs() > 0.001 {
-            self.status = "Recording runs at normal speed: set PITCH to FIX or to 0%".into();
-            return;
-        }
         if self.project_dir.is_none() {
             self.status = "Save the project first: the take goes into the project folder".into();
             if !self.save_as() {
@@ -1459,6 +1455,11 @@ impl DawApp {
         let silent: Vec<String> = (0..TRACKS).filter(|&i| self.tracks[i].armed && !self.feeds(i)).map(|i| (i + 1).to_string()).collect();
         if !silent.is_empty() {
             self.status = format!("Note: track {} receives nothing and records silence", silent.join(", "));
+        }
+        if self.vari && self.pitch_percent.abs() > 0.001 && silent.is_empty() {
+            // As on tape: what is recorded fast plays back slower and lower, and the other way round.
+            let (way, sound) = if self.pitch_percent > 0.0 { ("+", "slower and lower") } else { ("", "faster and higher") };
+            self.status = format!("Recording at {way}{:.1}%: plays back {sound} at normal speed", self.pitch_percent);
         }
         self.engine_send(Command::Record);
     }
@@ -1832,9 +1833,11 @@ impl DawApp {
             // Row 4: pitch, tape and export.
             let row = top + 136.0;
             tag(ui, egui::pos2(col(0), row + 5.0), egui::Align2::CENTER_CENTER, "PITCH");
+            // The speed is fixed while recording: the knob and VARI/FIX wait for the take to end.
+            let recording = self.engine.as_ref().is_some_and(|e| e.rec_mode() != RecMode::Off);
             let vari = self.vari;
             let knob = place(ui, col(0), row + 13.0, vec2(30.0, 30.0), |ui| {
-                knob(ui, &mut self.pitch_percent, -PITCH_PERCENT..=PITCH_PERCENT, 0.0, palette::CREAM, 30.0, vari)
+                knob(ui, &mut self.pitch_percent, -PITCH_PERCENT..=PITCH_PERCENT, 0.0, palette::CREAM, 30.0, vari && !recording)
             })
             .on_hover_text("PITCH: speed and pitch, plus or minus 15% (double-click: 0%)");
             if knob.changed() || knob.double_clicked() {
@@ -1844,9 +1847,11 @@ impl DawApp {
                 [(true, "VARI", "The PITCH knob works"), (false, "FIX", "Normal speed, the PITCH knob is fixed")].into_iter().enumerate()
             {
                 let on = vari == is_vari;
-                if place(ui, col(1 + i), row, key_box, |ui| KeyCap::new(label, keys::SMALL).lamp(on, palette::LED_GREEN).show(ui))
-                    .on_hover_text(tip)
-                    .clicked()
+                if place(ui, col(1 + i), row, key_box, |ui| {
+                    ui.add_enabled_ui(!recording, |ui| KeyCap::new(label, keys::SMALL).lamp(on, palette::LED_GREEN).show(ui)).inner
+                })
+                .on_hover_text(tip)
+                .clicked()
                     && !on
                 {
                     self.vari = is_vari;
@@ -3425,7 +3430,7 @@ mod tests {
     fn send_take(app: &DawApp, files: &Path, track: usize, start: f64, frames: usize, rate: u32) -> PathBuf {
         let take = files.join(format!("take-{track}-{start}.wav"));
         write_take(&take, 0.5, frames);
-        let _ = app.takes_tx.send(TakeDone { track, start, path: take.clone(), frames, rate });
+        let _ = app.takes_tx.send(TakeDone { track, start, path: take.clone(), frames, rate, speed: 1.0 });
         take
     }
 

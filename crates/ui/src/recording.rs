@@ -20,12 +20,15 @@ pub struct TakeDone {
     pub path: PathBuf,
     pub frames: usize,
     pub rate: u32,
+    /// The tape speed during the take (1.0 normal; VARI otherwise).
+    pub speed: f64,
 }
 
 struct OpenTake {
     writer: hound::WavWriter<BufWriter<File>>,
     path: PathBuf,
     start: f64,
+    speed: f64,
     frames: usize,
 }
 
@@ -42,13 +45,13 @@ impl TakeWriter {
         Self { dir, rate, open: (0..TRACKS).map(|_| None).collect(), counter: 0 }
     }
 
-    fn start(&mut self, track: usize, start: f64) {
+    fn start(&mut self, track: usize, start: f64, speed: f64) {
         self.counter += 1;
         let path = self.dir.join(format!("take-{}-{}-{}.wav", std::process::id(), track + 1, self.counter));
         let spec = hound::WavSpec { channels: 1, sample_rate: self.rate, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
         let opened = std::fs::create_dir_all(&self.dir).map_err(hound::Error::IoError).and_then(|()| hound::WavWriter::create(&path, spec));
         match opened {
-            Ok(writer) => self.open[track] = Some(OpenTake { writer, path, start, frames: 0 }),
+            Ok(writer) => self.open[track] = Some(OpenTake { writer, path, start, speed, frames: 0 }),
             Err(e) => log::error!("cannot write take {}: {e}", path.display()),
         }
     }
@@ -59,7 +62,7 @@ impl TakeWriter {
             log::error!("cannot finish take {}: {e}", take.path.display());
             return None;
         }
-        Some(TakeDone { track, start: take.start, path: take.path, frames: take.frames, rate: self.rate })
+        Some(TakeDone { track, start: take.start, path: take.path, frames: take.frames, rate: self.rate, speed: take.speed })
     }
 
     /// Write everything recorded so far; returns the takes that ended.
@@ -70,10 +73,10 @@ impl TakeWriter {
             recorder.drain(track, |item| items.push(item));
             for item in items {
                 match item {
-                    RecItem::Start(start) => {
+                    RecItem::Start(start, speed) => {
                         // A take still open was cut short (it should not happen): keep it.
                         done.extend(self.finish(track));
-                        self.start(track, start);
+                        self.start(track, start, speed);
                     }
                     RecItem::Sample(value) => {
                         if let Some(take) = &mut self.open[track] {
@@ -129,6 +132,17 @@ pub struct StoredTake {
     pub engine_rate: u32,
 }
 
+/// A take recorded with the tape at `speed`, as it lies on the tape: at VARI the tape ran
+/// `speed` times as fast past the head, so each second played covers `speed` seconds of tape
+/// and plays back slower and lower (or faster and higher) at normal speed.
+pub fn to_tape_time(samples: Vec<f32>, rate: u32, speed: f64) -> Vec<f32> {
+    if (speed - 1.0).abs() < 1e-6 {
+        return samples;
+    }
+    let from = (f64::from(rate) / speed).round() as u32;
+    daw388_project::export::resample_hq(&samples, from, rate)
+}
+
 fn read_take(path: &Path) -> Result<Vec<f32>, String> {
     let reader = hound::WavReader::open(path).map_err(|e| e.to_string())?;
     reader.into_samples::<f32>().collect::<Result<_, _>>().map_err(|e| e.to_string())
@@ -136,7 +150,7 @@ fn read_take(path: &Path) -> Result<Vec<f32>, String> {
 
 /// Save `take` as a 24-bit WAV at `dest`; the temporary take file is removed afterwards.
 pub fn store_take(take: &TakeDone, dest: &Path, engine_rate: u32) -> Result<StoredTake, String> {
-    let samples = read_take(&take.path)?;
+    let samples = to_tape_time(read_take(&take.path)?, take.rate, take.speed);
     daw388_project::take::write_wav_24(dest, take.rate, &samples).map_err(|e| format!("{}: {e}", dest.display()))?;
     if let Err(e) = std::fs::remove_file(&take.path) {
         log::warn!("cannot remove {}: {e}", take.path.display());
@@ -189,6 +203,22 @@ mod tests {
         let reloaded = daw388_project::load_audio(&dest).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(reloaded.samples.len(), 30);
         assert!((reloaded.samples[0] - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_take_at_varispeed_lies_on_the_tape_slower_and_lower() {
+        let rate = 48_000;
+        // One second of 1 kHz recorded with the tape 10% fast.
+        let sine: Vec<f32> = (0..rate).map(|i| (std::f32::consts::TAU * 1_000.0 * i as f32 / rate as f32).sin()).collect();
+        let tape = to_tape_time(sine.clone(), rate, 1.10);
+        let expected = rate as f64 * 1.10;
+        assert!((tape.len() as f64 - expected).abs() < 0.002 * expected, "{} samples", tape.len());
+        // Zero crossings upwards in the middle give the pitch: 1000 / 1.1, about 909 Hz.
+        let middle = &tape[tape.len() / 4..3 * tape.len() / 4];
+        let ups = middle.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count() as f64;
+        let hz = ups / (middle.len() as f64 / f64::from(rate));
+        assert!((hz - 909.1).abs() < 5.0, "{hz} Hz");
+        assert_eq!(to_tape_time(sine.clone(), rate, 1.0), sine, "normal speed: untouched");
     }
 
     #[test]

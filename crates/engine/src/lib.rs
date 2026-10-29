@@ -639,9 +639,10 @@ impl Engine {
         if self.recording[track] || !self.armed[track] {
             return;
         }
-        // Decided once per take: changing the routing during the take does not move it.
-        let compensation = if self.feeds_live(track) { self.compensation } else { 0.0 };
-        if self.rec_out.tracks[track].push(RecItem::Start(self.position - compensation)).is_err() {
+        // Decided once per take: changing the routing during the take does not move it. The
+        // latency is real time; at VARI the tape covers `pitch` times as much in that time.
+        let compensation = if self.feeds_live(track) { self.compensation * self.pitch } else { 0.0 };
+        if self.rec_out.tracks[track].push(RecItem::Start(self.position - compensation, self.pitch)).is_err() {
             self.shared.overflow.store(true, Ordering::Relaxed);
             return;
         }
@@ -688,7 +689,7 @@ impl Engine {
     }
 
     fn record(&mut self) {
-        if (self.pitch - 1.0).abs() > 1e-9 || matches!(self.state, State::Winding { .. } | State::CountIn { .. }) {
+        if matches!(self.state, State::Winding { .. } | State::CountIn { .. }) {
             return;
         }
         if self.state == State::Stopped && self.click.count_in > 0 {
@@ -806,7 +807,7 @@ impl Engine {
                 Command::SetRepeat(repeat) => self.repeat = repeat,
                 Command::SetStyle(style) => self.style = style,
                 Command::SetPitch(pitch) => {
-                    // Recording runs at normal speed only.
+                    // The speed is fixed while recording, as each take records at one speed.
                     if self.rec_mode == RecMode::Off {
                         self.pitch = pitch.clamp(1.0 - PITCH_RANGE, 1.0 + PITCH_RANGE);
                     }
@@ -1489,7 +1490,7 @@ mod tests {
         assert!(handle.is_playing(), "PLAY punches out and plays on");
         let items = takes(&mut recorder, 2);
         // Compensation here is the one-frame input fill.
-        assert_eq!(items.first(), Some(&RecItem::Start(999.0)));
+        assert_eq!(items.first(), Some(&RecItem::Start(999.0, 1.0)));
         assert_eq!(items.last(), Some(&RecItem::Stop));
         let samples = samples_of(&items);
         assert_eq!(samples.len(), 10);
@@ -1552,7 +1553,7 @@ mod tests {
         assert_eq!(handle.rec_mode(), RecMode::Ready, "before the zero point nothing records");
         run(&mut engine, 280);
         let items = takes(&mut recorder, 0);
-        let starts = items.iter().filter(|i| matches!(i, RecItem::Start(_))).count();
+        let starts = items.iter().filter(|i| matches!(i, RecItem::Start(..))).count();
         let stops = items.iter().filter(|i| matches!(i, RecItem::Stop)).count();
         // 10 frames to the zero point, two passes of 100, then the third under way.
         assert_eq!((starts, stops), (3, 2), "a take on every pass");
@@ -1583,15 +1584,23 @@ mod tests {
     }
 
     #[test]
-    fn no_recording_at_varispeed() {
-        let (mut handle, mut engine, mut tx, _recorder) = with_input();
+    fn records_at_varispeed_with_the_speed_fixed_for_the_take() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
         handle.send(Command::SetChannel(0, line(0)));
         handle.send(Command::SetArmed(0, true));
         handle.send(Command::SetPitch(1.05));
         handle.send(Command::Record);
         feed(&mut tx, 0, 10);
         run(&mut engine, 5);
-        assert_eq!(handle.rec_mode(), RecMode::Off);
+        assert_eq!(handle.rec_mode(), RecMode::Recording);
+        let first = takes(&mut recorder, 0).into_iter().next();
+        assert!(matches!(first, Some(RecItem::Start(_, speed)) if (speed - 1.05).abs() < 1e-9), "{first:?}");
+        // The pitch control does nothing until the take ends.
+        handle.send(Command::SetPitch(0.9));
+        run(&mut engine, 5);
+        let before = handle.position_samples();
+        run(&mut engine, 100);
+        assert!((handle.position_samples() - before - 105.0).abs() < 1e-6, "still at 1.05 while recording");
     }
 
     /// Frames in `out` (stereo) where a click starts after silence.
@@ -1787,7 +1796,7 @@ mod tests {
         assert!((handle.position_samples() - 96_100.0).abs() < 2.0);
         assert!(click_starts(&out).contains(&48_000), "the click carries on: bar 2 of the tape is on the beat");
         let first = takes(&mut recorder, 0).into_iter().next();
-        assert_eq!(first, Some(RecItem::Start(96_000.0 - 1.0)), "the take starts where the tape stood");
+        assert_eq!(first, Some(RecItem::Start(96_000.0 - 1.0, 1.0)), "the take starts where the tape stood");
     }
 
     #[test]
@@ -1984,7 +1993,7 @@ mod tests {
         feed(&mut tx, 0, 51);
         run(&mut engine, 50);
         let items = takes(&mut recorder, 2);
-        assert_eq!(items.first(), Some(&RecItem::Start(999.0)), "a live source: compensated");
+        assert_eq!(items.first(), Some(&RecItem::Start(999.0, 1.0)), "a live source: compensated");
         let samples = samples_of(&items);
         assert_eq!(samples.len(), 50);
         assert!(samples.iter().enumerate().all(|(n, s)| (s - n as f32).abs() < 1e-3), "the input as it came in: {samples:?}");
@@ -2033,7 +2042,7 @@ mod tests {
         handle.stop();
         run(&mut engine, 0);
         let items = takes(&mut recorder, 2);
-        assert_eq!(items.first(), Some(&RecItem::Start(100.0)), "no latency compensation for tape");
+        assert_eq!(items.first(), Some(&RecItem::Start(100.0, 1.0)), "no latency compensation for tape");
         let samples = samples_of(&items);
         assert!((samples[0] - 0.1).abs() < 1e-4 && (samples[10] - 0.11).abs() < 1e-4, "sample for sample under its source");
 
@@ -2059,7 +2068,7 @@ mod tests {
         handle.send(Command::Record);
         feed(&mut tx, 0, 11);
         run(&mut engine, 10);
-        assert_eq!(takes(&mut recorder, 0).first(), Some(&RecItem::Start(999.0)), "one frame of input fill");
+        assert_eq!(takes(&mut recorder, 0).first(), Some(&RecItem::Start(999.0, 1.0)), "one frame of input fill");
     }
 
     #[test]

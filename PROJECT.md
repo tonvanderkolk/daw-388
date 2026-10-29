@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.22.1
+Versie: 0.23.0
 Laatst bijgewerkt: 29-10-2026
 
 ## Doel
@@ -93,7 +93,7 @@ Naar de handleiding van de 388 (REC FUNCTION, REC, INSERT, Punch-in):
 - Latencycompensatie: de tijd van opname tot callback (ingang) plus van callback tot weergave (uitgang), gemeten met de tijdstempels van cpal, plus de vulling van de ring, plus een handmatige correctie in milliseconden. Een opname wordt zoveel eerder op de band gelegd.
 - De engine stuurt per spoor een stroom `Start(positie)`, samples en `Stop` naar een schrijver op een eigen thread, die elke take als 32-bit float WAV in een tijdelijke map zet. Daarna schrijft een achtergrondtaak de take als 24-bit WAV `NN_Naam_opnameN.wav` in `audio/` (alleen het opgenomen stuk), en wordt hij een regio op zijn plek die vervangt wat eronder lag, zoals op band. Takes van hetzelfde spoor worden op volgorde verwerkt. Een take die door latencycorrectie voor 0:00 zou beginnen, verliest dat stuk. Een take die binnenkomt nadat er een ander project is geopend, wordt niet geplaatst (het bestand blijft staan).
 - Cmd+Z (Bewerken, Ongedaan maken) zet tot 10 stappen terug: opnames, laden, Laad en Wis. Cmd+Shift+Z doet ze opnieuw. Tijdens een opname kan dat niet. De bestanden blijven in `audio/` staan.
-- Opnemen gaat op normale snelheid; met de pitch-knop op VARI en niet op 0% weigert REC met een melding.
+- Opnemen kan ook met de pitch-knop op VARI, zoals op band: de engine geeft de bandsnelheid mee met de take (`RecItem::Start`), en bij het opslaan rekent `recording::to_tape_time` de take met de hoge-kwaliteits-resampler om naar bandtijd. Wat op +10% is ingespeeld, beslaat 10% meer band en klinkt bij normale weergave langzamer en lager. Het bestand blijft op de samplerate van het project. Tijdens het opnemen staat de snelheid vast: de pitch-knop en VARI/FIX zijn uitgeschakeld, en de latencycompensatie wordt met de snelheid omgerekend.
 - Een project zonder map vraagt bij REC eerst om op te slaan.
 - Ingangsapparaat, meeluisteren en latencycorrectie zijn app-voorkeuren; de ingang per kanaal, INSERT en AUTO PUNCH worden per project bewaard.
 

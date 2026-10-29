@@ -22,7 +22,7 @@
 - [x] Opnemen naar 24-bit WAV in de projectmap, destructief zoals band maar terug te draaien met Cmd+Z (0.6.0)
 - [x] Meeluisteren via DAW 388 of via de interface, latencycompensatie met handmatige fijnafstemming (0.6.0)
 - [x] Metronoom: klik, tempo, tap tempo, maatsoort, aftellen, maat en tel in de teller (0.7.0)
-- [ ] Opnemen met de pitch-knop op VARI
+- [x] Opnemen met de pitch-knop op VARI (0.23.0)
 
 ## Fase 4: Mixer 8:8:2
 - [x] Ingangskeuze MIC / LINE / TAPE, trim (0.8.0; voorversterker-karakter in 0.9.0)

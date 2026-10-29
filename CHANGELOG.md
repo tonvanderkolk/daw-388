@@ -7,6 +7,12 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.23.0] - 2026-10-29
+
+### Toegevoegd
+- Opnemen met de pitch-knop op VARI, zoals op band: wat je op +10% inspeelt, klinkt bij normale snelheid langzamer en lager (en andersom). De take wordt bij het opslaan omgerekend naar bandtijd en blijft een gewoon bestand op de samplerate van het project. Bij REC meldt de statusregel wat er gebeurt.
+- Tijdens het opnemen staan de pitch-knop en VARI/FIX vast: elke take heeft één snelheid.
+
 ## [0.22.1] - 2026-10-29
 
 ### Gewijzigd
