@@ -32,6 +32,21 @@ pub struct Preferences {
     pub aux_output: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eff_output: Option<u16>,
+    /// Projects opened or saved lately, newest first (File, Open Recent).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent: Vec<std::path::PathBuf>,
+}
+
+/// How many projects File, Open Recent lists.
+pub const RECENT: usize = 8;
+
+impl Preferences {
+    /// Put `dir` at the top of the recent projects, once, keeping at most [`RECENT`].
+    pub fn remember(&mut self, dir: &Path) {
+        self.recent.retain(|p| p != dir);
+        self.recent.insert(0, dir.to_path_buf());
+        self.recent.truncate(RECENT);
+    }
 }
 
 fn yes() -> bool {
@@ -49,6 +64,7 @@ impl Default for Preferences {
             latency_offset_ms: 0.0,
             aux_output: None,
             eff_output: None,
+            recent: Vec::new(),
         }
     }
 }
@@ -87,6 +103,7 @@ mod tests {
             latency_offset_ms: 1.5,
             aux_output: Some(3),
             eff_output: Some(4),
+            recent: vec!["/music/Song.daw388".into()],
         };
         save(&path, &preferences).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(load(&path), preferences);
@@ -96,5 +113,18 @@ mod tests {
         fs::write(&path, r#"{"output_device":"X"}"#).unwrap_or_else(|e| panic!("{e}"));
         assert!(load(&path).software_monitoring);
         assert_eq!((load(&path).aux_output, load(&path).eff_output), (None, None), "no AUX or EFF output yet");
+    }
+
+    #[test]
+    fn recent_projects_are_newest_first_once_and_at_most_eight() {
+        let mut preferences = Preferences::default();
+        for n in 0..10 {
+            preferences.remember(Path::new(&format!("/p/{n}.daw388")));
+        }
+        preferences.remember(Path::new("/p/5.daw388"));
+        assert_eq!(preferences.recent.len(), RECENT);
+        assert_eq!(preferences.recent[0], Path::new("/p/5.daw388"));
+        assert_eq!(preferences.recent[1], Path::new("/p/9.daw388"));
+        assert_eq!(preferences.recent.iter().filter(|p| p.ends_with("5.daw388")).count(), 1);
     }
 }

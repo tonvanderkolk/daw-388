@@ -64,4 +64,5 @@
 - [ ] WebAudio-koppeling, lite-versie met cross-origin isolation
 
 ## Fase 10: Delen
+- [ ] macOS-app-bundel met icoon, en het projectpakket `.daw388` aangemeld in de Info.plist (`LSTypeIsPackage`), zodat de Finder een project als één document toont
 - [ ] Signing en notarization (macOS), releases via GitHub

@@ -757,6 +757,23 @@ impl DawApp {
         }
     }
 
+    /// Write the preferences to disk.
+    fn store_preferences(&mut self) {
+        if let Some(path) = self.platform.preferences_path()
+            && let Err(e) = preferences::save(&path, &self.preferences)
+        {
+            log::warn!("cannot save the preferences: {e}");
+        }
+    }
+
+    /// Put the open project at the top of File, Open Recent.
+    fn remember_project(&mut self) {
+        if let Some(dir) = self.project_dir.clone() {
+            self.preferences.remember(&dir);
+            self.store_preferences();
+        }
+    }
+
     /// Change the audio output settings, remember them and reopen the output.
     fn set_output(&mut self, preferences: Preferences) {
         if preferences == self.preferences {
@@ -767,11 +784,7 @@ impl DawApp {
             || preferences.buffer_frames != self.preferences.buffer_frames
             || preferences.input_device != self.preferences.input_device;
         self.preferences = preferences;
-        if let Some(path) = self.platform.preferences_path()
-            && let Err(e) = preferences::save(&path, &self.preferences)
-        {
-            log::warn!("cannot save the preferences: {e}");
-        }
+        self.store_preferences();
         if reopen {
             self.open_output();
         } else {
@@ -950,6 +963,7 @@ impl DawApp {
         self.send_mix();
         self.send_transport();
         self.project_dir = Some(opened.dir);
+        self.remember_project();
         self.dirty = false;
         self.autosave_at = None;
         self.status = format!("{} opened", self.project_name());
@@ -1087,6 +1101,7 @@ impl DawApp {
         self.project_dir = Some(dir);
         let saved = self.save(Backup::Always);
         if saved {
+            self.remember_project();
             self.status =
                 format!("Project saved in {}", self.project_dir.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_default());
         }
@@ -1284,6 +1299,23 @@ impl DawApp {
             if ui.add(egui::Button::new("Open...").shortcut_text(command(ui, Key::O))).clicked() {
                 self.request(Pending::Open(None));
             }
+            // The projects opened or saved lately; ones that are gone are left out.
+            let recent: Vec<PathBuf> = self.preferences.recent.iter().filter(|p| p.exists()).cloned().collect();
+            ui.add_enabled_ui(!recent.is_empty(), |ui| {
+                ui.menu_button("Open Recent", |ui| {
+                    for dir in &recent {
+                        let shown = ui.button(session::project_name(dir)).on_hover_text(dir.display().to_string());
+                        if shown.clicked() {
+                            self.request(Pending::Open(Some(dir.clone())));
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Clear Menu").clicked() {
+                        self.preferences.recent.clear();
+                        self.store_preferences();
+                    }
+                });
+            });
             ui.separator();
             if ui.add(egui::Button::new("Save").shortcut_text(command(ui, Key::S))).clicked() {
                 self.save(Backup::Always);
@@ -3287,6 +3319,23 @@ mod tests {
         assert!(app.status.contains("2 file(s)"), "{}", app.status);
         assert!(dir.join("export").join("Demo_mix.wav").exists());
         assert!(dir.join("export").join("Demo_01_01_Kick.wav").exists());
+    }
+
+    #[test]
+    fn saving_and_opening_put_the_project_at_the_top_of_open_recent() {
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let first = root.path().join("First.daw388");
+        let second = root.path().join("Second.daw388");
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(first.clone()))));
+        assert!(app.save_as());
+        app.project_dir = Some(second.clone());
+        assert!(app.save(Backup::Always));
+        app.remember_project();
+        assert_eq!(app.preferences.recent, vec![second.clone(), first.clone()]);
+        app.open_project(&first);
+        assert_eq!(app.preferences.recent, vec![first, second], "opening moves it to the top");
+        assert_eq!(app.project_name(), "First", "the name without .daw388");
     }
 
     #[test]

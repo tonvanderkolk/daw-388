@@ -549,7 +549,22 @@ fn io(action: &str, path: &Path) -> impl FnOnce(std::io::Error) -> ProjectError 
 
 /// The project's name: the name of its folder.
 pub fn project_name(dir: &Path) -> String {
-    dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Naamloos".into())
+    let name = if is_package(dir) { dir.file_stem() } else { dir.file_name() };
+    name.map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Untitled".into())
+}
+
+/// The extension of a project package: a folder that macOS shows as one document, as Logic's
+/// `.logicx`. Projects saved before 0.24.0 are folders without it and keep working.
+pub const PROJECT_EXTENSION: &str = "daw388";
+
+/// Whether `dir` is a project package (ends in `.daw388`).
+pub fn is_package(dir: &Path) -> bool {
+    dir.extension().is_some_and(|e| e.eq_ignore_ascii_case(PROJECT_EXTENSION))
+}
+
+/// The package for a name chosen in a save dialog: `Song` and `Song.json` both become `Song.daw388`.
+pub fn package_path(chosen: &Path) -> std::path::PathBuf {
+    chosen.with_extension(PROJECT_EXTENSION)
 }
 
 /// Read a project. `path` may be the project folder or its `project.json`.
@@ -1174,5 +1189,16 @@ mod tests {
         fs::write(&path, r#"{"format":"daw388-project","version":99,"app_version":"x"}"#).unwrap_or_else(|e| panic!("{e}"));
         assert!(matches!(open(&path), Err(ProjectError::TooNew(99))));
         assert!(matches!(open(&root.path().join("nergens")), Err(ProjectError::Io { .. })));
+    }
+
+    #[test]
+    fn a_package_has_its_extension_and_a_name_without_it() {
+        let package = package_path(Path::new("/music/Song.json"));
+        assert_eq!(package, Path::new("/music/Song.daw388"));
+        assert_eq!(package_path(Path::new("/music/Song")), Path::new("/music/Song.daw388"));
+        assert!(is_package(&package));
+        assert_eq!(project_name(&package), "Song");
+        assert!(!is_package(Path::new("/music/Old song")), "an old project folder");
+        assert_eq!(project_name(Path::new("/music/Old song")), "Old song");
     }
 }

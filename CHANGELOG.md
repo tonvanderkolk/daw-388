@@ -7,6 +7,15 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.24.0] - 2026-10-29
+
+### Toegevoegd
+- File, Open Recent: de laatste acht projecten die je opende of opsloeg, met Clear Menu. Projecten die niet meer bestaan, staan er niet in. De lijst staat in de voorkeuren van de app.
+- Een project is een pakket `Naam.daw388`, zoals een `.logicx` van Logic: een map die macOS als één document zal tonen zodra de app als bundel is geïnstalleerd (fase 10). Save As maakt altijd zo'n pakket; de naam in de app is zonder de extensie.
+
+### Gewijzigd
+- Open kiest een `.daw388`-pakket, of de `project.json` erin. Projecten van vóór 0.24.0 (mappen zonder extensie) openen en bewaren gewoon zoals voorheen; Save As maakt er een pakket van.
+
 ## [0.23.2] - 2026-10-29
 
 ### Gewijzigd

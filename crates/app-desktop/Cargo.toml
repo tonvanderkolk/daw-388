@@ -15,6 +15,7 @@ path = "src/main.rs"
 daw388-engine.workspace = true
 rtrb.workspace = true
 daw388-ui.workspace = true
+daw388-project.workspace = true
 cpal.workspace = true
 eframe.workspace = true
 rfd.workspace = true

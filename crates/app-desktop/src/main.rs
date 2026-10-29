@@ -65,13 +65,18 @@ impl Platform for Desktop {
     }
 
     fn pick_project_to_open(&mut self) -> Option<PathBuf> {
-        rfd::FileDialog::new().add_filter("DAW 388 project", &["json"]).set_title("Open project (choose project.json)").pick_file()
+        // A `.daw388` package once the app is installed (macOS then shows it as one document);
+        // until then, or for projects from before 0.24.0, the project.json inside.
+        rfd::FileDialog::new()
+            .add_filter("DAW 388 project", &[daw388_project::session::PROJECT_EXTENSION, "json"])
+            .set_title("Open project")
+            .pick_file()
     }
 
     fn pick_project_location(&mut self, suggested_name: &str) -> Option<PathBuf> {
-        // The chosen name becomes the project folder; a typed extension is dropped.
+        // The chosen name becomes the project package, `Name.daw388`; a typed extension is replaced.
         let path = rfd::FileDialog::new().set_title("Save project as").set_file_name(suggested_name).save_file()?;
-        Some(if path.extension().is_some() { path.with_extension("") } else { path })
+        Some(daw388_project::session::package_path(&path))
     }
 
     fn spawn(&mut self, job: Box<dyn FnOnce() + Send>) {

@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.23.2
+Versie: 0.24.0
 Laatst bijgewerkt: 29-10-2026
 
 ## Doel
@@ -24,7 +24,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 | `daw388-engine` | `crates/engine` | Transport, 8 sporen en stereomix, pieken en energie per meterpunt. Platformonafhankelijk, geen allocaties of locks in de audiothread |
 | `daw388-tape` | `crates/tape` | Tape-model bij afspelen (acht sporen tegelijk), met dbx |
 | `daw388-fx` | `crates/fx` | Plate reverb en tape echo: buffers bij het aanmaken, geen allocaties in `process` |
-| `daw388-project` | `crates/project` | Import van WAV (hound) en AIFF, FLAC en MP3 (symphonia, `decode.rs`; het formaat volgt uit de eerste bytes) naar mono, samplerate-conversie, de projectmap (`project.json`, `audio/`, `backups/`), de exportbestanden (`export.rs`: `rubato`-resampler, WAV- en AIFF-schrijvers, dither), het regiomodel (`regions.rs`), het uitrekenen van een spoor (`render.rs`) en golfvorm-overzichten (`peaks.rs`) |
+| `daw388-project` | `crates/project` | Import van WAV (hound) en AIFF, FLAC en MP3 (symphonia, `decode.rs`; het formaat volgt uit de eerste bytes) naar mono, samplerate-conversie, de projectmap (`project.json`, `audio/`, `backups/`; sinds 0.24.0 een pakket `Naam.daw388`, oudere mappen zonder extensie blijven werken), de exportbestanden (`export.rs`: `rubato`-resampler, WAV- en AIFF-schrijvers, dither), het regiomodel (`regions.rs`), het uitrekenen van een spoor (`render.rs`) en golfvorm-overzichten (`peaks.rs`) |
 | `daw388-ui` | `crates/ui` | egui-interface, praat met het platform via de `Platform`-trait. De console (strips in vaste vlakken op een vast raster en de twee master-kolommen) staat in `console.rs`. De vintage skin staat in `skin/`: palet, lettertype (IBM Plex), VU-meters, spoelen, meeschalen en de toetsen en de schuifschakelaar (`keys.rs`) |
 | `daw388` | `crates/app-desktop` | Desktop-entrypoint: cpal-uitvoer, bestandsdialogen en het eframe-venster |
 
