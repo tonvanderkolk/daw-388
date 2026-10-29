@@ -55,12 +55,14 @@ pub struct KeyCap<'a> {
     /// Lit or not, and its colour; `None`: the key has no LED.
     lamp: Option<(bool, Color32)>,
     symbol: Option<Symbol>,
+    /// Only the key: the caller draws label and LED where its grid wants them.
+    bare: bool,
 }
 
 impl<'a> KeyCap<'a> {
     /// A beige key without LED or symbol.
     pub fn new(label: &'a str, size: Vec2) -> Self {
-        Self { label, size, colour: KeyColour::Beige, lamp: None, symbol: None }
+        Self { label, size, colour: KeyColour::Beige, lamp: None, symbol: None, bare: false }
     }
 
     pub fn colour(mut self, colour: KeyColour) -> Self {
@@ -79,43 +81,64 @@ impl<'a> KeyCap<'a> {
         self
     }
 
+    /// Only the key, without label or LED: for a grid that places those itself.
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+
     /// Draw the label, the LED and the key; the response is the key's.
     pub fn show(self, ui: &mut Ui) -> Response {
         let text = ui.painter().layout_no_wrap(self.label.to_string(), FontId::proportional(9.0), palette::TEXT_DIM);
         let lamp = if self.lamp.is_some() { LAMP } else { 0.0 };
-        let width = key_width(self.size.x, text.size().x, lamp);
-        let (rect, response) = ui.allocate_exact_size(vec2(width, LABEL + GAP + self.size.y), Sense::click());
+        if self.bare {
+            let (rect, response) = ui.allocate_exact_size(self.size, Sense::click());
+            paint_key(ui, &response, rect, self.colour, self.symbol);
+            return response;
+        }
+        let (width, height) = (key_width(self.size.x, text.size().x, lamp), LABEL + GAP + self.size.y);
+        let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
         let painter = ui.painter();
-        let label_left = rect.center().x - (text.size().x + lamp) / 2.0 + lamp;
+        let (label_left, label_top) = (rect.center().x - (text.size().x + lamp) / 2.0 + lamp, rect.top());
         if let Some((lit, colour)) = self.lamp {
-            let dot = pos2(label_left - 5.0, rect.top() + LABEL / 2.0);
-            if lit {
-                painter.circle_filled(dot, 4.5, colour.gamma_multiply(0.25));
-            }
-            painter.circle_filled(dot, 2.5, if lit { colour } else { Color32::from_rgb(0x2a, 0x26, 0x24) });
+            paint_lamp(painter, pos2(label_left - 5.0, label_top + text.size().y / 2.0), lit, colour);
         }
-        painter.galley(pos2(label_left, rect.top()), text, palette::TEXT_DIM);
+        painter.galley(pos2(label_left, label_top), text, palette::TEXT_DIM);
 
-        let (mut face, shade) = self.colour.colours();
-        if response.hovered() {
-            face = face.lerp_to_gamma(Color32::WHITE, 0.12);
-        }
-        if !ui.is_enabled() {
-            face = face.gamma_multiply(0.5);
-        }
-        let pressed = response.is_pointer_button_down_on();
-        let body = Rect::from_center_size(pos2(rect.center().x, rect.top() + LABEL + GAP + self.size.y / 2.0), self.size);
-        let face_rect = if pressed { body.translate(vec2(0.0, 1.0)) } else { body };
-        if !pressed {
-            painter.rect_filled(body.translate(vec2(0.0, 2.0)), 2.0, shade);
-        }
-        painter.rect_filled(face_rect, 2.0, face);
-        painter.rect_stroke(face_rect, 2.0, Stroke::new(1.0, palette::EDGE), egui::StrokeKind::Outside);
-        if let Some(symbol) = self.symbol {
-            paint_symbol(painter, face_rect.center(), face_rect.height().min(face_rect.width()) * 0.3, symbol);
-        }
+        let centre = pos2(rect.center().x, rect.top() + LABEL + GAP + self.size.y / 2.0);
+        paint_key(ui, &response, Rect::from_center_size(centre, self.size), self.colour, self.symbol);
         response
     }
+}
+
+/// The key itself in `body`: face, the shade under it, pressed and hover states and the symbol.
+fn paint_key(ui: &Ui, response: &Response, body: Rect, colour: KeyColour, symbol: Option<Symbol>) {
+    let painter = ui.painter();
+    let (mut face, shade) = colour.colours();
+    if response.hovered() {
+        face = face.lerp_to_gamma(Color32::WHITE, 0.12);
+    }
+    if !ui.is_enabled() {
+        face = face.gamma_multiply(0.5);
+    }
+    let pressed = response.is_pointer_button_down_on();
+    let face_rect = if pressed { body.translate(vec2(0.0, 1.0)) } else { body };
+    if !pressed {
+        painter.rect_filled(body.translate(vec2(0.0, 2.0)), 2.0, shade);
+    }
+    painter.rect_filled(face_rect, 2.0, face);
+    painter.rect_stroke(face_rect, 2.0, Stroke::new(1.0, palette::EDGE), egui::StrokeKind::Outside);
+    if let Some(symbol) = symbol {
+        paint_symbol(painter, face_rect.center(), face_rect.height().min(face_rect.width()) * 0.3, symbol);
+    }
+}
+
+/// A key's LED at `centre`: dark when off, with a soft glow when lit.
+pub fn paint_lamp(painter: &egui::Painter, centre: Pos2, lit: bool, colour: Color32) {
+    if lit {
+        painter.circle_filled(centre, 4.5, colour.gamma_multiply(0.25));
+    }
+    painter.circle_filled(centre, 2.5, if lit { colour } else { Color32::from_rgb(0x2a, 0x26, 0x24) });
 }
 
 /// How wide a key is drawn: its own width, or wider when its label (and LED) need it.
@@ -126,25 +149,27 @@ pub fn key_width(key: f32, label: f32, lamp: f32) -> f32 {
 /// A transport symbol of radius `r` around `centre`.
 fn paint_symbol(painter: &egui::Painter, centre: Pos2, r: f32, symbol: Symbol) {
     let ink = Stroke::new(1.3, palette::KEY_INK);
-    // A triangle with its tip at x `tip` and its base at x `base`, both relative to the centre.
+    // A triangle with its tip at x `tip` and its base at x `base`, both relative to the centre;
+    // as tall as the STOP square.
+    let half = 0.75 * r;
     let triangle = |tip: f32, base: f32| {
-        let points = vec![pos2(centre.x + base, centre.y - r), pos2(centre.x + tip, centre.y), pos2(centre.x + base, centre.y + r)];
+        let points = vec![pos2(centre.x + base, centre.y - half), pos2(centre.x + tip, centre.y), pos2(centre.x + base, centre.y + half)];
         egui::Shape::convex_polygon(points, Color32::TRANSPARENT, ink)
     };
     match symbol {
         Symbol::Rewind => {
-            painter.add(triangle(-r, 0.0));
-            painter.add(triangle(0.0, r));
+            painter.add(triangle(-1.3 * half, 0.0));
+            painter.add(triangle(0.0, 1.3 * half));
         }
         Symbol::Forward => {
-            painter.add(triangle(0.0, -r));
-            painter.add(triangle(r, 0.0));
+            painter.add(triangle(0.0, -1.3 * half));
+            painter.add(triangle(1.3 * half, 0.0));
         }
         Symbol::Stop => {
             painter.rect_stroke(Rect::from_center_size(centre, Vec2::splat(1.5 * r)), 0.0, ink, egui::StrokeKind::Middle);
         }
         Symbol::Play => {
-            painter.add(triangle(0.8 * r, -0.8 * r));
+            painter.add(triangle(0.85 * half, -0.85 * half));
         }
         Symbol::Record => {
             painter.circle_filled(centre, 0.6 * r, palette::KEY_RED);

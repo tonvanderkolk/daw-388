@@ -57,7 +57,7 @@
 - [x] Bewerkingspaneel met 8 sporen en tijdlijn (0.18.0; de vintage vormgeving volgt)
 - [x] Twee weergaven: MIXER en SPOREN, met volume en pan per spoor (0.19.0)
 - [x] Toetsen zoals op de 388 (0.20.0)
-- [ ] Kanaalstrips en masters in vintage vorm (0.21.0)
+- [x] Kanaalstrips en masters in vintage vorm (0.21.0)
 - [ ] Vensters voor tape-instellingen en export (0.22.0)
 
 ## Fase 9: Browserversie (WASM)

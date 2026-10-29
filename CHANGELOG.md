@@ -7,6 +7,21 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.21.0] - 2026-10-29
+
+### Gewijzigd
+- De console staat op een vast raster, zoals de 388: elke knop en toets op een vaste plek, de labels ernaast zonder iets te verschuiven.
+- De strips hebben de indeling van de 388: vaste vlakken onder elkaar (INPUT, EQ, AUX, ASSIGN, PAN) met dunne lijnen ertussen, de knoppen recht onder elkaar op de middenlijn, de ASSIGN-toetsen in één kolom met hun nummers ervoor, het OL-lampje bij TRIM en het nummer onder de fader.
+- De master-sectie heeft twee kolommen: EFFECT RTN met plate, echo en de MONITOR-sectie (en de PGM MASTERS), en MASTER met AUX/EFF, de meter-toetsen, luisteren met PHONES en de STEREO MASTER. Alle faders staan op één lijn.
+- Het bedieningspaneel staat op de vijf kolommen van de transporttoetsen: RESET, CUE, STC, REPEAT en RTZ, daaronder INSERT, PUNCH, CLICK en TAP, en onder het transport PITCH, VARI, FIX, TAPE en EXPORT, met tempo en maat op één regel.
+- Keuzelijsten, het tempoveld en de menu's hebben dezelfde lettergrootte als de labels van de console.
+- De meterbrug is even breed als de console, met de naamplaat aan de rechterkant; de PGM MASTERS staan naast elkaar in het midden van hun kolom.
+
+### Toegevoegd
+- Dubbelklik op de naam onder de fader om een spoor een andere naam te geven, zoals in SPOREN.
+- Volledig scherm aan en uit met Ctrl+Cmd+F (F11 op Windows), via Bestand, Volledig scherm, of met het icoontje rechts in de kopregel.
+- Het venster wordt bij het starten en na een wissel tussen Eenvoudig en 388 even breed als de console; overgebleven ruimte (volledig scherm) valt gelijk aan beide kanten.
+
 ## [0.20.0] - 2026-10-29
 
 ### Gewijzigd
