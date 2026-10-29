@@ -92,35 +92,49 @@ impl DawApp {
 
     /// SPOREN with the edit keys, RASTER, zoom and the undo count.
     fn toolbar(&mut self, ui: &mut Ui) {
-        let key = vec2(0.0, 24.0);
-        Frame::new().fill(palette::PANEL).inner_margin(Margin::symmetric(10, 4)).show(ui, |ui| {
+        Frame::new().fill(palette::PANEL).inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(RichText::new("SPOREN").strong().size(12.0).color(palette::CREAM));
                 ui.add_space(8.0);
-                if small_key(ui, "SPLITS", false, key)
+                if KeyCap::new("SPLITS", keys::SMALL)
+                    .show(ui)
                     .on_hover_text("S: de selectie op de afspeelpositie, zonder selectie alle sporen")
                     .clicked()
                 {
                     self.split();
                 }
-                if small_key(ui, "KNIP", false, key).on_hover_text("Cmd+X: een tijdvak is een splice (de rest schuift aan)").clicked() {
+                if KeyCap::new("KNIP", keys::SMALL)
+                    .show(ui)
+                    .on_hover_text("Cmd+X: een tijdvak is een splice (de rest schuift aan)")
+                    .clicked()
+                {
                     self.cut();
                     ui.ctx().copy_text("DAW 388".into());
                 }
-                if small_key(ui, "KOPIEER", false, key).on_hover_text("Cmd+C").clicked() {
+                if KeyCap::new("KOPIEER", keys::SMALL).show(ui).on_hover_text("Cmd+C").clicked() {
                     self.copy();
                     ui.ctx().copy_text("DAW 388".into());
                 }
-                if small_key(ui, "PLAK", false, key).on_hover_text("Cmd+V: op de afspeelpositie; een tijdvak wordt ingevoegd").clicked() {
+                if KeyCap::new("PLAK", keys::SMALL)
+                    .show(ui)
+                    .on_hover_text("Cmd+V: op de afspeelpositie; een tijdvak wordt ingevoegd")
+                    .clicked()
+                {
                     self.paste();
                 }
-                if small_key(ui, "WIS", false, key).on_hover_text("Delete: de selectie of het tijdvak, zonder aanschuiven").clicked() {
+                if KeyCap::new("WIS", keys::SMALL)
+                    .show(ui)
+                    .on_hover_text("Delete: de selectie of het tijdvak, zonder aanschuiven")
+                    .clicked()
+                {
                     self.delete();
                 }
                 ui.add_space(8.0);
                 let snap = self.editor.settings.snap;
-                if small_key(ui, "RASTER", snap, key)
+                if KeyCap::new("RASTER", keys::SMALL)
+                    .lamp(snap, palette::LED_GREEN)
+                    .show(ui)
                     .on_hover_text("Vastklikken op de tellen van de metronoom; Alt: tijdelijk vrij")
                     .clicked()
                 {
@@ -130,16 +144,21 @@ impl DawApp {
                 ui.add_space(8.0);
                 let current =
                     self.editor.settings.zoom.unwrap_or(if self.editor.shown_zoom > 0.0 { self.editor.shown_zoom } else { 100.0 });
-                if small_key(ui, "−", false, key).on_hover_text("Uitzoomen (of Cmd en scrollen)").clicked() {
+                if KeyCap::new("−", keys::SMALL).show(ui).on_hover_text("Uitzoomen (of Cmd en scrollen)").clicked() {
                     self.editor.settings.zoom = Some((current * 0.5).clamp(timeline::ZOOM_MIN, timeline::ZOOM_MAX));
                     self.mark_dirty();
                 }
-                if small_key(ui, "PAST", self.editor.settings.zoom.is_none(), key).on_hover_text("Het hele nummer in beeld").clicked() {
+                if KeyCap::new("PAST", keys::SMALL)
+                    .lamp(self.editor.settings.zoom.is_none(), palette::LED_GREEN)
+                    .show(ui)
+                    .on_hover_text("Het hele nummer in beeld")
+                    .clicked()
+                {
                     self.editor.settings.zoom = None;
                     self.editor.scroll = 0.0;
                     self.mark_dirty();
                 }
-                if small_key(ui, "+", false, key).on_hover_text("Inzoomen (of Cmd en scrollen)").clicked() {
+                if KeyCap::new("+", keys::SMALL).show(ui).on_hover_text("Inzoomen (of Cmd en scrollen)").clicked() {
                     self.editor.settings.zoom = Some((current * 2.0).clamp(timeline::ZOOM_MIN, timeline::ZOOM_MAX));
                     self.mark_dirty();
                 }

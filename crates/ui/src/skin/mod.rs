@@ -2,6 +2,7 @@
 
 pub(crate) mod bridge;
 pub(crate) mod fonts;
+pub(crate) mod keys;
 pub(crate) mod reels;
 pub(crate) mod vu;
 pub(crate) mod zoom;
@@ -22,7 +23,6 @@ pub(crate) mod palette {
     pub const ORANGE: Color32 = Color32::from_rgb(0xe5, 0x83, 0x2c);
     pub const GREEN: Color32 = Color32::from_rgb(0x9f, 0xd3, 0x9a);
     pub const BLUE: Color32 = Color32::from_rgb(0x7f, 0xa8, 0xcc);
-    pub const KEY: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9c);
     pub const LEATHER: Color32 = Color32::from_rgb(0x4b, 0x23, 0x1d);
     pub const LEATHER_EDGE: Color32 = Color32::from_rgb(0x2a, 0x12, 0x0f);
     pub const LANE: Color32 = Color32::from_rgb(0x2b, 0x2b, 0x2d);
@@ -41,4 +41,18 @@ pub(crate) mod palette {
     pub const REEL_FLANGE: Color32 = Color32::from_rgb(0x5e, 0x42, 0x38);
     pub const TAPE_PACK: Color32 = Color32::from_rgb(0x12, 0x0e, 0x0c);
     pub const TAPE_EDGE: Color32 = Color32::from_rgb(0x6a, 0x4c, 0x40);
+    /// The keys: face and the darker strip along the bottom that makes them stand up.
+    pub const KEY_BEIGE: Color32 = Color32::from_rgb(0xd8, 0xcf, 0xb8);
+    pub const KEY_BEIGE_SHADE: Color32 = Color32::from_rgb(0x8f, 0x86, 0x72);
+    pub const KEY_RED: Color32 = Color32::from_rgb(0xc2, 0x3a, 0x26);
+    pub const KEY_RED_SHADE: Color32 = Color32::from_rgb(0x7a, 0x22, 0x16);
+    pub const KEY_GREEN: Color32 = Color32::from_rgb(0x6f, 0xae, 0x6a);
+    pub const KEY_GREEN_SHADE: Color32 = Color32::from_rgb(0x3f, 0x6b, 0x3c);
+    pub const KEY_GREY: Color32 = Color32::from_rgb(0xc9, 0xc7, 0xc0);
+    pub const KEY_GREY_SHADE: Color32 = Color32::from_rgb(0x8a, 0x88, 0x82);
+    /// Symbols on the transport keys.
+    pub const KEY_INK: Color32 = Color32::from_rgb(0x3a, 0x36, 0x32);
+    /// The LEDs by the keys.
+    pub const LED_GREEN: Color32 = Color32::from_rgb(0x5d, 0xe0, 0x6a);
+    pub const LED_ORANGE: Color32 = Color32::from_rgb(0xff, 0x9a, 0x2e);
 }

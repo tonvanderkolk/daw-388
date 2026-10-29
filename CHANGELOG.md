@@ -7,6 +7,13 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.20.0] - 2026-10-29
+
+### Gewijzigd
+- Toetsen zoals op de 388: verhoogd, in de kleur van hun functie, met het label op het paneel erboven en een led voor de stand. Het transport heeft symbolen (◁◁ ▷▷ □ ▷ en een rode stip voor REC).
+- MIC / LINE / RMX bovenaan elke strip is een schuifschakelaar.
+- Keuzelijsten en invoervelden in de kleuren van de console.
+
 ## [0.19.0] - 2026-10-29
 
 ### Toegevoegd

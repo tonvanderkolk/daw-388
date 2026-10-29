@@ -30,6 +30,7 @@ use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, M
 use export::{ExportJob, ExportTrack, Progress, StemKind};
 use history::History;
 use recording::{StoredTake, TakeDone};
+use skin::keys::{self, KeyCap, KeyColour, Symbol};
 pub(crate) use skin::palette;
 use sources::Sources;
 use std::collections::VecDeque;
@@ -1695,39 +1696,38 @@ impl DawApp {
                 label.on_hover_text(format!("Niet gevonden: {}", paths.join(", ")));
             }
             ui.horizontal(|ui| {
-                if ui
-                    .small_button("Laad")
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if KeyCap::new("LAAD", keys::NARROW)
+                    .show(ui)
                     .on_hover_text("WAV-, AIFF-, FLAC- of MP3-bestand op dit spoor zetten, vanaf de afspeelpositie")
                     .clicked()
                 {
                     load = true;
                 }
-                if has_content && ui.small_button("Wis").clicked() {
+                let wipe = ui.add_enabled_ui(has_content, |ui| KeyCap::new("WIS", keys::NARROW).show(ui)).inner;
+                if wipe.on_hover_text("Alles van dit spoor halen (Cmd+Z zet het terug)").clicked() {
                     clear = true;
                 }
             });
             ui.add_space(4.0);
             // INPUT: MIC, LINE or RMX (the tape), the selector at the top of a 388 channel. The
             // simple mode plays the tape by itself, so it has no RMX.
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                for (source, label, tip) in [
-                    (ChannelSource::Mic, "MIC", "De ingang via de voorversterker, die boven ongeveer -6 dBFS zacht verzadigt"),
-                    (ChannelSource::Line, "LINE", "De ingang, schoon"),
-                    (ChannelSource::Rmx, "RMX", "De weergave van dit spoor"),
-                ] {
-                    if simple && source == ChannelSource::Rmx {
-                        continue;
-                    }
-                    let on = track.channel.source == source;
-                    if toggle(ui, label, on, palette::CREAM).on_hover_text(tip).clicked() && !on {
-                        track.channel.source = source;
-                        let range = trim_range(source);
-                        track.channel.trim_db = track.channel.trim_db.clamp(*range.start(), *range.end());
-                        changed = true;
-                    }
-                }
-            });
+            let sources: &[ChannelSource] = if simple {
+                &[ChannelSource::Mic, ChannelSource::Line]
+            } else {
+                &[ChannelSource::Mic, ChannelSource::Line, ChannelSource::Rmx]
+            };
+            let labels: &[&str] = if simple { &["MIC", "LINE"] } else { &["MIC", "LINE", "RMX"] };
+            let mut chosen = sources.iter().position(|s| *s == track.channel.source).unwrap_or(1);
+            let switch = keys::slide_switch(ui, labels, &mut chosen, if simple { 52.0 } else { 78.0 }).on_hover_text(
+                "INPUT: MIC via de voorversterker (verzadigt zacht boven ongeveer -6 dBFS), LINE schoon, RMX de weergave van dit spoor",
+            );
+            if switch.changed() {
+                track.channel.source = sources[chosen];
+                let range = trim_range(track.channel.source);
+                track.channel.trim_db = track.channel.trim_db.clamp(*range.start(), *range.end());
+                changed = true;
+            }
             if track.channel.source != ChannelSource::Rmx || track.channel.auto {
                 let text = |c: Option<u16>| c.map_or("geen ingang".to_string(), |c| format!("in {c}"));
                 let mut input = track.input;
@@ -1798,7 +1798,8 @@ impl DawApp {
                 ));
                 changed |= aux.changed() || aux.double_clicked();
                 let tip = "PRE: de AUX-send hangt niet af van EQ, fader en MUTE (een koptelefoonmix)";
-                if toggle(ui, "PRE", channel.aux_pre, palette::GREEN).on_hover_text(tip).clicked() {
+                let pre = KeyCap::new("PRE", keys::NARROW).colour(KeyColour::Green).lamp(channel.aux_pre, palette::LED_GREEN);
+                if pre.show(ui).on_hover_text(tip).clicked() {
                     channel.aux_pre = !channel.aux_pre;
                     changed = true;
                 }
@@ -1816,20 +1817,23 @@ impl DawApp {
             if !simple {
                 ui.label(RichText::new("ASSIGN").size(9.0).color(palette::TEXT_DIM));
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.spacing_mut().item_spacing.x = 3.0;
                     for pair in 0..4 {
                         let (odd, even) = (2 * pair + 1, 2 * pair + 2);
                         let tip = format!("Naar PGM-bus {odd} (PAN links) en {even} (PAN rechts)");
-                        if toggle(ui, &format!("{odd}{even}"), track.channel.assign[pair], palette::ORANGE).on_hover_text(tip).clicked() {
+                        let name = format!("{odd}-{even}");
+                        let on = track.channel.assign[pair];
+                        if KeyCap::new(&name, keys::NARROW).lamp(on, palette::LED_GREEN).show(ui).on_hover_text(tip).clicked() {
                             track.channel.assign[pair] = !track.channel.assign[pair];
                             changed = true;
                         }
                     }
                 });
                 ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().item_spacing.x = 5.0;
                 let tip = "L-R: naar de stereobus. Staat er een kanaal op L-R, dan hoor je alleen de L-R-kanalen, niet de MONITOR";
-                if toggle(ui, "L-R", track.channel.lr, palette::ORANGE).on_hover_text(tip).clicked() {
+                let lr = KeyCap::new("L-R", keys::NARROW).colour(KeyColour::Red).lamp(track.channel.lr, palette::LED_GREEN);
+                if lr.show(ui).on_hover_text(tip).clicked() {
                     track.channel.lr = !track.channel.lr;
                     changed = true;
                 }
@@ -1838,12 +1842,12 @@ impl DawApp {
                     index + 1,
                     index + 1
                 );
-                if toggle(ui, "DIRECT", track.channel.direct, palette::GREEN).on_hover_text(tip).clicked() {
+                if KeyCap::new("DIRECT", keys::NARROW).lamp(track.channel.direct, palette::LED_GREEN).show(ui).on_hover_text(tip).clicked() {
                     track.channel.direct = !track.channel.direct;
                     changed = true;
                 }
                 let tip = "AUTO: de band, en de ingang zodra dit spoor op REC staat (met INSERT vanaf het inprikpunt). De opname krijgt geen EQ";
-                if toggle(ui, "AUTO", track.channel.auto, palette::GREEN).on_hover_text(tip).clicked() {
+                if KeyCap::new("AUTO", keys::NARROW).lamp(track.channel.auto, palette::LED_GREEN).show(ui).on_hover_text(tip).clicked() {
                     track.channel.auto = !track.channel.auto;
                     if track.channel.auto && track.channel.source == ChannelSource::Rmx {
                         track.channel.source = ChannelSource::Line;
@@ -1854,31 +1858,21 @@ impl DawApp {
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                // Three keys side by side: tight padding keeps the strip at its width.
-                ui.spacing_mut().item_spacing.x = 2.0;
-                ui.spacing_mut().button_padding = vec2(3.0, 1.0);
+                ui.spacing_mut().item_spacing.x = 6.0;
                 // REC FUNCTION: blinks when ready, lit while recording, as on the 388.
                 let lit = recording || (track.armed && blink);
-                let text = RichText::new("REC").size(10.0).strong().color(if lit { Color32::WHITE } else { palette::LED });
-                let rec =
-                    ui.add(egui::Button::new(text).fill(if lit { palette::RED } else { palette::PANEL_DARK }).min_size(vec2(30.0, 18.0)));
+                let rec = KeyCap::new("REC", keys::NARROW).colour(KeyColour::Red).lamp(lit, palette::LED).show(ui);
                 if rec.on_hover_text("REC FUNCTION: spoor klaar voor opname").clicked() {
                     arm = true;
                 }
-                let mute = ui.add(
-                    egui::Button::new(RichText::new("MUTE").size(10.0).color(if track.mute { Color32::BLACK } else { palette::TEXT }))
-                        .fill(if track.mute { palette::ORANGE } else { palette::PANEL_DARK })
-                        .min_size(vec2(30.0, 18.0)),
-                );
+                let mute = KeyCap::new("MUTE", keys::NARROW).lamp(track.mute, palette::LED_ORANGE).show(ui);
                 if mute.clicked() {
                     track.mute = !track.mute;
                     changed = true;
                 }
                 // SOLO is a DAW habit, not a 388 control: it only changes what you hear.
-                let text = RichText::new("SOLO").size(10.0).color(if track.solo { Color32::BLACK } else { palette::TEXT });
-                let button =
-                    egui::Button::new(text).fill(if track.solo { palette::CREAM } else { palette::PANEL_DARK }).min_size(vec2(30.0, 18.0));
-                if ui.add(button).on_hover_text("SOLO: alleen de gesoloode sporen horen. Opnames en bussen merken er niets van").clicked() {
+                let button = KeyCap::new("SOLO", keys::NARROW).lamp(track.solo, palette::LED_GREEN).show(ui);
+                if button.on_hover_text("SOLO: alleen de gesoloode sporen horen. Opnames en bussen merken er niets van").clicked() {
                     track.solo = !track.solo;
                     solo = true;
                 }
@@ -1953,7 +1947,7 @@ impl DawApp {
                         .on_hover_text(format!("MONITOR GAIN spoor {}: {} (dubbelklik: 0 dB)", index + 1, format_db(monitor.gain_db)));
                     let pan = knob(ui, &mut monitor.pan, -1.0..=1.0, 0.0, palette::CREAM, 24.0, true)
                         .on_hover_text(format!("MONITOR PAN {:+.2} (dubbelklik: midden)", monitor.pan));
-                    let mute = toggle(ui, "M", monitor.mute, palette::ORANGE);
+                    let mute = KeyCap::new("M", keys::NARROW).lamp(monitor.mute, palette::LED_ORANGE).show(ui);
                     if mute.clicked() {
                         monitor.mute = !monitor.mute;
                     }
@@ -1965,14 +1959,14 @@ impl DawApp {
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().item_spacing.x = 5.0;
                 ui.label(RichText::new("MON").size(9.0).color(palette::TEXT_DIM));
                 for (mon, label, tip) in [
                     (MonSwitch::Cue, "CUE", "Band of ingang, volgens REC FUNCTION en INSERT (zoals op de 388)"),
                     (MonSwitch::Pgm, "PGM", "Altijd de PGM-bussen"),
                 ] {
                     let on = self.mixer.mon == mon;
-                    if toggle(ui, label, on, palette::ORANGE).on_hover_text(tip).clicked() && !on {
+                    if KeyCap::new(label, keys::SMALL).lamp(on, palette::LED_GREEN).show(ui).on_hover_text(tip).clicked() && !on {
                         self.mixer.mon = mon;
                         mixer_changed = true;
                     }
@@ -2043,7 +2037,7 @@ impl DawApp {
         });
         labels(ui, &["TIME", "FEEDB.", "TONE"]);
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().item_spacing.x = 5.0;
             for (sync, label, tip) in [
                 (EchoSyncEntry::Off, "VRIJ", "TIME in milliseconden"),
                 (EchoSyncEntry::Quarter, "1/4", "Een kwartnoot van het metronoomtempo"),
@@ -2051,7 +2045,7 @@ impl DawApp {
                 (EchoSyncEntry::DottedEighth, "1/8.", "Een gepunteerde achtste van het metronoomtempo"),
             ] {
                 let on = echo.sync == sync;
-                if toggle(ui, label, on, palette::BLUE).on_hover_text(tip).clicked() && !on {
+                if KeyCap::new(label, keys::NARROW).lamp(on, palette::LED_GREEN).show(ui).on_hover_text(tip).clicked() && !on {
                     echo.sync = sync;
                     changed = true;
                 }
@@ -2112,28 +2106,28 @@ impl DawApp {
                 }
             });
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().item_spacing.x = 5.0;
                 for (listen, label, tip) in [
                     (ListenSwitch::Stereo, "STEREO", "De hoofduitgang krijgt de STEREO MASTER"),
                     (ListenSwitch::Aux, "AUX", "De hoofduitgang krijgt AUX, mono op beide kanten"),
                     (ListenSwitch::Eff, "EFF", "De hoofduitgang krijgt EFF, mono op beide kanten"),
                 ] {
                     let on = self.mixer.listen == listen;
-                    if toggle(ui, label, on, palette::ORANGE).on_hover_text(tip).clicked() && !on {
+                    if KeyCap::new(label, keys::SMALL).lamp(on, palette::LED_GREEN).show(ui).on_hover_text(tip).clicked() && !on {
                         self.mixer.listen = listen;
                         mixer_changed = true;
                     }
                 }
             });
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().item_spacing.x = 5.0;
                 ui.label(RichText::new("METER").size(9.0).color(palette::TEXT_DIM));
                 for (meter, label, tip) in [
                     (MeterSwitch::Lr, "L-R", "De stereometers tonen links en rechts"),
                     (MeterSwitch::AuxEff, "AUX-EFF", "De stereometers tonen AUX en EFF na hun master"),
                 ] {
                     let on = self.mixer.meter == meter;
-                    if toggle(ui, label, on, palette::ORANGE).on_hover_text(tip).clicked() && !on {
+                    if KeyCap::new(label, keys::SMALL).lamp(on, palette::LED_GREEN).show(ui).on_hover_text(tip).clicked() && !on {
                         self.mixer.meter = meter;
                         mixer_changed = true;
                     }
@@ -2144,23 +2138,23 @@ impl DawApp {
             ui.add_space(4.0);
             ui.label(RichText::new("TRACK METERS").size(9.0).color(palette::TEXT_DIM));
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
+                ui.spacing_mut().item_spacing.x = 5.0;
                 for (post, label, tip) in [
                     (false, "PRE", "Kanaalmeters tonen het niveau na TRIM, voor de fader (zoals op de 388)"),
                     (true, "POST", "Kanaalmeters tonen het niveau na fader en mute"),
                 ] {
                     let lit = self.meter_post == post;
-                    let text = RichText::new(label).size(10.0).color(if lit { Color32::BLACK } else { palette::TEXT });
-                    let button =
-                        egui::Button::new(text).fill(if lit { palette::ORANGE } else { palette::PANEL_DARK }).min_size(vec2(40.0, 18.0));
-                    if ui.add(button).on_hover_text(tip).clicked() && !lit {
+                    if KeyCap::new(label, keys::SMALL).lamp(lit, palette::LED_GREEN).show(ui).on_hover_text(tip).clicked() && !lit {
                         self.meter_post = post;
                         self.mark_dirty();
                     }
                 }
             });
             ui.add_space(4.0);
-            let mono = toggle(ui, "MONO", self.mixer.mono, palette::ORANGE).on_hover_text("Links en rechts samen op beide kanten");
+            let mono = KeyCap::new("MONO", keys::SMALL)
+                .lamp(self.mixer.mono, palette::LED_GREEN)
+                .show(ui)
+                .on_hover_text("Links en rechts samen op beide kanten");
             if mono.clicked() {
                 self.mixer.mono = !self.mixer.mono;
                 self.send_mixer();
@@ -2217,18 +2211,21 @@ impl DawApp {
         let rec_mode = self.engine.as_ref().map_or(RecMode::Off, EngineHandle::rec_mode);
         let blink = (self.now * 2.0).fract() < 0.5;
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let size = vec2(48.0, 40.0);
-            if transport_key(ui, "REW", motion == Motion::Rewinding, size).on_hover_text("Terugspoelen (,)").clicked() {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let big =
+                |label, symbol, lit| KeyCap::new(label, keys::LARGE).colour(KeyColour::Grey).symbol(symbol).lamp(lit, palette::LED_GREEN);
+            if big("REW", Symbol::Rewind, motion == Motion::Rewinding).show(ui).on_hover_text("Terugspoelen (,)").clicked() {
                 self.rewind();
             }
-            if transport_key(ui, "F FWD", motion == Motion::Forwarding, size).on_hover_text("Vooruitspoelen (.)").clicked() {
+            if big("F FWD", Symbol::Forward, motion == Motion::Forwarding).show(ui).on_hover_text("Vooruitspoelen (.)").clicked() {
                 self.fast_forward();
             }
-            if transport_key(ui, "STOP", motion == Motion::Stopped, size).on_hover_text("Stop (spatie)").clicked() {
+            let stop = KeyCap::new("STOP", keys::LARGE).colour(KeyColour::Grey).symbol(Symbol::Stop);
+            if stop.show(ui).on_hover_text("Stop (spatie)").clicked() {
                 self.stop();
             }
-            if transport_key(ui, "PLAY", motion == Motion::Playing, size)
+            if big("PLAY", Symbol::Play, motion == Motion::Playing)
+                .show(ui)
                 .on_hover_text("Afspelen; tijdens opnemen: punch-out (spatie)")
                 .clicked()
             {
@@ -2236,12 +2233,8 @@ impl DawApp {
             }
             // REC: blinks when record-ready, lit while recording.
             let lit = rec_mode == RecMode::Recording || (rec_mode == RecMode::Ready && blink);
-            let text = RichText::new("REC").strong().size(12.0).color(if lit { Color32::WHITE } else { palette::RED });
-            let rec = egui::Button::new(text)
-                .fill(if lit { palette::RED } else { palette::KEY })
-                .min_size(size)
-                .corner_radius(CornerRadius::same(3));
-            if ui.add(rec).on_hover_text("Opnemen op de sporen met REC FUNCTION (R); tijdens het afspelen: punch-in").clicked() {
+            let rec = KeyCap::new("REC", keys::LARGE).colour(KeyColour::Grey).symbol(Symbol::Record).lamp(lit, palette::LED);
+            if rec.show(ui).on_hover_text("Opnemen op de sporen met REC FUNCTION (R); tijdens het afspelen: punch-in").clicked() {
                 self.record();
             }
         });
@@ -2260,21 +2253,21 @@ impl DawApp {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                let small = vec2(53.0, 30.0);
-                if small_key(ui, "RESET", false, small).on_hover_text("Teller op 00:00 zetten: hier ligt het nulpunt").clicked() {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if KeyCap::new("RESET", keys::SMALL).show(ui).on_hover_text("Teller op 00:00 zetten: hier ligt het nulpunt").clicked() {
                     self.reset_zero();
                 }
-                if small_key(ui, "CUE", false, small).on_hover_text("De huidige plek als CUE-punt onthouden").clicked() {
+                if KeyCap::new("CUE", keys::SMALL).show(ui).on_hover_text("De huidige plek als CUE-punt onthouden").clicked() {
                     self.mark_cue();
                 }
-                if small_key(ui, "STC", false, small).on_hover_text("Naar het CUE-punt (Search To Cue)").clicked() {
+                if KeyCap::new("STC", keys::SMALL).show(ui).on_hover_text("Naar het CUE-punt (Search To Cue)").clicked() {
                     self.search_to_cue();
                 }
                 let tip = match self.repeat_mode {
                     RepeatMode::Tape => "Herhalen van nulpunt tot CUE-punt; de band spoelt steeds terug (C)",
                     RepeatMode::Cycle => "Herhalen van nulpunt tot CUE-punt; springt direct terug (C)",
                 };
-                if small_key(ui, "REPEAT", self.repeat, small).on_hover_text(tip).clicked() {
+                if KeyCap::new("REPEAT", keys::SMALL).lamp(self.repeat, palette::LED_GREEN).show(ui).on_hover_text(tip).clicked() {
                     self.set_repeat(!self.repeat);
                 }
             });
@@ -2283,14 +2276,18 @@ impl DawApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                let size = vec2(78.0, 22.0);
-                if small_key(ui, "INSERT", self.insert, size)
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if KeyCap::new("INSERT", keys::SMALL)
+                    .lamp(self.insert, palette::LED_GREEN)
+                    .show(ui)
                     .on_hover_text("Klaargezette sporen spelen de band tot de punch-in en schakelen dan naar de ingang")
                     .clicked()
                 {
                     self.set_insert(!self.insert);
                 }
-                if small_key(ui, "AUTO PUNCH", self.auto_punch, size)
+                if KeyCap::new("AUTO PUNCH", keys::SMALL)
+                    .lamp(self.auto_punch, palette::LED_GREEN)
+                    .show(ui)
                     .on_hover_text("Na REC alleen opnemen van het nulpunt tot het CUE-punt (met REPEAT steeds opnieuw)")
                     .clicked()
                 {
@@ -2303,13 +2300,13 @@ impl DawApp {
                 let mut metronome = self.metronome;
                 // Flashes on the beat while the tape runs or counts in; steady while stopped.
                 let lit = if matches!(motion, Motion::Playing | Motion::CountingIn) { on_beat } else { metronome.click };
-                let click = small_key(ui, "CLICK", lit, vec2(52.0, 22.0));
+                let click = KeyCap::new("CLICK", keys::SMALL).lamp(lit, palette::LED_ORANGE).show(ui);
                 if click.on_hover_text("Metronoom aan of uit (K); het lampje tikt mee").clicked() {
                     metronome.click = !metronome.click;
                 }
                 ui.add(egui::DragValue::new(&mut metronome.bpm).range(20.0..=400.0).speed(0.2).fixed_decimals(1).suffix(" BPM"))
                     .on_hover_text("Tempo in kwartnoten per minuut (slepen of klikken en typen)");
-                if small_key(ui, "TAP", false, vec2(36.0, 22.0)).on_hover_text("Tik een paar keer in het tempo").clicked()
+                if KeyCap::new("TAP", keys::SMALL).show(ui).on_hover_text("Tik een paar keer in het tempo").clicked()
                     && let Some(bpm) = self.tap()
                 {
                     metronome.bpm = bpm;
@@ -2328,12 +2325,17 @@ impl DawApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                let tape = small_key(ui, &tape_label(&self.tape), self.tape.mode == TapeMode::Machine, vec2(150.0, 22.0));
-                if tape.on_hover_text("Het karakter van de band bij afspelen: snelheid, soort, saturatie, wow, ruis").clicked() {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let tape = KeyCap::new("TAPE", keys::SMALL).lamp(self.tape.mode == TapeMode::Machine, palette::LED_GREEN).show(ui);
+                let tip =
+                    format!("{}: het karakter van de band bij afspelen (snelheid, soort, saturatie, wow, ruis)", tape_label(&self.tape));
+                if tape.on_hover_text(tip).clicked() {
                     self.show_tape = true;
                 }
                 let running = self.running_export.is_some();
-                if small_key(ui, "EXPORT", running, vec2(70.0, 22.0))
+                if KeyCap::new("EXPORT", keys::SMALL)
+                    .lamp(running, palette::LED_GREEN)
+                    .show(ui)
                     .on_hover_text("Stereo bounce en losse sporen als WAV of AIFF")
                     .clicked()
                 {
@@ -2343,7 +2345,8 @@ impl DawApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                if transport_key(ui, "RTZ", false, vec2(53.0, 40.0)).on_hover_text("Terug naar het nulpunt (Home)").clicked() {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if KeyCap::new("RTZ", keys::SMALL).show(ui).on_hover_text("Terug naar het nulpunt (Home)").clicked() {
                     self.rtz();
                 }
                 ui.add_space(14.0);
@@ -2352,23 +2355,15 @@ impl DawApp {
                 if knob.changed() || knob.double_clicked() {
                     self.send_pitch();
                 }
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.label(RichText::new("PITCH").size(9.0).color(palette::TEXT_DIM));
-                    for (vari, label, tip) in
-                        [(true, "VARI", "De pitch-knop werkt"), (false, "FIX", "Normale snelheid, de pitch-knop staat vast")]
-                    {
-                        let lit = self.vari == vari;
-                        let text = RichText::new(label).size(10.0).color(if lit { Color32::BLACK } else { palette::TEXT });
-                        let button = egui::Button::new(text)
-                            .fill(if lit { palette::ORANGE } else { palette::PANEL_DARK })
-                            .min_size(vec2(40.0, 16.0));
-                        if ui.add(button).on_hover_text(tip).clicked() && !lit {
-                            self.vari = vari;
-                            self.send_pitch();
-                        }
+                for (vari, label, tip) in
+                    [(true, "VARI", "De pitch-knop werkt"), (false, "FIX", "Normale snelheid, de pitch-knop staat vast")]
+                {
+                    let lit = self.vari == vari;
+                    if KeyCap::new(label, keys::SMALL).lamp(lit, palette::LED_GREEN).show(ui).on_hover_text(tip).clicked() && !lit {
+                        self.vari = vari;
+                        self.send_pitch();
                     }
-                });
+                }
             });
         });
     }
@@ -2820,17 +2815,6 @@ fn column(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-fn transport_key(ui: &mut Ui, label: &str, lit: bool, size: egui::Vec2) -> egui::Response {
-    let text = RichText::new(label).strong().size(12.0).color(if lit { palette::LED } else { Color32::from_rgb(0x2a, 0x26, 0x22) });
-    ui.add(egui::Button::new(text).fill(palette::KEY).min_size(size).corner_radius(CornerRadius::same(3)))
-}
-
-/// A memory key (RESET, CUE, STC, REPEAT); `lit` shows its LED.
-fn small_key(ui: &mut Ui, label: &str, lit: bool, size: egui::Vec2) -> egui::Response {
-    let text = RichText::new(label).strong().size(10.0).color(if lit { palette::LED } else { Color32::from_rgb(0x2a, 0x26, 0x22) });
-    ui.add(egui::Button::new(text).fill(Color32::from_rgb(0x7e, 0x7e, 0x80)).min_size(size).corner_radius(CornerRadius::same(3)))
-}
-
 /// A rotary knob: drag up or down to turn it (Shift for fine), double-click for `default`.
 /// `enabled` false draws it dimmed (the pitch control in FIX).
 fn knob(
@@ -2935,12 +2919,6 @@ fn eq_knob(ui: &mut Ui, band: &mut BandEntry, range: &std::ops::RangeInclusive<f
 
 fn format_freq(hz: f32) -> String {
     if hz >= 1000.0 { format!("{:.1} kHz", hz / 1000.0).replace('.', ",") } else { format!("{hz:.0} Hz") }
-}
-
-/// A small latching switch, lit in `colour` when on.
-fn toggle(ui: &mut Ui, label: &str, on: bool, colour: Color32) -> egui::Response {
-    let text = RichText::new(label).size(9.0).strong().color(if on { Color32::BLACK } else { palette::TEXT });
-    ui.add(egui::Button::new(text).fill(if on { colour } else { palette::PANEL_DARK }).min_size(vec2(20.0, 16.0)))
 }
 
 /// A small horizontal peak meter on the same scale and colours as [`meter`].
@@ -3081,6 +3059,13 @@ fn apply_style(ctx: &egui::Context) {
     visuals.window_fill = palette::PANEL;
     visuals.extreme_bg_color = palette::PANEL_DARK;
     visuals.override_text_color = Some(palette::TEXT);
+    // Combo boxes and fields (input, BPM, metre, device): a dark field with a beige edge.
+    visuals.widgets.inactive.weak_bg_fill = palette::PANEL_DARK;
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, palette::KEY_BEIGE_SHADE);
+    visuals.widgets.hovered.weak_bg_fill = palette::PANEL_DARK;
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, palette::KEY_BEIGE);
+    visuals.widgets.active.weak_bg_fill = palette::PANEL_DARK;
+    visuals.selection.bg_fill = palette::KEY_BEIGE_SHADE;
     ctx.set_visuals(visuals);
 }
 
