@@ -81,10 +81,10 @@ impl DawApp {
         let painter = ui.painter();
         painter.rect_filled(rect, 0.0, palette::LEATHER);
         painter.line_segment([rect.left_top(), rect.right_top()], Stroke::new(2.0, palette::LEATHER_EDGE));
-        let label = if tracks { "MIXER" } else { "SPOREN" };
+        let label = if tracks { "MIXER" } else { "TRACKS" };
         painter.text(rect.center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, label, FontId::proportional(10.0), palette::TEXT_DIM);
         arrow(painter, rect.center() - vec2(4.0, 0.0), !tracks, palette::TEXT_DIM);
-        let tip = if tracks { "Klik of Tab: naar de mixer" } else { "Klik of Tab: naar de sporen" };
+        let tip = if tracks { "Click or Tab: to the mixer" } else { "Click or Tab: to the tracks" };
         if response.on_hover_text(tip).clicked() {
             self.toggle_view();
         }
@@ -95,47 +95,43 @@ impl DawApp {
         Frame::new().fill(palette::PANEL).inner_margin(Margin::symmetric(10, 6)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new("SPOREN").strong().size(12.0).color(palette::CREAM));
+                ui.label(RichText::new("TRACKS").strong().size(12.0).color(palette::CREAM));
                 ui.add_space(8.0);
-                if KeyCap::new("SPLITS", keys::SMALL)
+                if KeyCap::new("SPLIT", keys::SMALL)
                     .show(ui)
-                    .on_hover_text("S: de selectie op de afspeelpositie, zonder selectie alle sporen")
+                    .on_hover_text("S: the selection at the play position, without a selection all tracks")
                     .clicked()
                 {
                     self.split();
                 }
-                if KeyCap::new("KNIP", keys::SMALL)
-                    .show(ui)
-                    .on_hover_text("Cmd+X: een tijdvak is een splice (de rest schuift aan)")
-                    .clicked()
-                {
+                if KeyCap::new("CUT", keys::SMALL).show(ui).on_hover_text("Cmd+X: a time range is a splice (the rest moves up)").clicked() {
                     self.cut();
                     ui.ctx().copy_text("DAW 388".into());
                 }
-                if KeyCap::new("KOPIEER", keys::SMALL).show(ui).on_hover_text("Cmd+C").clicked() {
+                if KeyCap::new("COPY", keys::SMALL).show(ui).on_hover_text("Cmd+C").clicked() {
                     self.copy();
                     ui.ctx().copy_text("DAW 388".into());
                 }
-                if KeyCap::new("PLAK", keys::SMALL)
+                if KeyCap::new("PASTE", keys::SMALL)
                     .show(ui)
-                    .on_hover_text("Cmd+V: op de afspeelpositie; een tijdvak wordt ingevoegd")
+                    .on_hover_text("Cmd+V: at the play position; a time range is inserted")
                     .clicked()
                 {
                     self.paste();
                 }
-                if KeyCap::new("WIS", keys::SMALL)
+                if KeyCap::new("DELETE", keys::SMALL)
                     .show(ui)
-                    .on_hover_text("Delete: de selectie of het tijdvak, zonder aanschuiven")
+                    .on_hover_text("Delete: the selection or the time range, without moving up")
                     .clicked()
                 {
                     self.delete();
                 }
                 ui.add_space(8.0);
                 let snap = self.editor.settings.snap;
-                if KeyCap::new("RASTER", keys::SMALL)
+                if KeyCap::new("SNAP", keys::SMALL)
                     .lamp(snap, palette::LED_GREEN)
                     .show(ui)
-                    .on_hover_text("Vastklikken op de tellen van de metronoom; Alt: tijdelijk vrij")
+                    .on_hover_text("Snap to the beats of the metronome; Alt: free for now")
                     .clicked()
                 {
                     self.editor.settings.snap = !snap;
@@ -144,28 +140,28 @@ impl DawApp {
                 ui.add_space(8.0);
                 let current =
                     self.editor.settings.zoom.unwrap_or(if self.editor.shown_zoom > 0.0 { self.editor.shown_zoom } else { 100.0 });
-                if KeyCap::new("−", keys::SMALL).show(ui).on_hover_text("Uitzoomen (of Cmd en scrollen)").clicked() {
+                if KeyCap::new("−", keys::SMALL).show(ui).on_hover_text("Zoom out (or Cmd and scroll)").clicked() {
                     self.editor.settings.zoom = Some((current * 0.5).clamp(timeline::ZOOM_MIN, timeline::ZOOM_MAX));
                     self.mark_dirty();
                 }
-                if KeyCap::new("PAST", keys::SMALL)
+                if KeyCap::new("FIT", keys::SMALL)
                     .lamp(self.editor.settings.zoom.is_none(), palette::LED_GREEN)
                     .show(ui)
-                    .on_hover_text("Het hele nummer in beeld")
+                    .on_hover_text("Show the whole song")
                     .clicked()
                 {
                     self.editor.settings.zoom = None;
                     self.editor.scroll = 0.0;
                     self.mark_dirty();
                 }
-                if KeyCap::new("+", keys::SMALL).show(ui).on_hover_text("Inzoomen (of Cmd en scrollen)").clicked() {
+                if KeyCap::new("+", keys::SMALL).show(ui).on_hover_text("Zoom in (or Cmd and scroll)").clicked() {
                     self.editor.settings.zoom = Some((current * 2.0).clamp(timeline::ZOOM_MIN, timeline::ZOOM_MAX));
                     self.mark_dirty();
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let m = &self.metronome;
                     let text = if ui.input(|i| !i.raw.hovered_files.is_empty()) {
-                        format!("Loslaten: vanaf spoor {} op {}", self.editor.target + 1, format_counter(self.playhead()))
+                        format!("Drop: from track {} at {}", self.editor.target + 1, format_counter(self.playhead()))
                     } else {
                         format!("Undo {}/{} · {:.0} BPM {}/{}", self.history.len(), history::STEPS, m.bpm, m.beats, m.unit)
                     };
@@ -236,9 +232,9 @@ impl DawApp {
             let pan = Rect::from_center_size(pos2(head.right() - 22.0, y), vec2(22.0, 22.0));
             let track = &mut self.tracks[index];
             let volume = ui.put(fader, |ui: &mut Ui| mini_fader(ui, &mut track.fader_db));
-            let volume = volume.on_hover_text(format!("Volume {} (dubbelklik: 0 dB)", format_db(track.fader_db)));
+            let volume = volume.on_hover_text(format!("Volume {} (double-click: 0 dB)", format_db(track.fader_db)));
             let turned = ui.put(pan, |ui: &mut Ui| knob(ui, &mut track.pan, -1.0..=1.0, 0.0, palette::CREAM, 20.0, true));
-            let turned = turned.on_hover_text(format!("PAN {:+.2} (dubbelklik: midden)", track.pan));
+            let turned = turned.on_hover_text(format!("PAN {:+.2} (double-click: centre)", track.pan));
             if volume.changed() || turned.changed() || turned.double_clicked() {
                 self.send_channel(index);
                 self.mark_dirty();
@@ -411,13 +407,13 @@ impl DawApp {
             painter.with_clip_rect(name_rect.shrink(2.0)).text(
                 name_rect.left_center() + vec2(28.0, up),
                 Align2::LEFT_CENTER,
-                if name.is_empty() { "leeg" } else { name },
+                if name.is_empty() { "empty" } else { name },
                 FontId::proportional(12.0),
                 palette::TEXT,
             );
             if let Some(unresolved) = &self.tracks[track].unresolved {
                 let loading = self.source_is(unresolved.source, SourceState::Loading);
-                let text = if loading { "laden...".to_string() } else { format!("ontbreekt: {}", unresolved.name) };
+                let text = if loading { "loading...".to_string() } else { format!("missing: {}", unresolved.name) };
                 painter.text(lane.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(11.0), palette::ORANGE);
             }
             let lane_painter = painter.with_clip_rect(lane);
@@ -533,7 +529,7 @@ impl DawApp {
             }
         }
         if body.width() > 30.0 {
-            let name = if missing { "ontbreekt" } else { region.name.as_str() };
+            let name = if missing { "missing" } else { region.name.as_str() };
             painter.with_clip_rect(body.intersect(painter.clip_rect())).text(
                 body.left_top() + vec2(4.0, 1.0),
                 Align2::LEFT_TOP,

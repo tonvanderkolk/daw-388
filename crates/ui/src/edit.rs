@@ -10,7 +10,7 @@ impl DawApp {
     /// Whether editing is possible now; says why not.
     fn may_edit(&mut self) -> bool {
         if self.recording_now() {
-            self.status = "Bewerken kan niet tijdens een opname".into();
+            self.status = "Cannot edit while recording".into();
             return false;
         }
         true
@@ -85,7 +85,7 @@ impl DawApp {
                 tracks[t] = regions::split_at(&tracks[t], i, at);
             }
         }
-        self.set_regions("Splitsen", tracks);
+        self.set_regions("Split", tracks);
     }
 
     /// KOPIEER: the stretch over all tracks, or the selected regions.
@@ -97,7 +97,7 @@ impl DawApp {
             None => return,
         };
         self.editor.clipboard = Some(clipboard);
-        self.status = "Gekopieerd".into();
+        self.status = "Copied".into();
     }
 
     /// KNIP: a stretch over all tracks is a splice (everything after it moves forward);
@@ -117,7 +117,7 @@ impl DawApp {
         } else if !self.editor.selection.is_empty() {
             self.editor.clipboard = Some(regions::copy_regions(&self.all_regions(), &self.selection_by_track()));
             let tracks = self.without_selection();
-            self.set_regions("Knippen", tracks);
+            self.set_regions("Cut", tracks);
         }
     }
 
@@ -134,7 +134,7 @@ impl DawApp {
                     return;
                 }
                 let tracks = regions::paste_regions(&self.all_regions(), at, &Clipboard::Regions(items.clone()));
-                self.set_regions("Plakken", tracks);
+                self.set_regions("Paste", tracks);
                 let placed: Vec<(usize, Region)> = items.into_iter().map(|(t, r)| (t, r.shifted(at))).collect();
                 self.select(&placed);
             }
@@ -143,9 +143,9 @@ impl DawApp {
                     return;
                 }
                 let tracks = regions::insert_range(&self.all_regions(), at, &range);
-                self.set_regions("Invoegen", tracks);
+                self.set_regions("Insert", tracks);
             }
-            None => self.status = "Er is niets om te plakken".into(),
+            None => self.status = "Nothing to paste".into(),
         }
     }
 
@@ -160,10 +160,10 @@ impl DawApp {
             }
             let tracks = regions::clear_range(&self.all_regions(), from, to);
             self.editor.range = None;
-            self.set_regions("Wissen", tracks);
+            self.set_regions("Erase", tracks);
         } else if !self.editor.selection.is_empty() {
             let tracks = self.without_selection();
-            self.set_regions("Verwijderen", tracks);
+            self.set_regions("Delete", tracks);
         }
     }
 
@@ -187,7 +187,7 @@ impl DawApp {
             return;
         }
         let tracks = regions::move_regions(&self.all_regions(), &self.selection_by_track(), track_delta, time_delta);
-        self.set_regions("Verschuiven", tracks);
+        self.set_regions("Move", tracks);
         let moved: Vec<(usize, Region)> = picked.into_iter().map(|(t, r)| (target(t), r.shifted(time_delta))).collect();
         self.select(&moved);
     }
@@ -214,7 +214,7 @@ impl DawApp {
         let trimmed = trimmed.cloned();
         let mut tracks = self.all_regions();
         tracks[track] = new;
-        self.set_regions("Inkorten", tracks);
+        self.set_regions("Trim", tracks);
         if let Some(trimmed) = trimmed {
             self.select(&[(track, trimmed)]);
         }
@@ -226,7 +226,7 @@ impl DawApp {
         if !self.may_edit() || self.tracks[track].name == name {
             return;
         }
-        self.change("Naam", &[track], |app| app.tracks[track].name = name);
+        self.change("Rename", &[track], |app| app.tracks[track].name = name);
     }
 
     /// Audio files dropped on the drawer: one per track from `track`, at `at`, one undo step.
@@ -247,7 +247,7 @@ impl DawApp {
             placements.push((target, path.clone()));
             skipped -= 1;
         }
-        let note = format!("{skipped} bestand(en) niet geplaatst");
+        let note = format!("{skipped} file(s) not placed");
         self.editor.drop_note = (skipped > 0).then_some((group, note.clone()));
         if placements.is_empty() {
             self.status = note;

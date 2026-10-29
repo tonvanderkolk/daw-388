@@ -225,7 +225,7 @@ impl DawApp {
         }
         let missing: Vec<String> = (0..TRACKS).filter(|&t| !self.track_missing(t).is_empty()).map(|t| (t + 1).to_string()).collect();
         if !missing.is_empty() {
-            self.status = format!("{}: audio ontbreekt op spoor {} ({error})", self.project_name(), missing.join(", "));
+            self.status = format!("{}: audio missing on track {} ({error})", self.project_name(), missing.join(", "));
         }
         for track in 0..TRACKS {
             if self.content(track).uses(id) {
@@ -293,9 +293,9 @@ impl DawApp {
     pub(crate) fn refuse_unresolved(&mut self, index: usize) -> bool {
         let Some(unresolved) = &self.tracks[index].unresolved else { return false };
         self.status = if self.source_is(unresolved.source, SourceState::Loading) {
-            format!("Spoor {} wordt nog geladen", index + 1)
+            format!("Track {} is still loading", index + 1)
         } else {
-            format!("Spoor {}: audio ontbreekt, wis het spoor om erop op te nemen", index + 1)
+            format!("Track {}: audio missing, clear the track to record on it", index + 1)
         };
         true
     }
@@ -333,14 +333,14 @@ impl DawApp {
         let Some(clip) = self.sources.get(import.source).and_then(|s| s.clip.clone()) else { return };
         let region =
             Region { source: import.source, start: import.start, offset: 0.0, length: clip.duration_seconds(), name: clip.name.clone() };
-        self.change_in("Importeren", import.group, &[track], |app| {
+        self.change_in("Import", import.group, &[track], |app| {
             let t = &mut app.tracks[track];
             t.regions = place(&t.regions, region);
             if t.name.is_empty() {
                 t.name.clone_from(&clip.name);
             }
         });
-        self.status = format!("Spoor {}: {} geplaatst op {}", track + 1, clip.name, format_counter(import.start));
+        self.status = format!("Track {}: {} placed at {}", track + 1, clip.name, format_counter(import.start));
         if let Some((group, note)) = &self.editor.drop_note
             && import.group == Some(*group)
         {
@@ -369,7 +369,7 @@ impl DawApp {
             return;
         }
         let tracks: Vec<usize> = (0..chosen.len()).collect();
-        self.change("Laden", &tracks, |app| {
+        self.change("Load", &tracks, |app| {
             for (index, path) in chosen.iter().enumerate() {
                 let source = app.source_for(path);
                 let t = &mut app.tracks[index];
@@ -382,13 +382,13 @@ impl DawApp {
             self.resolve_loaded(track);
         }
         if paths.len() > TRACKS {
-            self.status = format!("{} bestanden gekozen, alleen de eerste {TRACKS} zijn geladen", paths.len());
+            self.status = format!("{} files chosen, only the first {TRACKS} were loaded", paths.len());
         }
     }
 
     /// Wis: the track empty.
     pub(crate) fn clear_track(&mut self, index: usize) {
-        self.change("Wis", &[index], |app| {
+        self.change("Clear", &[index], |app| {
             let t = &mut app.tracks[index];
             t.regions.clear();
             t.unresolved = None;
@@ -413,19 +413,19 @@ impl DawApp {
 
     fn step(&mut self, again: bool) {
         if self.recording_now() {
-            self.status = "Niet tijdens een opname".into();
+            self.status = "Not while recording".into();
             return;
         }
         let contents: Vec<TrackContent> = (0..TRACKS).map(|t| self.content(t)).collect();
         let step = if again { self.history.redo(|t| contents[t].clone()) } else { self.history.undo(|t| contents[t].clone()) };
         let Some(step) = step else {
-            self.status = if again { "Er is niets om opnieuw te doen" } else { "Er is niets om ongedaan te maken" }.into();
+            self.status = if again { "Nothing to redo" } else { "Nothing to undo" }.into();
             return;
         };
         for (track, content) in step.tracks {
             self.set_content(track, content);
         }
-        self.status = format!("{} {}", step.name, if again { "opnieuw gedaan" } else { "ongedaan gemaakt" });
+        self.status = format!("{} {}", step.name, if again { "redone" } else { "undone" });
         self.mark_dirty();
     }
 
@@ -437,7 +437,7 @@ impl DawApp {
         }
         let Some(take) = self.queued_takes[track].pop_front() else { return };
         let Some(dir) = self.project_dir.clone() else {
-            self.status = format!("Opname op spoor {} niet bewaard: het project heeft nog geen map", track + 1);
+            self.status = format!("Take on track {} not kept: the project has no folder yet", track + 1);
             return;
         };
         let audio_dir = dir.join(session::AUDIO_DIR);
@@ -465,14 +465,13 @@ impl DawApp {
             self.composing[track] = false;
             match result.outcome {
                 Ok(stored) if result.project_generation != self.project_generation => {
-                    self.status =
-                        format!("Opname op spoor {} hoort bij een ander project; hij staat in {}", track + 1, stored.path.display());
+                    self.status = format!("Take on track {} belongs to another project; it is in {}", track + 1, stored.path.display());
                 }
                 Ok(stored) if self.tracks[track].unresolved.is_some() => {
-                    self.status = format!("Spoor {} wordt nog geladen; de opname staat in {}", track + 1, stored.path.display());
+                    self.status = format!("Track {} is still loading; the take is in {}", track + 1, stored.path.display());
                 }
                 Ok(stored) => self.place_take(track, result.start, stored),
-                Err(e) => self.status = format!("Opname op spoor {} niet bewaard: {e}", track + 1),
+                Err(e) => self.status = format!("Take on track {} not kept: {e}", track + 1),
             }
             self.start_compose(track);
         }
@@ -494,13 +493,13 @@ impl DawApp {
         }
         let offset = (-start).max(0.0);
         let region = Region { source: id, start: start.max(0.0), offset, length: seconds - offset, name: name.clone() };
-        self.change(&format!("Opname spoor {}", track + 1), &[track], |app| {
+        self.change(&format!("Take on track {}", track + 1), &[track], |app| {
             let t = &mut app.tracks[track];
             t.regions = place(&t.regions, region);
             if t.name.is_empty() {
                 t.name = name;
             }
         });
-        self.status = format!("Spoor {}: opname vastgelegd ({seconds:.1} s)", track + 1);
+        self.status = format!("Track {}: take kept ({seconds:.1} s)", track + 1);
     }
 }

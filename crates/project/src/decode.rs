@@ -56,7 +56,7 @@ pub(crate) fn load(path: &Path, format: Format) -> Result<MonoClip, ImportError>
     let mut reader =
         symphonia::default::get_probe().probe(&hint, stream, FormatOptions::default(), MetadataOptions::default()).map_err(|e| err(&e))?;
 
-    let track = reader.default_track(TrackType::Audio).ok_or_else(|| err(&"geen audiospoor gevonden"))?;
+    let track = reader.default_track(TrackType::Audio).ok_or_else(|| err(&"no audio track found"))?;
     let track_id = track.id;
     let params = track
         .codec_params
@@ -64,7 +64,7 @@ pub(crate) fn load(path: &Path, format: Format) -> Result<MonoClip, ImportError>
         .and_then(|p| p.audio())
         .filter(|p| p.codec != CODEC_ID_NULL_AUDIO)
         .cloned()
-        .ok_or_else(|| err(&"geen bruikbaar audioformaat"))?;
+        .ok_or_else(|| err(&"no usable audio format"))?;
     let sample_rate = params.sample_rate.filter(|&r| r > 0).ok_or_else(|| err(&"onbekende samplerate"))?;
     let mut decoder = symphonia::default::get_codecs().make_audio_decoder(&params, &AudioDecoderOptions::default()).map_err(|e| err(&e))?;
 

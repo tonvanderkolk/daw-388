@@ -18,27 +18,32 @@ pub fn write_wav_24(path: &Path, sample_rate: u32, samples: &[f32]) -> Result<()
     Ok(())
 }
 
-/// A free file name for a new take of track `number` in `audio_dir`: `01_Kick_opname1.wav`,
-/// `01_Kick_opname2.wav` and so on. `base` is the track's current name; an earlier
-/// `_opnameN` suffix is dropped so takes do not pile up suffixes.
+/// A free file name for a new take of track `number` in `audio_dir`: `01_Kick_take1.wav`,
+/// `01_Kick_take2.wav` and so on. `base` is the track's current name; an earlier
+/// `_takeN` suffix is dropped so takes do not pile up suffixes.
 pub fn take_path(audio_dir: &Path, number: usize, base: Option<&str>) -> PathBuf {
     let base = base.map(strip_take_suffix).filter(|b| !b.is_empty());
     let stem = match base {
         Some(base) if base.starts_with(&format!("{number:02}_")) => base.to_string(),
         Some(base) => format!("{number:02}_{base}"),
-        None => format!("{number:02}_Spoor{number}"),
+        None => format!("{number:02}_Track{number}"),
     };
     (1..)
-        .map(|n| audio_dir.join(format!("{stem}_opname{n}.wav")))
+        .map(|n| audio_dir.join(format!("{stem}_take{n}.wav")))
         .find(|p| !p.exists())
-        .unwrap_or_else(|| audio_dir.join(format!("{stem}_opname.wav")))
+        .unwrap_or_else(|| audio_dir.join(format!("{stem}_take.wav")))
 }
 
 fn strip_take_suffix(name: &str) -> &str {
-    match name.rfind("_opname") {
-        Some(at) if name[at + 7..].chars().all(|c| c.is_ascii_digit()) => &name[..at],
-        _ => name,
+    // `_opnameN` is how takes were named before the interface was English.
+    for suffix in ["_take", "_opname"] {
+        if let Some(at) = name.rfind(suffix)
+            && name[at + suffix.len()..].chars().all(|c| c.is_ascii_digit())
+        {
+            return &name[..at];
+        }
     }
+    name
 }
 
 #[cfg(test)]
@@ -62,13 +67,15 @@ mod tests {
     fn take_names_count_up_and_do_not_stack() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let first = take_path(dir.path(), 1, Some("01_Kick"));
-        assert_eq!(first.file_name().and_then(|n| n.to_str()), Some("01_Kick_opname1.wav"));
+        assert_eq!(first.file_name().and_then(|n| n.to_str()), Some("01_Kick_take1.wav"));
         std::fs::write(&first, b"").unwrap_or_else(|e| panic!("{e}"));
-        let second = take_path(dir.path(), 1, Some("01_Kick_opname1"));
-        assert_eq!(second.file_name().and_then(|n| n.to_str()), Some("01_Kick_opname2.wav"));
+        let second = take_path(dir.path(), 1, Some("01_Kick_take1"));
+        assert_eq!(second.file_name().and_then(|n| n.to_str()), Some("01_Kick_take2.wav"));
         let fresh = take_path(dir.path(), 3, None);
-        assert_eq!(fresh.file_name().and_then(|n| n.to_str()), Some("03_Spoor3_opname1.wav"));
+        assert_eq!(fresh.file_name().and_then(|n| n.to_str()), Some("03_Track3_take1.wav"));
         let named = take_path(dir.path(), 2, Some("Gitaar"));
-        assert_eq!(named.file_name().and_then(|n| n.to_str()), Some("02_Gitaar_opname1.wav"));
+        assert_eq!(named.file_name().and_then(|n| n.to_str()), Some("02_Gitaar_take1.wav"));
+        let older = take_path(dir.path(), 1, Some("01_Kick_opname3"));
+        assert_eq!(older.file_name().and_then(|n| n.to_str()), Some("01_Kick_take2.wav"), "takes named in Dutch");
     }
 }

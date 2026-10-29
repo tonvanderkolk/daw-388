@@ -143,7 +143,7 @@ mod tests {
     fn at_most_ten_steps() {
         let mut history = History::default();
         for n in 0..12 {
-            history.push(format!("stap {n}"), vec![(0, TrackContent::default())]);
+            history.push(format!("step {n}"), vec![(0, TrackContent::default())]);
         }
         assert_eq!(history.len(), STEPS);
         for _ in 0..STEPS {
@@ -156,22 +156,22 @@ mod tests {
     fn undo_and_redo_swap_the_content() {
         let (a, b) = (content(1, 2.0), TrackContent::default());
         let mut history = History::default();
-        history.push("Wis", vec![(0, a.clone())]);
-        assert_eq!(history.undo_name(), Some("Wis"));
+        history.push("Clear", vec![(0, a.clone())]);
+        assert_eq!(history.undo_name(), Some("Clear"));
         let step = history.undo(|_| b.clone()).unwrap_or_else(|| panic!("a step"));
         assert_eq!(step.tracks, vec![(0, a.clone())]);
-        assert_eq!((history.undo_name(), history.redo_name()), (None, Some("Wis")));
+        assert_eq!((history.undo_name(), history.redo_name()), (None, Some("Clear")));
         let step = history.redo(|_| a.clone()).unwrap_or_else(|| panic!("a step"));
         assert_eq!(step.tracks, vec![(0, b)]);
-        assert_eq!(history.undo_name(), Some("Wis"));
+        assert_eq!(history.undo_name(), Some("Clear"));
     }
 
     #[test]
     fn a_new_step_drops_redo() {
         let mut history = History::default();
-        history.push("Wis", vec![(0, TrackContent::default())]);
+        history.push("Clear", vec![(0, TrackContent::default())]);
         let _ = history.undo(|_| TrackContent::default());
-        history.push("Importeren", vec![(0, TrackContent::default())]);
+        history.push("Import", vec![(0, TrackContent::default())]);
         assert_eq!(history.redo_name(), None);
     }
 
@@ -179,10 +179,10 @@ mod tests {
     fn a_group_is_one_step() {
         let (a, b, c) = (content(1, 1.0), content(2, 1.0), content(3, 1.0));
         let mut history = History::default();
-        history.push_grouped("Importeren", 7, vec![(0, a.clone())]);
-        history.push_grouped("Importeren", 7, vec![(1, b.clone()), (0, c)]);
+        history.push_grouped("Import", 7, vec![(0, a.clone())]);
+        history.push_grouped("Import", 7, vec![(1, b.clone()), (0, c)]);
         assert_eq!(history.len(), 1);
-        history.push_grouped("Importeren", 8, vec![(2, b.clone())]);
+        history.push_grouped("Import", 8, vec![(2, b.clone())]);
         assert_eq!(history.len(), 2);
         let _ = history.undo(|_| TrackContent::default());
         let step = history.undo(|_| TrackContent::default()).unwrap_or_else(|| panic!("a step"));
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn uses_sees_stored_steps() {
         let mut history = History::default();
-        history.push("Wis", vec![(2, content(3, 1.0))]);
+        history.push("Clear", vec![(2, content(3, 1.0))]);
         assert!(history.uses(3) && !history.uses(4));
     }
 
@@ -200,7 +200,7 @@ mod tests {
     fn resolving_turns_a_reference_into_a_region_also_in_steps() {
         let mut history = History::default();
         let waiting = TrackContent { unresolved: Some(Unresolved { source: 4, name: "Kick".into() }), ..TrackContent::default() };
-        history.push("Laden", vec![(0, waiting)]);
+        history.push("Load", vec![(0, waiting)]);
         history.resolve(4, 12.5);
         let step = history.undo(|_| TrackContent::default()).unwrap_or_else(|| panic!("a step"));
         let resolved = &step.tracks[0].1;

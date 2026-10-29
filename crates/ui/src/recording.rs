@@ -160,7 +160,7 @@ mod tests {
         let (mut tx, rx) = input_ring(48_000, 1);
         engine.attach_input(rx, 1, 1);
         let mut recorder = handle.take_recorder().unwrap_or_else(|| unreachable!());
-        handle.send(Command::SetTrack(0, Some(Arc::new(TrackAudio { name: "oud".into(), samples: vec![0.1; 100] }))));
+        handle.send(Command::SetTrack(0, Some(Arc::new(TrackAudio { name: "old".into(), samples: vec![0.1; 100] }))));
         handle
             .send(Command::SetChannel(0, ChannelParams { source: Source::Line, input: Some(0), direct: true, ..ChannelParams::default() }));
         handle.send(Command::SetArmed(0, true));
@@ -180,12 +180,12 @@ mod tests {
         let take = &done[0];
         assert_eq!((take.track, take.frames, take.start), (0, 30, 20.0));
 
-        let dest = dir.path().join("01_oud_opname1.wav");
+        let dest = dir.path().join("01_old_take1.wav");
         let stored = store_take(take, &dest, 48_000).unwrap_or_else(|e| panic!("{e}"));
         assert!(!take.path.exists(), "the temporary file is removed");
         assert_eq!(stored.clip.samples.len(), 30);
         assert_eq!(stored.at_rate.len(), 30);
-        assert_eq!(stored.clip.name, "01_oud_opname1");
+        assert_eq!(stored.clip.name, "01_old_take1");
         let reloaded = daw388_project::load_audio(&dest).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(reloaded.samples.len(), 30);
         assert!((reloaded.samples[0] - 0.5).abs() < 1e-5);

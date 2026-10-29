@@ -90,7 +90,7 @@ impl Renderer<'_> {
         self.done += frames as u64;
         let per_mille = (self.done * 1000 / self.total.max(1)).min(1000) as u32;
         self.progress.done.store(per_mille, Ordering::Relaxed);
-        if self.progress.cancel.load(Ordering::Relaxed) { Err("Export geannuleerd".into()) } else { Ok(()) }
+        if self.progress.cancel.load(Ordering::Relaxed) { Err("Export cancelled".into()) } else { Ok(()) }
     }
 
     /// The mix as the app plays it, with the tape `on` or not, and `solo` on one track. With
@@ -193,7 +193,7 @@ fn render_tracks(job: &ExportJob) -> [Option<Arc<TrackAudio>>; TRACKS] {
 
 /// Run an export; returns the files written. On an error or a cancel, nothing is left behind.
 pub(crate) fn run(job: &ExportJob, progress: &Progress) -> Result<Vec<PathBuf>, String> {
-    std::fs::create_dir_all(&job.dir).map_err(|e| format!("Map {} maken mislukt: {e}", job.dir.display()))?;
+    std::fs::create_dir_all(&job.dir).map_err(|e| format!("Cannot create folder {}: {e}", job.dir.display()))?;
     let audio = render_tracks(job);
     let mut renderer = Renderer { job, audio, progress, done: 0, total: 0 };
     let renders = job.stereo.iter().count() + job.stems.len();
@@ -202,8 +202,7 @@ pub(crate) fn run(job: &ExportJob, progress: &Progress) -> Result<Vec<PathBuf>, 
     let result = (|| {
         let save = |name: String, channels: Vec<Vec<f32>>, written: &mut Vec<PathBuf>| {
             let path = unused_path(&job.dir, &name, job.format.extension());
-            write_audio(&path, &channels, job.rate, job.format, job.depth)
-                .map_err(|e| format!("{} schrijven mislukt: {e}", path.display()))?;
+            write_audio(&path, &channels, job.rate, job.format, job.depth).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
             written.push(path);
             Ok::<(), String>(())
         };

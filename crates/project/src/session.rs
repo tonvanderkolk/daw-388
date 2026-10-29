@@ -532,10 +532,10 @@ pub enum ProjectError {
 impl fmt::Display for ProjectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io { action, path, error } => write!(f, "{action} {} mislukt: {error}", path.display()),
-            Self::Json(e) => write!(f, "project.json is niet leesbaar: {e}"),
-            Self::NotAProject(path) => write!(f, "{} is geen DAW 388-project", path.display()),
-            Self::TooNew(v) => write!(f, "dit project is gemaakt met een nieuwere versie van DAW 388 (formaat {v})"),
+            Self::Io { action, path, error } => write!(f, "{action} {} failed: {error}", path.display()),
+            Self::Json(e) => write!(f, "project.json is not readable: {e}"),
+            Self::NotAProject(path) => write!(f, "{} is not a DAW 388 project", path.display()),
+            Self::TooNew(v) => write!(f, "this project was made with a newer version of DAW 388 (format {v})"),
         }
     }
 }
@@ -559,7 +559,7 @@ pub fn open(path: &Path) -> Result<OpenedProject, ProjectError> {
     } else {
         (path.parent().map(Path::to_path_buf).unwrap_or_default(), path.to_path_buf())
     };
-    let text = fs::read_to_string(&file).map_err(io("Lezen van", &file))?;
+    let text = fs::read_to_string(&file).map_err(io("Reading", &file))?;
     let mut project: ProjectFile = serde_json::from_str(&text).map_err(ProjectError::Json)?;
     if project.format != FORMAT {
         return Err(ProjectError::NotAProject(file));
@@ -612,7 +612,7 @@ fn check_regions(project: &mut ProjectFile) -> Vec<String> {
                 end = region.start + region.length.unwrap_or(0.0);
                 kept.push(region);
             } else {
-                warnings.push(format!("Spoor {}: regio {} overgeslagen", track.number, region.name));
+                warnings.push(format!("Track {}: region {} skipped", track.number, region.name));
             }
         }
         track.regions = kept;
@@ -635,7 +635,7 @@ fn upgrade_v1(project: &mut ProjectFile) {
 /// [`Backup::Always`], else only when the newest backup is older than [`BACKUP_INTERVAL`].
 pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], backup: Backup) -> Result<Saved, ProjectError> {
     let audio_dir = dir.join(AUDIO_DIR);
-    fs::create_dir_all(&audio_dir).map_err(io("Aanmaken van", &audio_dir))?;
+    fs::create_dir_all(&audio_dir).map_err(io("Creating", &audio_dir))?;
 
     // Every source once, however many regions use it.
     let mut placed: HashMap<PathBuf, PathBuf> = HashMap::new();
@@ -689,8 +689,8 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
     let json = serde_json::to_string_pretty(&project).map_err(ProjectError::Json)?;
     // Write next to the target and rename, so a crash never leaves a half-written project.json.
     let temporary = dir.join(format!("{PROJECT_FILE}.tmp"));
-    fs::write(&temporary, json).map_err(io("Schrijven van", &temporary))?;
-    fs::rename(&temporary, &path).map_err(io("Schrijven van", &path))?;
+    fs::write(&temporary, json).map_err(io("Writing", &temporary))?;
+    fs::rename(&temporary, &path).map_err(io("Writing", &path))?;
     Ok(Saved { sources: placed, backup })
 }
 
@@ -717,7 +717,7 @@ fn place_audio(audio_dir: &Path, source: &Path) -> Result<PathBuf, ProjectError>
         target = audio_dir.join(format!("{stem}-{n}.{extension}"));
         n += 1;
     }
-    fs::copy(source, &target).map_err(io("Kopiëren naar", &target))?;
+    fs::copy(source, &target).map_err(io("Copying to", &target))?;
     Ok(target)
 }
 
@@ -751,7 +751,7 @@ fn make_backup(dir: &Path, current: &Path, policy: Backup) -> Result<Option<Path
     {
         return Ok(None);
     }
-    fs::create_dir_all(&backups).map_err(io("Aanmaken van", &backups))?;
+    fs::create_dir_all(&backups).map_err(io("Creating", &backups))?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let mut target = backups.join(format!("project-{stamp}.json"));
     let mut n = 2;
@@ -759,7 +759,7 @@ fn make_backup(dir: &Path, current: &Path, policy: Backup) -> Result<Option<Path
         target = backups.join(format!("project-{stamp}-{n}.json"));
         n += 1;
     }
-    fs::copy(current, &target).map_err(io("Backup maken naar", &target))?;
+    fs::copy(current, &target).map_err(io("Backing up to", &target))?;
     let mut all = list_backups(&backups);
     while all.len() > MAX_BACKUPS {
         let oldest = all.remove(0);
@@ -806,7 +806,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, source)| TrackToSave {
-                name: source.as_ref().map(|_| format!("Spoor {}", i + 1)).unwrap_or_default(),
+                name: source.as_ref().map(|_| format!("Track {}", i + 1)).unwrap_or_default(),
                 regions: source.map(|source| vec![region(source, 0.0, Some(100.0 / 48_000.0))]).unwrap_or_default(),
                 fader_db: -3.0 * i as f32,
                 pan: 0.5,
@@ -932,7 +932,7 @@ mod tests {
         );
         assert_eq!(opened.file.tracks.len(), 2);
         assert_eq!(opened.file.tracks[0].regions[0].file, "audio/01_Kick.wav");
-        assert_eq!(opened.file.tracks[0].name, "Spoor 1");
+        assert_eq!(opened.file.tracks[0].name, "Track 1");
         assert!(opened.file.tracks[1].regions.is_empty());
         assert!(opened.file.tracks[1].mute);
         assert_eq!(opened.file.tracks[1].fader_db, -3.0);

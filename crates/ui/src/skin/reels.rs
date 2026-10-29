@@ -59,7 +59,7 @@ impl Reels {
     }
 }
 
-/// The line above the reels: "456-stijl · 7½ IPS · dbx aan", or "Clean".
+/// The line above the reels: "456 style · 7½ IPS · dbx on", or "Clean".
 pub fn tape_line(tape: &TapeSettings) -> String {
     if tape.mode == TapeMode::Clean {
         return "Clean".into();
@@ -75,12 +75,12 @@ pub fn tape_line(tape: &TapeSettings) -> String {
         SpeedEntry::Ips15 => "15",
     };
     let dbx = match tape.dbx {
-        [true, true] => "dbx aan",
+        [true, true] => "dbx on",
         [true, false] => "dbx 1-4",
         [false, true] => "dbx 5-8",
-        [false, false] => "dbx uit",
+        [false, false] => "dbx off",
     };
-    format!("{kind}-stijl · {speed} IPS · {dbx}")
+    format!("{kind} style · {speed} IPS · {dbx}")
 }
 
 /// Draw the smoked-glass window with both reels and the line about the tape.
@@ -158,12 +158,12 @@ mod tests {
         let mut tape = TapeSettings::default();
         assert_eq!(tape_line(&tape), "Clean");
         tape.mode = TapeMode::Machine;
-        assert_eq!(tape_line(&tape), "456-stijl · 7½ IPS · dbx aan");
+        assert_eq!(tape_line(&tape), "456 style · 7½ IPS · dbx on");
         tape.dbx = [false, true];
-        assert_eq!(tape_line(&tape), "456-stijl · 7½ IPS · dbx 5-8");
+        assert_eq!(tape_line(&tape), "456 style · 7½ IPS · dbx 5-8");
         tape.dbx = [false, false];
         tape.speed = SpeedEntry::Ips15;
         tape.kind = KindEntry::T911;
-        assert_eq!(tape_line(&tape), "911-stijl · 15 IPS · dbx uit");
+        assert_eq!(tape_line(&tape), "911 style · 15 IPS · dbx off");
     }
 }

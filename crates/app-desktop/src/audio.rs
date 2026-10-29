@@ -222,10 +222,10 @@ fn open_input(
         .input_devices()
         .ok()
         .and_then(|mut ds| ds.find(|d| device_name(d).as_deref() == Some(name)))
-        .ok_or_else(|| format!("ingang {name} niet gevonden"))?;
+        .ok_or_else(|| format!("input {name} not found"))?;
     let ranges: Vec<_> = device.supported_input_configs().map(Iterator::collect).unwrap_or_default();
     let supported = pick_input_config(&ranges, rate)
-        .ok_or_else(|| format!("ingang {name} werkt niet op {:.1} kHz; kies dezelfde samplerate", f64::from(rate) / 1000.0))?;
+        .ok_or_else(|| format!("input {name} does not work at {:.1} kHz; choose the same sample rate", f64::from(rate) / 1000.0))?;
     let channels = supported.channels();
     let mut config = supported.config();
     config.buffer_size = buffer_size(buffer, supported.buffer_size());
@@ -235,7 +235,7 @@ fn open_input(
         cpal::SampleFormat::I32 => build_input::<i32>(&device, config, tx, Arc::clone(lost), Arc::clone(latency)),
         cpal::SampleFormat::I16 => build_input::<i16>(&device, config, tx, Arc::clone(lost), Arc::clone(latency)),
         cpal::SampleFormat::U16 => build_input::<u16>(&device, config, tx, Arc::clone(lost), Arc::clone(latency)),
-        other => return Err(format!("sampleformaat {other} van de ingang wordt nog niet ondersteund")),
+        other => return Err(format!("sample format {other} of the input is not supported yet")),
     }
     .map_err(|e| e.to_string())?;
     stream.play().map_err(|e| e.to_string())?;
@@ -263,10 +263,10 @@ fn find_device(host: &cpal::Host, name: Option<&str>) -> Option<cpal::Device> {
 /// device that is missing is an error: the UI decides what to fall back to and says so.
 pub fn open(host: &cpal::Host, request: &OutputRequest) -> Result<(EngineHandle, OutputInfo, Output), String> {
     let device = find_device(host, request.device.as_deref()).ok_or_else(|| match &request.device {
-        Some(name) => format!("{name} niet gevonden"),
-        None => "geen uitvoerapparaat gevonden".to_string(),
+        Some(name) => format!("{name} not found"),
+        None => "no output device found".to_string(),
     })?;
-    let name = device_name(&device).unwrap_or_else(|| "Audioapparaat".into());
+    let name = device_name(&device).unwrap_or_else(|| "Audio device".into());
     let default = device.default_output_config().map_err(|e| e.to_string())?;
     let ranges: Vec<_> = device.supported_output_configs().map(Iterator::collect).unwrap_or_default();
     let supported = pick_config(&ranges, &default, request.sample_rate);
@@ -296,7 +296,7 @@ pub fn open(host: &cpal::Host, request: &OutputRequest) -> Result<(EngineHandle,
         cpal::SampleFormat::I32 => build_stream::<i32>(&device, config, engine, Arc::clone(&lost), Arc::clone(&latency)),
         cpal::SampleFormat::I16 => build_stream::<i16>(&device, config, engine, Arc::clone(&lost), Arc::clone(&latency)),
         cpal::SampleFormat::U16 => build_stream::<u16>(&device, config, engine, Arc::clone(&lost), Arc::clone(&latency)),
-        other => return Err(format!("sampleformaat {other} wordt nog niet ondersteund")),
+        other => return Err(format!("sample format {other} is not supported yet")),
     };
     let stream = built.map_err(|e| e.to_string())?;
     stream.play().map_err(|e| e.to_string())?;

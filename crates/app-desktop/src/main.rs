@@ -60,17 +60,17 @@ impl Platform for Desktop {
     }
 
     fn pick_audio_files(&mut self, multiple: bool) -> Vec<PathBuf> {
-        let dialog = rfd::FileDialog::new().add_filter("Audio (WAV, AIFF)", &daw388_ui::AUDIO_EXTENSIONS).set_title("Audio laden");
+        let dialog = rfd::FileDialog::new().add_filter("Audio (WAV, AIFF)", &daw388_ui::AUDIO_EXTENSIONS).set_title("Load audio");
         if multiple { dialog.pick_files().unwrap_or_default() } else { dialog.pick_file().into_iter().collect() }
     }
 
     fn pick_project_to_open(&mut self) -> Option<PathBuf> {
-        rfd::FileDialog::new().add_filter("DAW 388-project", &["json"]).set_title("Project openen (kies project.json)").pick_file()
+        rfd::FileDialog::new().add_filter("DAW 388 project", &["json"]).set_title("Open project (choose project.json)").pick_file()
     }
 
     fn pick_project_location(&mut self, suggested_name: &str) -> Option<PathBuf> {
         // The chosen name becomes the project folder; a typed extension is dropped.
-        let path = rfd::FileDialog::new().set_title("Project opslaan als").set_file_name(suggested_name).save_file()?;
+        let path = rfd::FileDialog::new().set_title("Save project as").set_file_name(suggested_name).save_file()?;
         Some(if path.extension().is_some() { path.with_extension("") } else { path })
     }
 
@@ -87,7 +87,7 @@ impl Platform for Desktop {
     }
 
     fn temp_dir(&self) -> PathBuf {
-        std::env::temp_dir().join("daw388-opnames")
+        std::env::temp_dir().join("daw388-takes")
     }
 }
 

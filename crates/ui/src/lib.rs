@@ -669,7 +669,7 @@ impl DawApp {
             Ok((engine, info)) => {
                 let mut status = format!("{}, {}", info.device, describe_output(&info));
                 if let Some(error) = &info.input_error {
-                    status = format!("{status}. Ingang: {error}");
+                    status = format!("{status}. Input: {error}");
                 }
                 (engine, Some(info), status)
             }
@@ -677,7 +677,7 @@ impl DawApp {
                 let fallback = OutputRequest { device: None, ..request.clone() };
                 match request.device.is_some().then(|| self.platform.open_output(&fallback)) {
                     Some(Ok((engine, info))) => {
-                        let status = format!("{first}, nu via {} ({})", info.device, describe_output(&info));
+                        let status = format!("{first}, now through {} ({})", info.device, describe_output(&info));
                         (engine, Some(info), status)
                     }
                     other => {
@@ -686,7 +686,7 @@ impl DawApp {
                             _ => first,
                         };
                         let engine = self.platform.open_silent(request.sample_rate.unwrap_or(SILENT_RATE));
-                        (engine, None, format!("Geen audio-uitvoer ({reason}): het transport loopt door zonder geluid"))
+                        (engine, None, format!("No audio output ({reason}): the transport runs on without sound"))
                     }
                 }
             }
@@ -728,7 +728,7 @@ impl DawApp {
             log::warn!("audio device {gone} went away");
             self.devices = self.platform.output_devices();
             self.open_output();
-            self.status = format!("{gone} is weggevallen. {}", self.status);
+            self.status = format!("{gone} went away. {}", self.status);
             return;
         }
         if !self.on_fallback() || self.now < self.next_device_check {
@@ -803,7 +803,7 @@ impl DawApp {
     }
 
     fn project_name(&self) -> String {
-        self.project_dir.as_deref().map_or_else(|| "Naamloos".into(), session::project_name)
+        self.project_dir.as_deref().map_or_else(|| "Untitled".into(), session::project_name)
     }
 
     /// Put every track and the mix back to an empty project.
@@ -858,14 +858,14 @@ impl DawApp {
 
     fn new_project(&mut self) {
         self.reset();
-        self.status = "Nieuw project".into();
+        self.status = "New project".into();
     }
 
     fn open_project(&mut self, path: &Path) {
         let opened = match session::open(path) {
             Ok(opened) => opened,
             Err(e) => {
-                self.status = format!("Openen mislukt: {e}");
+                self.status = format!("Cannot open: {e}");
                 return;
             }
         };
@@ -940,7 +940,7 @@ impl DawApp {
         self.project_dir = Some(opened.dir);
         self.dirty = false;
         self.autosave_at = None;
-        self.status = format!("{} geopend", self.project_name());
+        self.status = format!("{} opened", self.project_name());
         for warning in &opened.warnings {
             log::warn!("{warning}");
         }
@@ -1057,12 +1057,12 @@ impl DawApp {
                 self.sources.rename(&saved.sources);
                 self.dirty = false;
                 self.autosave_at = None;
-                let what = if backup == Backup::Always { "Opgeslagen" } else { "Automatisch opgeslagen" };
+                let what = if backup == Backup::Always { "Saved" } else { "Autosaved" };
                 self.saved_label = Some(format!("{what} {}", session::clock_time()));
                 true
             }
             Err(e) => {
-                self.status = format!("Opslaan mislukt: {e}");
+                self.status = format!("Cannot save: {e}");
                 // Try again later rather than every frame.
                 self.autosave_at = Some(self.now + AUTOSAVE_AFTER);
                 false
@@ -1075,10 +1075,8 @@ impl DawApp {
         self.project_dir = Some(dir);
         let saved = self.save(Backup::Always);
         if saved {
-            self.status = format!(
-                "Project opgeslagen in {}",
-                self.project_dir.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_default()
-            );
+            self.status =
+                format!("Project saved in {}", self.project_dir.as_deref().map(Path::display).map(|d| d.to_string()).unwrap_or_default());
         }
         saved
     }
@@ -1094,7 +1092,7 @@ impl DawApp {
             Pending::Close => {
                 let name = self.project_name();
                 self.reset();
-                self.status = format!("{name} gesloten");
+                self.status = format!("{name} closed");
             }
             Pending::Open(path) => {
                 if let Some(path) = path.or_else(|| self.platform.pick_project_to_open()) {
@@ -1152,17 +1150,17 @@ impl DawApp {
         let mut answer = None;
         let response = egui::Modal::new(egui::Id::unique("confirm-simple")).show(ctx, |ui| {
             ui.set_width(380.0);
-            ui.label(RichText::new("Naar de eenvoudige stand?").strong().size(16.0));
+            ui.label(RichText::new("Switch to Simple?").strong().size(16.0));
             ui.add_space(6.0);
             ui.label(
-                "De bussen, ASSIGN en de MONITOR-instellingen gaan terug naar de eenvoudige stand. Fader, PAN, EQ, TRIM en de ingang blijven staan.",
+                "The buses, ASSIGN and the MONITOR settings go back to the simple setup. Fader, PAN, EQ, TRIM and the input stay as they are.",
             );
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.button("Doorgaan").clicked() {
+                if ui.button("Continue").clicked() {
                     answer = Some(true);
                 }
-                if ui.button("Annuleren").clicked() {
+                if ui.button("Cancel").clicked() {
                     answer = Some(false);
                 }
             });
@@ -1179,18 +1177,18 @@ impl DawApp {
         let mut answer = None;
         let response = egui::Modal::new(egui::Id::unique("unsaved-changes")).show(ctx, |ui| {
             ui.set_width(360.0);
-            ui.label(RichText::new(format!("Wijzigingen in {} opslaan?", self.project_name())).strong().size(16.0));
+            ui.label(RichText::new(format!("Save changes to {}?", self.project_name())).strong().size(16.0));
             ui.add_space(6.0);
-            ui.label("Als je niet opslaat, gaan de wijzigingen sinds de laatste keer opslaan verloren.");
+            ui.label("If you don't save, the changes since the last save are lost.");
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.button("Opslaan").clicked() {
+                if ui.button("Save").clicked() {
                     answer = Some(true);
                 }
-                if ui.button("Niet opslaan").clicked() {
+                if ui.button("Don't save").clicked() {
                     answer = Some(false);
                 }
-                if ui.button("Annuleren").clicked() {
+                if ui.button("Cancel").clicked() {
                     self.pending = None;
                 }
             });
@@ -1257,14 +1255,14 @@ impl DawApp {
     fn edit_menu(&mut self, ui: &mut Ui) {
         let undo = ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
         let redo = ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z));
-        ui.menu_button("Bewerken", |ui| {
+        ui.menu_button("Edit", |ui| {
             let undo_name = self.history.undo_name().map(str::to_string);
-            let label = undo_name.as_ref().map_or_else(|| "Ongedaan maken".to_string(), |n| format!("{n} ongedaan maken"));
+            let label = undo_name.as_ref().map_or_else(|| "Undo".to_string(), |n| format!("Undo {n}"));
             if ui.add_enabled(undo_name.is_some(), egui::Button::new(label).shortcut_text(undo)).clicked() {
                 self.undo();
             }
             let redo_name = self.history.redo_name().map(str::to_string);
-            let label = redo_name.as_ref().map_or_else(|| "Opnieuw".to_string(), |n| format!("{n} opnieuw"));
+            let label = redo_name.as_ref().map_or_else(|| "Redo".to_string(), |n| format!("Redo {n}"));
             if ui.add_enabled(redo_name.is_some(), egui::Button::new(label).shortcut_text(redo)).clicked() {
                 self.redo();
             }
@@ -1273,43 +1271,43 @@ impl DawApp {
 
     fn file_menu(&mut self, ui: &mut Ui) {
         let command = |ui: &Ui, key| ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key));
-        ui.menu_button("Bestand", |ui| {
-            if ui.add(egui::Button::new("Nieuw").shortcut_text(command(ui, Key::N))).clicked() {
+        ui.menu_button("File", |ui| {
+            if ui.add(egui::Button::new("New").shortcut_text(command(ui, Key::N))).clicked() {
                 self.request(Pending::New);
             }
-            if ui.add(egui::Button::new("Openen...").shortcut_text(command(ui, Key::O))).clicked() {
+            if ui.add(egui::Button::new("Open...").shortcut_text(command(ui, Key::O))).clicked() {
                 self.request(Pending::Open(None));
             }
             ui.separator();
-            if ui.add(egui::Button::new("Opslaan").shortcut_text(command(ui, Key::S))).clicked() {
+            if ui.add(egui::Button::new("Save").shortcut_text(command(ui, Key::S))).clicked() {
                 self.save(Backup::Always);
             }
             let save_as = ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::S));
-            if ui.add(egui::Button::new("Opslaan als...").shortcut_text(save_as)).clicked() {
+            if ui.add(egui::Button::new("Save as...").shortcut_text(save_as)).clicked() {
                 self.save_as();
             }
             ui.separator();
-            if ui.button("8 audiobestanden laden...").clicked() {
+            if ui.button("Load 8 audio files...").clicked() {
                 self.load_all();
             }
-            if ui.add(egui::Button::new("Instellingen...").shortcut_text(command(ui, Key::Comma))).clicked() {
+            if ui.add(egui::Button::new("Settings...").shortcut_text(command(ui, Key::Comma))).clicked() {
                 self.show_settings = true;
             }
-            if ui.button("Tape-instellingen...").clicked() {
+            if ui.button("Tape settings...").clicked() {
                 self.show_tape = true;
             }
-            if ui.button("Exporteren...").clicked() {
+            if ui.button("Export...").clicked() {
                 self.show_export = true;
             }
             ui.separator();
-            if ui.add(egui::Button::new("Volledig scherm").shortcut_text(ui.ctx().format_shortcut(&FULLSCREEN))).clicked() {
+            if ui.add(egui::Button::new("Full screen").shortcut_text(ui.ctx().format_shortcut(&FULLSCREEN))).clicked() {
                 toggle_fullscreen(ui.ctx());
             }
             ui.separator();
-            if ui.add(egui::Button::new("Project sluiten").shortcut_text(command(ui, Key::W))).clicked() {
+            if ui.add(egui::Button::new("Close project").shortcut_text(command(ui, Key::W))).clicked() {
                 self.request(Pending::Close);
             }
-            if ui.add(egui::Button::new("Stop DAW 388").shortcut_text(command(ui, Key::Q))).clicked() {
+            if ui.add(egui::Button::new("Quit DAW 388").shortcut_text(command(ui, Key::Q))).clicked() {
                 self.request(Pending::Quit);
             }
         });
@@ -1409,7 +1407,7 @@ impl DawApp {
         self.repeat = on;
         self.engine_send(Command::SetRepeat(on));
         if on && self.cue_seconds.is_none_or(|cue| cue <= self.zero_seconds) {
-            self.status = "REPEAT loopt van het nulpunt naar het CUE-punt: zet eerst een CUE-punt na het nulpunt".into();
+            self.status = "REPEAT runs from the zero point to the CUE point: set a CUE point after the zero point first".into();
         }
     }
 
@@ -1436,10 +1434,10 @@ impl DawApp {
         self.tracks[index].armed = armed;
         self.engine_send(Command::SetArmed(index, armed));
         if armed && !self.feeds(index) && self.mixer.mode == Routing::Simple {
-            self.status = format!("Spoor {} krijgt niets binnen: kies een ingang", index + 1);
+            self.status = format!("Track {} receives nothing: choose an input", index + 1);
         } else if armed && !self.feeds(index) {
             self.status = format!(
-                "Spoor {} krijgt niets binnen: zet DIRECT aan met een ingang (MIC of LINE), of ASSIGN een kanaal naar bus {}",
+                "Track {} receives nothing: switch on DIRECT with an input (MIC or LINE), or ASSIGN a channel to bus {}",
                 index + 1,
                 index + 1
             );
@@ -1449,18 +1447,18 @@ impl DawApp {
     /// REC: check what recording needs, then start it.
     fn record(&mut self) {
         if self.vari && self.pitch_percent.abs() > 0.001 {
-            self.status = "Opnemen gaat op normale snelheid: zet PITCH op FIX of op 0%".into();
+            self.status = "Recording runs at normal speed: set PITCH to FIX or to 0%".into();
             return;
         }
         if self.project_dir.is_none() {
-            self.status = "Sla het project eerst op: de opname komt in de projectmap".into();
+            self.status = "Save the project first: the take goes into the project folder".into();
             if !self.save_as() {
                 return;
             }
         }
         let silent: Vec<String> = (0..TRACKS).filter(|&i| self.tracks[i].armed && !self.feeds(i)).map(|i| (i + 1).to_string()).collect();
         if !silent.is_empty() {
-            self.status = format!("Let op: spoor {} krijgt niets binnen en neemt stilte op", silent.join(", "));
+            self.status = format!("Note: track {} receives nothing and records silence", silent.join(", "));
         }
         self.engine_send(Command::Record);
     }
@@ -1476,7 +1474,7 @@ impl DawApp {
         self.engine_send(Command::SetAutoPunch(auto));
         self.mark_dirty();
         if auto && self.cue_seconds.is_none_or(|cue| cue <= self.zero_seconds) {
-            self.status = "AUTO PUNCH neemt op van het nulpunt tot het CUE-punt: zet eerst een CUE-punt na het nulpunt".into();
+            self.status = "AUTO PUNCH records from the zero point to the CUE point: set a CUE point after the zero point first".into();
         }
     }
 
@@ -1494,7 +1492,7 @@ impl DawApp {
             }
         }
         if self.engine.as_ref().is_some_and(EngineHandle::take_overflow) {
-            self.status = "Let op: de opname haperde, er is audio verloren gegaan".into();
+            self.status = "Note: the recording stuttered, some audio was lost".into();
         }
     }
 
@@ -1535,18 +1533,18 @@ impl DawApp {
     }
 
     fn metronome_settings(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("Metronoom").strong());
+        ui.label(RichText::new("Metronome").strong());
         ui.add_space(4.0);
         let mut metronome = self.metronome;
         egui::Grid::new("metronome-settings").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
             ui.label("Volume");
             ui.add(egui::Slider::new(&mut metronome.volume_db, -40.0..=6.0).suffix(" dB").fixed_decimals(1));
             ui.end_row();
-            ui.label("Aftellen");
+            ui.label("Count-in");
             let text = |bars: u8| match bars {
-                0 => "Uit".to_string(),
-                1 => "1 maat".to_string(),
-                n => format!("{n} maten"),
+                0 => "Off".to_string(),
+                1 => "1 bar".to_string(),
+                n => format!("{n} bars"),
             };
             egui::ComboBox::from_id_salt("count-in").selected_text(text(metronome.count_in)).width(120.0).show_ui(ui, |ui| {
                 for bars in [0, 1, 2] {
@@ -1554,15 +1552,15 @@ impl DawApp {
                 }
             });
             ui.end_row();
-            ui.label("Klikken");
-            ui.checkbox(&mut metronome.always, "Ook tijdens gewoon afspelen (anders alleen bij opnemen)");
+            ui.label("Click");
+            ui.checkbox(&mut metronome.always, "Also during normal playback (otherwise only when recording)");
             ui.end_row();
         });
         ui.label(
             RichText::new(
-                "Maat 1 begint aan het begin van de band, dus RESET verschuift het ritme niet. De klik is alleen te horen \
-                 en komt nooit in een opname. Aftellen gebeurt bij REC vanuit stop; de band wacht en start dan op de tel. \
-                 Tempo, maatsoort en deze instellingen worden per project bewaard.",
+                "Bar 1 starts at the beginning of the tape, so RESET does not shift the rhythm. The click is only heard \
+                 and never ends up in a recording. The count-in happens on REC from stop; the tape waits, then starts on the beat. \
+                 Tempo, time signature and these settings are saved with the project.",
             )
             .size(11.0)
             .color(palette::TEXT_DIM),
@@ -1639,13 +1637,13 @@ impl DawApp {
         ui.horizontal(|ui| {
             self.file_menu(ui);
             self.edit_menu(ui);
-            let name = format!("{}{}", self.project_name(), if self.dirty { " (gewijzigd)" } else { "" });
+            let name = format!("{}{}", self.project_name(), if self.dirty { " (modified)" } else { "" });
             ui.label(RichText::new(name).color(palette::TEXT_DIM).size(13.0));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 for (mode, label, tip) in [
-                    (Routing::Simple, "Eenvoudig", "Eén strook per spoor: ingang, REC en fader, zoals in de meeste DAW's"),
-                    (Routing::Classic, "388", "De routering van de 388: bussen, ASSIGN, DIRECT en de MONITOR-sectie"),
+                    (Routing::Simple, "Simple", "One strip per track: input, REC and fader, as in most DAWs"),
+                    (Routing::Classic, "388", "The routing of the 388: buses, ASSIGN, DIRECT and the MONITOR section"),
                 ] {
                     let on = self.mixer.mode == mode;
                     let text = RichText::new(label).size(13.0).color(if on { Color32::BLACK } else { palette::TEXT });
@@ -1656,11 +1654,11 @@ impl DawApp {
                 }
             });
             ui.separator();
-            ui.label(RichText::new("Uitvoer").color(palette::TEXT_DIM));
+            ui.label(RichText::new("Output").color(palette::TEXT_DIM));
             if let Some(choice) = self.device_combo(ui, "output-device") {
                 self.set_output(Preferences { output_device: choice, ..self.preferences.clone() });
             }
-            if ui.button("Vernieuw").on_hover_text("Lijst met audioapparaten opnieuw ophalen").clicked() {
+            if ui.button("Refresh").on_hover_text("Fetch the list of audio devices again").clicked() {
                 self.devices = self.platform.output_devices();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1699,9 +1697,9 @@ impl DawApp {
                     let pitch = if self.vari { format!("   PITCH {:+.1}%", self.pitch_percent) } else { String::new() };
                     ui.label(RichText::new(format!("{cue}{pitch}")).monospace().size(11.0).color(Color32::from_rgb(0xc8, 0x55, 0x3c)));
                     let bars = if motion == Motion::CountingIn {
-                        format!("AFTELLEN  {}.{}", bar, beat)
+                        format!("COUNT-IN  {}.{}", bar, beat)
                     } else {
-                        format!("MAAT  {bar}.{beat}   {}/{}", self.metronome.beats, self.metronome.unit)
+                        format!("BAR  {bar}.{beat}   {}/{}", self.metronome.beats, self.metronome.unit)
                     };
                     ui.label(RichText::new(bars).monospace().size(11.0).color(Color32::from_rgb(0xc8, 0x55, 0x3c)));
                 });
@@ -1717,19 +1715,19 @@ impl DawApp {
             ui.spacing_mut().item_spacing.x = 6.0;
             let big =
                 |label, symbol, lit| KeyCap::new(label, keys::LARGE).colour(KeyColour::Grey).symbol(symbol).lamp(lit, palette::LED_GREEN);
-            if big("REW", Symbol::Rewind, motion == Motion::Rewinding).show(ui).on_hover_text("Terugspoelen (,)").clicked() {
+            if big("REW", Symbol::Rewind, motion == Motion::Rewinding).show(ui).on_hover_text("Rewind (,)").clicked() {
                 self.rewind();
             }
-            if big("F FWD", Symbol::Forward, motion == Motion::Forwarding).show(ui).on_hover_text("Vooruitspoelen (.)").clicked() {
+            if big("F FWD", Symbol::Forward, motion == Motion::Forwarding).show(ui).on_hover_text("Fast forward (.)").clicked() {
                 self.fast_forward();
             }
             let stop = KeyCap::new("STOP", keys::LARGE).colour(KeyColour::Grey).symbol(Symbol::Stop);
-            if stop.show(ui).on_hover_text("Stop (spatie)").clicked() {
+            if stop.show(ui).on_hover_text("Stop (space)").clicked() {
                 self.stop();
             }
             if big("PLAY", Symbol::Play, motion == Motion::Playing)
                 .show(ui)
-                .on_hover_text("Afspelen; tijdens opnemen: punch-out (spatie)")
+                .on_hover_text("Play; while recording: punch-out (space)")
                 .clicked()
             {
                 self.play();
@@ -1737,7 +1735,7 @@ impl DawApp {
             // REC: blinks when record-ready, lit while recording.
             let lit = rec_mode == RecMode::Recording || (rec_mode == RecMode::Ready && blink);
             let rec = KeyCap::new("REC", keys::LARGE).colour(KeyColour::Grey).symbol(Symbol::Record).lamp(lit, palette::LED);
-            if rec.show(ui).on_hover_text("Opnemen op de sporen met REC FUNCTION (R); tijdens het afspelen: punch-in").clicked() {
+            if rec.show(ui).on_hover_text("Record on the tracks with REC FUNCTION (R); while playing: punch-in").clicked() {
                 self.record();
             }
         });
@@ -1767,23 +1765,23 @@ impl DawApp {
 
             // Row 1: the memory keys and RTZ.
             let repeat_tip = match self.repeat_mode {
-                RepeatMode::Tape => "Herhalen van nulpunt tot CUE-punt; de band spoelt steeds terug (C)",
-                RepeatMode::Cycle => "Herhalen van nulpunt tot CUE-punt; springt direct terug (C)",
+                RepeatMode::Tape => "Repeat from the zero point to the CUE point; the tape rewinds each time (C)",
+                RepeatMode::Cycle => "Repeat from the zero point to the CUE point; jumps straight back (C)",
             };
             if place(ui, col(0), top, key_box, |ui| KeyCap::new("RESET", keys::SMALL).show(ui))
-                .on_hover_text("Teller op 00:00 zetten: hier ligt het nulpunt")
+                .on_hover_text("Set the counter to 00:00: the zero point is here")
                 .clicked()
             {
                 self.reset_zero();
             }
             if place(ui, col(1), top, key_box, |ui| KeyCap::new("CUE", keys::SMALL).show(ui))
-                .on_hover_text("De huidige plek als CUE-punt onthouden")
+                .on_hover_text("Remember this spot as the CUE point")
                 .clicked()
             {
                 self.mark_cue();
             }
             if place(ui, col(2), top, key_box, |ui| KeyCap::new("STC", keys::SMALL).show(ui))
-                .on_hover_text("Naar het CUE-punt (Search To Cue)")
+                .on_hover_text("To the CUE point (Search To Cue)")
                 .clicked()
             {
                 self.search_to_cue();
@@ -1796,7 +1794,7 @@ impl DawApp {
                 self.set_repeat(!repeat);
             }
             if place(ui, col(4), top, key_box, |ui| KeyCap::new("RTZ", keys::SMALL).show(ui))
-                .on_hover_text("Terug naar het nulpunt (Home)")
+                .on_hover_text("Back to the zero point (Home)")
                 .clicked()
             {
                 self.rtz();
@@ -1806,14 +1804,14 @@ impl DawApp {
             let row = top + 38.0;
             let insert = self.insert;
             if place(ui, col(0), row, key_box, |ui| KeyCap::new("INSERT", keys::SMALL).lamp(insert, palette::LED_GREEN).show(ui))
-                .on_hover_text("Klaargezette sporen spelen de band tot de punch-in en schakelen dan naar de ingang")
+                .on_hover_text("Armed tracks play the tape until the punch-in, then switch to the input")
                 .clicked()
             {
                 self.set_insert(!insert);
             }
             let punch = self.auto_punch;
             if place(ui, col(1), row, key_box, |ui| KeyCap::new("PUNCH", keys::SMALL).lamp(punch, palette::LED_GREEN).show(ui))
-                .on_hover_text("AUTO PUNCH: na REC alleen opnemen van het nulpunt tot het CUE-punt (met REPEAT steeds opnieuw)")
+                .on_hover_text("AUTO PUNCH: after REC, record only from the zero point to the CUE point (with REPEAT, again and again)")
                 .clicked()
             {
                 self.set_auto_punch(!punch);
@@ -1822,13 +1820,13 @@ impl DawApp {
             // Flashes on the beat while the tape runs or counts in; steady while stopped.
             let lit = if matches!(motion, Motion::Playing | Motion::CountingIn) { on_beat } else { metronome.click };
             if place(ui, col(2), row, key_box, |ui| KeyCap::new("CLICK", keys::SMALL).lamp(lit, palette::LED_ORANGE).show(ui))
-                .on_hover_text("Metronoom aan of uit (K); het lampje tikt mee")
+                .on_hover_text("Metronome on or off (K); the LED ticks along")
                 .clicked()
             {
                 metronome.click = !metronome.click;
             }
             if place(ui, col(3), row, key_box, |ui| KeyCap::new("TAP", keys::SMALL).show(ui))
-                .on_hover_text("Tik een paar keer in het tempo")
+                .on_hover_text("Tap a few times in tempo")
                 .clicked()
                 && let Some(bpm) = self.tap()
             {
@@ -1846,14 +1844,12 @@ impl DawApp {
             let knob = place(ui, col(0), row + 13.0, vec2(30.0, 30.0), |ui| {
                 knob(ui, &mut self.pitch_percent, -PITCH_PERCENT..=PITCH_PERCENT, 0.0, palette::CREAM, 30.0, vari)
             })
-            .on_hover_text("PITCH: snelheid en toonhoogte, plus of min 15% (dubbelklik: 0%)");
+            .on_hover_text("PITCH: speed and pitch, plus or minus 15% (double-click: 0%)");
             if knob.changed() || knob.double_clicked() {
                 self.send_pitch();
             }
             for (i, (is_vari, label, tip)) in
-                [(true, "VARI", "De pitch-knop werkt"), (false, "FIX", "Normale snelheid, de pitch-knop staat vast")]
-                    .into_iter()
-                    .enumerate()
+                [(true, "VARI", "The PITCH knob works"), (false, "FIX", "Normal speed, the PITCH knob is fixed")].into_iter().enumerate()
             {
                 let on = vari == is_vari;
                 if place(ui, col(1 + i), row, key_box, |ui| KeyCap::new(label, keys::SMALL).lamp(on, palette::LED_GREEN).show(ui))
@@ -1866,7 +1862,7 @@ impl DawApp {
                 }
             }
             let machine = self.tape.mode == TapeMode::Machine;
-            let tip = format!("{}: het karakter van de band bij afspelen (snelheid, soort, saturatie, wow, ruis)", tape_label(&self.tape));
+            let tip = format!("{}: the character of the tape on playback (speed, type, saturation, wow, noise)", tape_label(&self.tape));
             if place(ui, col(3), row, key_box, |ui| KeyCap::new("TAPE", keys::SMALL).lamp(machine, palette::LED_GREEN).show(ui))
                 .on_hover_text(tip)
                 .clicked()
@@ -1875,7 +1871,7 @@ impl DawApp {
             }
             let running = self.running_export.is_some();
             if place(ui, col(4), row, key_box, |ui| KeyCap::new("EXPORT", keys::SMALL).lamp(running, palette::LED_GREEN).show(ui))
-                .on_hover_text("Stereo bounce en losse sporen als WAV of AIFF")
+                .on_hover_text("Stereo bounce and separate tracks as WAV or AIFF")
                 .clicked()
             {
                 self.show_export = true;
@@ -1886,9 +1882,9 @@ impl DawApp {
             tag(ui, egui::pos2(col(0) - 22.0, row + 10.0), egui::Align2::LEFT_CENTER, "TEMPO");
             place(ui, (col(1) + col(2)) / 2.0 - 12.0, row, vec2(84.0, 20.0), |ui| {
                 ui.add(egui::DragValue::new(&mut metronome.bpm).range(20.0..=400.0).speed(0.2).fixed_decimals(1).suffix(" BPM"))
-                    .on_hover_text("Tempo in kwartnoten per minuut (slepen of klikken en typen)");
+                    .on_hover_text("Tempo in quarter notes per minute (drag, or click and type)");
             });
-            tag(ui, egui::pos2(col(3) - 14.0, row + 10.0), egui::Align2::RIGHT_CENTER, "MAAT");
+            tag(ui, egui::pos2(col(3) - 14.0, row + 10.0), egui::Align2::RIGHT_CENTER, "METER");
             place(ui, col(3) + 18.0, row, vec2(56.0, 20.0), |ui| {
                 let signature = format!("{}/{}", metronome.beats, metronome.unit);
                 egui::ComboBox::from_id_salt("time-signature").selected_text(signature).width(48.0).show_ui(ui, |ui| {
@@ -1907,13 +1903,13 @@ impl DawApp {
     /// The output device chooser. Returns the new choice (`Some(None)`: the default device).
     fn device_combo(&self, ui: &mut Ui, id: &str) -> Option<Option<String>> {
         let selected = match (&self.output, &self.preferences.output_device) {
-            (Some(output), None) => format!("Standaard ({})", output.device),
+            (Some(output), None) => format!("Default ({})", output.device),
             (Some(output), Some(_)) => output.device.clone(),
-            (None, _) => "Geen (stille klok)".into(),
+            (None, _) => "None (silent clock)".into(),
         };
         let mut choice = None;
         egui::ComboBox::from_id_salt(id).selected_text(selected).width(260.0).show_ui(ui, |ui| {
-            if ui.selectable_label(self.preferences.output_device.is_none(), "Standaardapparaat van het systeem").clicked() {
+            if ui.selectable_label(self.preferences.output_device.is_none(), "System default device").clicked() {
                 choice = Some(None);
             }
             for device in &self.devices {
@@ -1931,16 +1927,15 @@ impl DawApp {
         ui.add_space(4.0);
         let mut wanted = self.preferences.clone();
         egui::Grid::new("audio-settings").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            ui.label("Uitvoer");
+            ui.label("Output");
             if let Some(choice) = self.device_combo(ui, "settings-output-device") {
                 wanted.output_device = choice;
             }
             ui.end_row();
 
             let info = self.chosen_device_info().cloned().unwrap_or_default();
-            ui.label("Samplerate");
-            let rate_text =
-                |rate: Option<u32>| rate.map_or("Van het apparaat".to_string(), |r| format!("{:.1} kHz", f64::from(r) / 1000.0));
+            ui.label("Sample rate");
+            let rate_text = |rate: Option<u32>| rate.map_or("From the device".to_string(), |r| format!("{:.1} kHz", f64::from(r) / 1000.0));
             egui::ComboBox::from_id_salt("sample-rate").selected_text(rate_text(wanted.sample_rate)).width(260.0).show_ui(ui, |ui| {
                 ui.selectable_value(&mut wanted.sample_rate, None, rate_text(None));
                 for rate in &info.sample_rates {
@@ -1950,7 +1945,7 @@ impl DawApp {
             ui.end_row();
 
             ui.label("Buffer");
-            let buffer_text = |frames: Option<u32>| frames.map_or("Standaard van het apparaat".to_string(), |n| format!("{n} samples"));
+            let buffer_text = |frames: Option<u32>| frames.map_or("Device default".to_string(), |n| format!("{n} samples"));
             egui::ComboBox::from_id_salt("buffer-size").selected_text(buffer_text(wanted.buffer_frames)).width(260.0).show_ui(ui, |ui| {
                 ui.selectable_value(&mut wanted.buffer_frames, None, buffer_text(None));
                 for frames in BUFFER_SIZES.iter().copied().filter(|n| info.buffer_range.is_none_or(|(min, max)| (min..=max).contains(n))) {
@@ -1959,30 +1954,30 @@ impl DawApp {
             });
             ui.end_row();
 
-            ui.label("Ingang");
-            let input_text = |name: &Option<String>| name.clone().unwrap_or_else(|| "Geen (niet opnemen)".into());
+            ui.label("Input");
+            let input_text = |name: &Option<String>| name.clone().unwrap_or_else(|| "None (no recording)".into());
             egui::ComboBox::from_id_salt("input-device").selected_text(input_text(&wanted.input_device)).width(260.0).show_ui(ui, |ui| {
                 ui.selectable_value(&mut wanted.input_device, None, input_text(&None));
                 for device in &self.input_devices {
-                    let label = format!("{} ({} ingangen)", device.name, device.channels);
+                    let label = format!("{} ({} inputs)", device.name, device.channels);
                     ui.selectable_value(&mut wanted.input_device, Some(device.name.clone()), label);
                 }
             });
             ui.end_row();
 
-            ui.label("Meeluisteren");
-            ui.checkbox(&mut wanted.software_monitoring, "Via DAW 388 (uit: direct monitoring van de interface)");
+            ui.label("Monitoring");
+            ui.checkbox(&mut wanted.software_monitoring, "Through DAW 388 (off: direct monitoring on the interface)");
             ui.end_row();
 
             // AUX and EFF to free outputs of the interface; 1 and 2 carry the main output.
             let output_channels = self.output.as_ref().map_or(0, |o| o.channels);
             let output_text = |c: Option<u16>| match c {
-                None => "Geen".to_string(),
-                Some(c) if c > output_channels => format!("Uitgang {c} (niet op dit apparaat)"),
-                Some(c) => format!("Uitgang {c}"),
+                None => "None".to_string(),
+                Some(c) if c > output_channels => format!("Output {c} (not on this device)"),
+                Some(c) => format!("Output {c}"),
             };
             for (label, id, choice) in
-                [("AUX-uitgang", "aux-output", &mut wanted.aux_output), ("EFF-uitgang", "eff-output", &mut wanted.eff_output)]
+                [("AUX output", "aux-output", &mut wanted.aux_output), ("EFF output", "eff-output", &mut wanted.eff_output)]
             {
                 ui.label(label);
                 egui::ComboBox::from_id_salt(id).selected_text(output_text(*choice)).width(260.0).show_ui(ui, |ui| {
@@ -1998,7 +1993,7 @@ impl DawApp {
             ui.horizontal(|ui| {
                 let automatic =
                     self.engine.as_ref().map_or(0.0, |e| e.compensation_seconds() * 1000.0) - f64::from(wanted.latency_offset_ms);
-                ui.label(format!("automatisch {automatic:.1} ms, plus"));
+                ui.label(format!("automatic {automatic:.1} ms, plus"));
                 ui.add(egui::DragValue::new(&mut wanted.latency_offset_ms).range(-100.0..=100.0).speed(0.1).suffix(" ms"));
             });
             ui.end_row();
@@ -2006,13 +2001,13 @@ impl DawApp {
         let channels = self.output.as_ref().and_then(|o| o.input.as_ref()).map_or(0, |i| i.channels);
         if channels > 0 {
             ui.add_space(4.0);
-            ui.label(RichText::new("Ingang per kanaal (MIC en LINE)").size(12.0));
+            ui.label(RichText::new("Input per channel (MIC and LINE)").size(12.0));
             let mut changed = Vec::new();
             egui::Grid::new("track-inputs").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
                 for (index, track) in self.tracks.iter().enumerate() {
                     let mut input = track.input;
-                    let text = |c: Option<u16>| c.map_or("geen".to_string(), |c| format!("in {c}"));
-                    ui.label(format!("Kanaal {}", index + 1));
+                    let text = |c: Option<u16>| c.map_or("none".to_string(), |c| format!("in {c}"));
+                    ui.label(format!("Channel {}", index + 1));
                     egui::ComboBox::from_id_salt(("track-input", index)).selected_text(text(input)).width(70.0).show_ui(ui, |ui| {
                         ui.selectable_value(&mut input, None, text(None));
                         for c in 1..=channels {
@@ -2036,20 +2031,20 @@ impl DawApp {
         let now = match &self.output {
             Some(output) => {
                 let input = match (&output.input, &output.input_error) {
-                    (Some(input), _) => format!("; ingang {} ({} kanalen)", input.device, input.channels),
-                    (None, Some(error)) => format!("; ingang: {error}"),
+                    (Some(input), _) => format!("; input {} ({} channels)", input.device, input.channels),
+                    (None, Some(error)) => format!("; input: {error}"),
                     (None, None) => String::new(),
                 };
-                format!("Nu: {}, {}{input}", output.device, describe_output(output))
+                format!("Now: {}, {}{input}", output.device, describe_output(output))
             }
-            None => "Nu: geen audio-uitvoer, het transport loopt door zonder geluid".into(),
+            None => "Now: no audio output, the transport runs on without sound".into(),
         };
         ui.label(RichText::new(now).size(11.0).color(palette::TEXT_DIM));
         ui.label(
             RichText::new(
-                "Een kleinere buffer geeft minder vertraging maar vraagt meer van de computer. Valt het apparaat weg, \
-                 dan schakelt DAW 388 over op het standaardapparaat en terug zodra het er weer is. Deze instellingen gelden \
-                 voor de app, niet per project.",
+                "A smaller buffer gives less latency but asks more of the computer. If the device goes away, \
+                 DAW 388 switches to the default device and back as soon as it returns. These settings apply \
+                 to the app, not per project.",
             )
             .size(11.0)
             .color(palette::TEXT_DIM),
@@ -2060,7 +2055,7 @@ impl DawApp {
     /// The export as the app stands now, or why it cannot start.
     fn export_job(&self) -> Result<ExportJob, String> {
         let Some(dir) = &self.project_dir else {
-            return Err("Sla het project eerst op: de export komt in de map export van het project".into());
+            return Err("Save the project first: the export goes into the project's export folder".into());
         };
         let choices = &self.export;
         let tracks: [ExportTrack; TRACKS] =
@@ -2072,7 +2067,7 @@ impl DawApp {
             .collect();
         let longest = tracks.iter().map(|t| track_end(&t.regions)).fold(0.0, f64::max);
         if longest <= 0.0 {
-            return Err("Er staat nog niets op de band om te exporteren".into());
+            return Err("There is nothing on the tape to export yet".into());
         }
         let range = if choices.to_cue {
             let end = self.cue_seconds.filter(|cue| *cue > self.zero_seconds).unwrap_or(longest);
@@ -2086,7 +2081,7 @@ impl DawApp {
             Vec::new()
         };
         if !choices.stereo && stems.is_empty() {
-            return Err("Kies een stereo bounce of losse sporen".into());
+            return Err("Choose a stereo bounce or separate tracks".into());
         }
         Ok(ExportJob {
             rate: choices.rate,
@@ -2121,7 +2116,7 @@ impl DawApp {
         let (tx, rx) = channel();
         let shared = Arc::clone(&progress);
         self.running_export = Some(RunningExport { progress, result: rx });
-        self.status = "Exporteren...".into();
+        self.status = "Exporting...".into();
         self.platform.spawn(Box::new(move || {
             let _ = tx.send(export::run(&job, &shared));
         }));
@@ -2135,7 +2130,7 @@ impl DawApp {
         self.status = match result {
             Ok(files) => {
                 let dir = files.first().and_then(|f| f.parent()).map(|d| d.display().to_string()).unwrap_or_default();
-                format!("{} bestand(en) geëxporteerd naar {dir}", files.len())
+                format!("{} file(s) exported to {dir}", files.len())
             }
             Err(e) => e,
         };
@@ -2146,17 +2141,17 @@ impl DawApp {
         let mut choices = self.export.clone();
         let mut start = false;
         let names: [String; TRACKS] =
-            std::array::from_fn(|i| if self.tracks[i].name.is_empty() { "leeg".to_string() } else { self.tracks[i].name.clone() });
+            std::array::from_fn(|i| if self.tracks[i].name.is_empty() { "empty".to_string() } else { self.tracks[i].name.clone() });
         let running = self.running_export.as_ref().map(|r| Arc::clone(&r.progress));
         egui::Window::new("Export").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.add_enabled_ui(running.is_none(), |ui| {
-                ui.checkbox(&mut choices.stereo, "Stereo bounce (de mix zoals je hem hoort)");
+                ui.checkbox(&mut choices.stereo, "Stereo bounce (the mix as you hear it)");
                 ui.add_enabled_ui(choices.stereo && self.tape.mode == TapeMode::Machine, |ui| {
-                    ui.checkbox(&mut choices.stereo_tape, "met tape-karakter");
+                    ui.checkbox(&mut choices.stereo_tape, "with tape character");
                 });
                 ui.add_space(4.0);
-                ui.checkbox(&mut choices.stems, "Losse sporen");
+                ui.checkbox(&mut choices.stems, "Separate tracks");
                 ui.add_enabled_ui(choices.stems, |ui| {
                     egui::Grid::new("export-stems").num_columns(4).show(ui, |ui| {
                         for (index, name) in names.iter().enumerate() {
@@ -2169,18 +2164,18 @@ impl DawApp {
                     });
                     ui.horizontal(|ui| {
                         for (kind, label, tip) in [
-                            (StemKind::Mixed, "met mixer en tape", "Stereo, zoals in de mix: EQ, fader, pan, en de eigen galm en echo"),
-                            (StemKind::TapeOnly, "alleen tape", "Mono, het spoor zoals het van de band komt"),
-                            (StemKind::Dry, "droog", "Mono, de opname zelf"),
+                            (StemKind::Mixed, "with mixer and tape", "Stereo, as in the mix: EQ, fader, pan, and its own reverb and echo"),
+                            (StemKind::TapeOnly, "tape only", "Mono, the track as it comes off the tape"),
+                            (StemKind::Dry, "dry", "Mono, the recording itself"),
                         ] {
                             ui.selectable_value(&mut choices.stem_kind, kind, label).on_hover_text(tip);
                         }
                     });
                 });
                 ui.add_space(4.0);
-                ui.checkbox(&mut choices.to_cue, "Alleen van het nulpunt tot het CUE-punt");
+                ui.checkbox(&mut choices.to_cue, "Only from the zero point to the CUE point");
                 ui.add_enabled_ui(choices.to_cue, |ui| {
-                    ui.checkbox(&mut choices.from_zero, "Alle bestanden beginnen op 0:00");
+                    ui.checkbox(&mut choices.from_zero, "All files start at 0:00");
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -2193,22 +2188,22 @@ impl DawApp {
                 });
                 ui.horizontal(|ui| {
                     for rate in [44_100, 48_000, 96_000] {
-                        ui.selectable_value(&mut choices.rate, rate, format!("{},{} kHz", rate / 1000, (rate % 1000) / 100));
+                        ui.selectable_value(&mut choices.rate, rate, format!("{}.{} kHz", rate / 1000, (rate % 1000) / 100));
                     }
                 });
                 ui.add_space(6.0);
                 let place =
-                    self.project_dir.as_ref().map_or("Sla het project eerst op".to_string(), |d| d.join("export").display().to_string());
-                ui.label(RichText::new(format!("Map: {place}")).size(11.0).color(palette::TEXT_DIM));
+                    self.project_dir.as_ref().map_or("Save the project first".to_string(), |d| d.join("export").display().to_string());
+                ui.label(RichText::new(format!("Folder: {place}")).size(11.0).color(palette::TEXT_DIM));
                 ui.add_space(6.0);
-                if ui.button("Exporteren").clicked() {
+                if ui.button("Export").clicked() {
                     start = true;
                 }
             });
             if let Some(progress) = &running {
                 let done = progress.done.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
                 ui.add(egui::ProgressBar::new(done).show_percentage());
-                if ui.button("Annuleren").clicked() {
+                if ui.button("Cancel").clicked() {
                     progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 ctx.request_repaint();
@@ -2227,16 +2222,16 @@ impl DawApp {
         let mut tape = self.tape;
         egui::Window::new("Tape").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.set_width(340.0);
-            ui.label("Het karakter van de band bij afspelen. Opnames via de ingang blijven schoon.");
+            ui.label("The character of the tape on playback. Recordings through the input stay clean.");
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut tape.mode, TapeMode::Clean, "Clean").on_hover_text("De band gaat ongemoeid door");
-                ui.selectable_value(&mut tape.mode, TapeMode::Machine, "388").on_hover_text("Het karakter van de 388");
+                ui.selectable_value(&mut tape.mode, TapeMode::Clean, "Clean").on_hover_text("The tape passes untouched");
+                ui.selectable_value(&mut tape.mode, TapeMode::Machine, "388").on_hover_text("The character of the 388");
             });
             ui.add_space(6.0);
             ui.add_enabled_ui(tape.mode == TapeMode::Machine, |ui| {
                 egui::Grid::new("tape-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                    ui.label("Snelheid");
+                    ui.label("Speed");
                     ui.horizontal(|ui| {
                         for (speed, label) in
                             [(SpeedEntry::Ips3_75, "3¾ IPS"), (SpeedEntry::Ips7_5, "7½ IPS"), (SpeedEntry::Ips15, "15 IPS")]
@@ -2245,12 +2240,12 @@ impl DawApp {
                         }
                     });
                     ui.end_row();
-                    ui.label("Tapesoort");
+                    ui.label("Tape type");
                     ui.horizontal(|ui| {
                         for (kind, label, tip) in [
-                            (KindEntry::T456, "456", "Veel ruimte, de standaard"),
-                            (KindEntry::T250, "250", "Warm, verzadigt eerder"),
-                            (KindEntry::T911, "911", "Iets helderder"),
+                            (KindEntry::T456, "456", "Plenty of headroom, the standard"),
+                            (KindEntry::T250, "250", "Warm, saturates sooner"),
+                            (KindEntry::T911, "911", "A little brighter"),
                         ] {
                             ui.selectable_value(&mut tape.kind, kind, label).on_hover_text(tip);
                         }
@@ -2258,20 +2253,20 @@ impl DawApp {
                     ui.end_row();
                     ui.label("dbx");
                     ui.horizontal(|ui| {
-                        let tip = "Ruisonderdrukking: de ruis zakt weg in stiltes en ademt mee met de muziek";
-                        ui.checkbox(&mut tape.dbx[0], "sporen 1-4").on_hover_text(tip);
-                        ui.checkbox(&mut tape.dbx[1], "sporen 5-8").on_hover_text(tip);
+                        let tip = "Noise reduction: the noise drops away in silences and breathes with the music";
+                        ui.checkbox(&mut tape.dbx[0], "tracks 1-4").on_hover_text(tip);
+                        ui.checkbox(&mut tape.dbx[1], "tracks 5-8").on_hover_text(tip);
                     });
                     ui.end_row();
                     for (label, amount) in [
-                        ("Saturatie", &mut tape.saturation),
+                        ("Saturation", &mut tape.saturation),
                         ("Wow & flutter", &mut tape.wow_flutter),
-                        ("Ruis", &mut tape.noise),
+                        ("Noise", &mut tape.noise),
                         ("Crosstalk", &mut tape.crosstalk),
                     ] {
                         ui.label(label);
                         let slider = egui::Slider::new(amount, 0.0..=2.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0));
-                        if ui.add(slider).on_hover_text("100% is de machine zoals hij is (dubbelklik: 100%)").double_clicked() {
+                        if ui.add(slider).on_hover_text("100% is the machine as it is (double-click: 100%)").double_clicked() {
                             *amount = 1.0;
                         }
                         ui.end_row();
@@ -2290,7 +2285,7 @@ impl DawApp {
 
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
-        egui::Window::new("Instellingen").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        egui::Window::new("Settings").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.set_width(440.0);
             self.audio_settings(ui);
             ui.add_space(8.0);
@@ -2300,17 +2295,17 @@ impl DawApp {
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(4.0);
-            ui.label(RichText::new("REPEAT, RTZ en STC").strong());
+            ui.label(RichText::new("REPEAT, RTZ and STC").strong());
             ui.add_space(4.0);
             let mut mode = self.repeat_mode;
-            ui.radio_value(&mut mode, RepeatMode::Tape, "388: de band spoelt in de tijd terug naar het nulpunt");
-            ui.radio_value(&mut mode, RepeatMode::Cycle, "Cycle: springt direct terug, zoals in Logic");
+            ui.radio_value(&mut mode, RepeatMode::Tape, "388: the tape rewinds to the zero point in real time");
+            ui.radio_value(&mut mode, RepeatMode::Cycle, "Cycle: jumps straight back, as in Logic");
             self.set_repeat_mode(mode);
             ui.add_space(6.0);
             ui.label(
                 RichText::new(
-                    "REPEAT herhaalt van het nulpunt (RESET) tot het CUE-punt. In de 388-modus zet elke transporttoets \
-                     behalve PLAY en RTZ REPEAT uit; in de cycle-modus blijft REPEAT aan. Deze instelling wordt per project bewaard.",
+                    "REPEAT repeats from the zero point (RESET) to the CUE point. In 388 mode every transport key except PLAY \
+                     and RTZ switches REPEAT off; in cycle mode REPEAT stays on. This setting is saved with the project.",
                 )
                 .size(11.0)
                 .color(palette::TEXT_DIM),
@@ -2330,7 +2325,7 @@ fn describe_output(output: &OutputInfo) -> String {
     let rate = format!("{:.1} kHz", f64::from(output.sample_rate) / 1000.0);
     match output.buffer_frames {
         Some(frames) => format!("{rate}, buffer {frames} ({:.1} ms)", f64::from(frames) * 1000.0 / f64::from(output.sample_rate.max(1))),
-        None => format!("{rate}, standaardbuffer"),
+        None => format!("{rate}, default buffer"),
     }
 }
 
@@ -2355,7 +2350,7 @@ fn fullscreen_icon(ui: &mut Ui) -> egui::Response {
         painter.line_segment([tip, tip + vec2(0.0, dy * arm * if on { -1.0 } else { 1.0 })], stroke);
     }
     let shortcut = ui.ctx().format_shortcut(&FULLSCREEN);
-    let tip = if on { format!("Volledig scherm uit ({shortcut})") } else { format!("Volledig scherm ({shortcut})") };
+    let tip = if on { format!("Exit full screen ({shortcut})") } else { format!("Full screen ({shortcut})") };
     response.on_hover_text(tip)
 }
 
@@ -2475,7 +2470,7 @@ fn eq_knob(ui: &mut Ui, band: &mut BandEntry, range: &std::ops::RangeInclusive<f
 }
 
 fn format_freq(hz: f32) -> String {
-    if hz >= 1000.0 { format!("{:.1} kHz", hz / 1000.0).replace('.', ",") } else { format!("{hz:.0} Hz") }
+    if hz >= 1000.0 { format!("{:.1} kHz", hz / 1000.0) } else { format!("{hz:.0} Hz") }
 }
 
 /// A small horizontal peak meter on the same scale and colours as [`meter`].
@@ -2604,7 +2599,7 @@ fn fader(ui: &mut Ui, db: &mut f32, cap: Color32) -> egui::Response {
         [egui::pos2(knob.left() + 3.0, knob.center().y), egui::pos2(knob.right() - 3.0, knob.center().y)],
         Stroke::new(1.5, Color32::from_rgb(0x2a, 0x26, 0x22)),
     );
-    response.on_hover_text("Slepen: niveau, shift: fijn, dubbelklik: 0 dB")
+    response.on_hover_text("Drag: level, shift: fine, double-click: 0 dB")
 }
 
 fn apply_style(ctx: &egui::Context) {
@@ -2867,7 +2862,7 @@ mod tests {
             Self {
                 save_location,
                 engines: std::rc::Rc::default(),
-                devices: std::rc::Rc::new(std::cell::RefCell::new(vec!["Ingebouwd".into()])),
+                devices: std::rc::Rc::new(std::cell::RefCell::new(vec!["Built-in".into()])),
                 lost: std::rc::Rc::default(),
                 opened: std::rc::Rc::default(),
             }
@@ -2896,8 +2891,8 @@ mod tests {
             let devices = self.devices.borrow();
             let name = match &request.device {
                 Some(name) if devices.contains(name) => name.clone(),
-                Some(name) => return Err(format!("{name} niet gevonden")),
-                None => devices.first().cloned().ok_or("geen uitvoerapparaat gevonden")?,
+                Some(name) => return Err(format!("{name} not found")),
+                None => devices.first().cloned().ok_or("no output device found")?,
             };
             let rate = request.sample_rate.unwrap_or(48_000);
             let (handle, engine) = daw388_engine::create(rate);
@@ -2942,7 +2937,7 @@ mod tests {
             // The writer would run for as long as the engine: the tests drive takes directly.
         }
         fn temp_dir(&self) -> PathBuf {
-            std::env::temp_dir().join("daw388-test-opnames")
+            std::env::temp_dir().join("daw388-test-takes")
         }
         fn input_devices(&mut self) -> Vec<DeviceInfo> {
             Vec::new()
@@ -3079,7 +3074,7 @@ mod tests {
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
         app.tracks[1].input = None;
         app.toggle_arm(1);
-        assert!(app.status.contains("kies een ingang"), "{}", app.status);
+        assert!(app.status.contains("choose an input"), "{}", app.status);
     }
 
     #[test]
@@ -3134,8 +3129,8 @@ mod tests {
         app.watch_output();
         render_latest(&engines);
         assert!(app.engine.as_ref().is_some_and(EngineHandle::is_playing), "it keeps playing on the new device");
-        assert_eq!(app.output.as_ref().map(|o| o.device.as_str()), Some("Ingebouwd"));
-        assert!(app.status.contains("weggevallen") && app.status.contains("nu via Ingebouwd"), "{}", app.status);
+        assert_eq!(app.output.as_ref().map(|o| o.device.as_str()), Some("Built-in"));
+        assert!(app.status.contains("went away") && app.status.contains("now through Built-in"), "{}", app.status);
         assert!(app.on_fallback());
 
         // Plugged back in: the next check returns to it.
@@ -3155,11 +3150,11 @@ mod tests {
         let mut app = DawApp::new(&ctx, Box::new(platform));
         assert!(app.output.is_none());
         assert!(app.engine.is_some(), "the transport still has an engine");
-        assert!(app.status.contains("zonder geluid"), "{}", app.status);
-        devices.borrow_mut().push("Ingebouwd".into());
+        assert!(app.status.contains("without sound"), "{}", app.status);
+        devices.borrow_mut().push("Built-in".into());
         app.now += DEVICE_CHECK_EVERY + 0.1;
         app.watch_output();
-        assert_eq!(app.output.as_ref().map(|o| o.device.as_str()), Some("Ingebouwd"));
+        assert_eq!(app.output.as_ref().map(|o| o.device.as_str()), Some("Built-in"));
     }
 
     fn write_wav(path: &Path) {
@@ -3207,14 +3202,14 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(Some(dir.clone()))));
         app.start_export();
-        assert!(app.status.contains("Sla het project eerst op"), "{}", app.status);
+        assert!(app.status.contains("Save the project first"), "{}", app.status);
         app.load_paths(vec![kick]);
         app.poll_loads();
         assert!(app.save(Backup::Always));
         app.export = ExportChoices { stems: true, stem_kind: StemKind::Dry, ..ExportChoices::default() };
         app.start_export();
         app.poll_export();
-        assert!(app.status.contains("2 bestand(en)"), "{}", app.status);
+        assert!(app.status.contains("2 file(s)"), "{}", app.status);
         assert!(dir.join("export").join("Demo_mix.wav").exists());
         assert!(dir.join("export").join("Demo_01_01_Kick.wav").exists());
     }
@@ -3246,7 +3241,7 @@ mod tests {
         app.meter_post = true;
         assert!(app.save(Backup::Always), "{}", app.status);
         assert!(!app.dirty);
-        assert!(app.saved_label.as_deref().is_some_and(|l| l.starts_with("Opgeslagen")));
+        assert!(app.saved_label.as_deref().is_some_and(|l| l.starts_with("Saved")));
         assert_eq!(app.project_name(), "Demo");
         let source = app.tracks[0].regions[0].source;
         assert!(app.sources.path(source).is_some_and(|s| s.starts_with(&dir)), "audio now lives in the project");
@@ -3290,7 +3285,7 @@ mod tests {
         app.open_project(&dir);
         settle(&mut app);
         assert_eq!(app.track_missing(0).len(), 1);
-        assert!(app.status.contains("ontbreekt op spoor 1"), "{}", app.status);
+        assert!(app.status.contains("missing on track 1"), "{}", app.status);
         // Saving again keeps the reference, so putting the file back repairs the project.
         app.mark_dirty();
         assert!(app.save(Backup::Always));
@@ -3353,7 +3348,7 @@ mod tests {
         assert!(app.is_loading());
         app.clear_track(0);
         settle(&mut app);
-        assert!(app.tracks[0].regions.is_empty() && app.tracks[0].unresolved.is_none(), "the old load must not come back after Wis");
+        assert!(app.tracks[0].regions.is_empty() && app.tracks[0].unresolved.is_none(), "the old load must not come back after Clear");
         assert!(!app.is_loading());
     }
 
@@ -3397,9 +3392,9 @@ mod tests {
         assert_eq!(regions_ms(&app, 0), vec![(0, 0, 100), (100, 0, 100), (200, 200, 800)]);
         let source = app.sources.path(app.tracks[0].regions[1].source).map(Path::to_path_buf).unwrap_or_default();
         assert!(source.starts_with(dir.join("audio")), "{}", source.display());
-        assert_eq!(source.file_name().and_then(|n| n.to_str()), Some("01_Kick_opname1.wav"));
+        assert_eq!(source.file_name().and_then(|n| n.to_str()), Some("01_Kick_take1.wav"));
         assert!(source.exists() && !take.exists());
-        assert_eq!(app.history.undo_name(), Some("Opname spoor 1"));
+        assert_eq!(app.history.undo_name(), Some("Take on track 1"));
         assert!(app.dirty);
         assert_eq!(app.tracks[0].rendered, Some((48_000, 48_000)), "the engine plays the new track");
 
@@ -3422,7 +3417,7 @@ mod tests {
         settle(&mut app);
         assert_eq!(regions_ms(&app, 2), vec![(100, 0, 100), (200, 0, 200)], "the second take is laid over the first");
         assert_eq!(app.history.len(), 2);
-        assert_eq!(app.tracks[2].name, "03_Spoor3_opname1");
+        assert_eq!(app.tracks[2].name, "03_Track3_take1");
     }
 
     #[test]
@@ -3445,9 +3440,9 @@ mod tests {
         app.clear_track(0);
         settle(&mut app);
         assert_eq!(regions_ms(&app, 0), vec![(100, 0, 100)]);
-        assert_eq!(app.history.undo_name(), Some("Opname spoor 1"));
+        assert_eq!(app.history.undo_name(), Some("Take on track 1"));
         app.undo();
-        assert_eq!(app.history.undo_name(), Some("Wis"));
+        assert_eq!(app.history.undo_name(), Some("Clear"));
     }
 
     #[test]
@@ -3460,7 +3455,7 @@ mod tests {
         app.new_project();
         settle(&mut app);
         assert!(app.tracks.iter().all(|t| t.regions.is_empty()));
-        assert!(app.status.contains("ander project"), "{}", app.status);
+        assert!(app.status.contains("another project"), "{}", app.status);
     }
 
     #[test]
@@ -3489,7 +3484,7 @@ mod tests {
         assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)]);
         assert_eq!(regions_ms(&app, 1), vec![(0, 0, 500)]);
         assert!(app.tracks[0].unresolved.is_none());
-        assert_eq!(app.history.undo_name(), Some("Laden"));
+        assert_eq!(app.history.undo_name(), Some("Load"));
         app.undo();
         assert!(app.tracks[0].regions.is_empty() && app.tracks[1].regions.is_empty());
         assert_eq!(app.history.undo_name(), None);
@@ -3514,7 +3509,7 @@ mod tests {
         app.import_path(0, &snare);
         settle(&mut app);
         assert_eq!(regions_ms(&app, 0), vec![(0, 0, 500), (500, 0, 250), (750, 750, 250)]);
-        assert_eq!(app.history.undo_name(), Some("Importeren"));
+        assert_eq!(app.history.undo_name(), Some("Import"));
         app.undo();
         assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)]);
         app.redo();
@@ -3535,7 +3530,7 @@ mod tests {
         assert!(app.tracks[0].unresolved.is_some());
         app.toggle_arm(0);
         assert!(!app.tracks[0].armed);
-        assert!(app.status.contains("wis het spoor"), "{}", app.status);
+        assert!(app.status.contains("clear the track"), "{}", app.status);
         app.clear_track(0);
         app.toggle_arm(0);
         assert!(app.tracks[0].armed);
@@ -3558,7 +3553,7 @@ mod tests {
             app.undo();
         }
         app.undo();
-        assert_eq!(app.status, "Er is niets om ongedaan te maken");
+        assert_eq!(app.status, "Nothing to undo");
     }
 
     #[test]
@@ -3618,7 +3613,7 @@ mod tests {
         let mut app = DawApp::new(&ctx, Box::new(platform));
         let paths: Vec<PathBuf> = (0..tracks)
             .map(|t| {
-                let path = files.join(format!("{:02}_spoor.wav", t + 1));
+                let path = files.join(format!("{:02}_track.wav", t + 1));
                 write_wav_of(&path, 1.0, 0.25);
                 path
             })
@@ -3642,7 +3637,7 @@ mod tests {
         app.split();
         assert_eq!(regions_ms(&app, 0), vec![(0, 0, 500), (500, 500, 500)]);
         assert_eq!(regions_ms(&app, 1).len(), 2);
-        assert_eq!(app.history.undo_name(), Some("Splitsen"));
+        assert_eq!(app.history.undo_name(), Some("Split"));
         app.undo();
         app.select_region(0, 0, false);
         app.split();
@@ -3657,11 +3652,11 @@ mod tests {
         app.select_region(0, 0, false);
         app.cut();
         assert!(app.tracks[0].regions.is_empty());
-        assert_eq!(app.history.undo_name(), Some("Knippen"));
+        assert_eq!(app.history.undo_name(), Some("Cut"));
         locate(&mut app, &engines, 2.0);
         app.paste();
         assert_eq!(regions_ms(&app, 0), vec![(2000, 0, 1000)]);
-        assert_eq!(app.history.undo_name(), Some("Plakken"));
+        assert_eq!(app.history.undo_name(), Some("Paste"));
         assert_eq!(app.editor.selection, vec![(0, 0)], "the pasted region is selected");
     }
 
@@ -3679,7 +3674,7 @@ mod tests {
         locate(&mut app, &engines, 0.25);
         app.paste();
         assert_eq!(regions_ms(&app, 0), vec![(0, 0, 250), (250, 250, 250), (500, 500, 500)]);
-        assert_eq!(app.history.undo_name(), Some("Invoegen"));
+        assert_eq!(app.history.undo_name(), Some("Insert"));
     }
 
     #[test]
@@ -3689,7 +3684,7 @@ mod tests {
         app.select_range(0.5, 0.25);
         app.delete();
         assert_eq!(regions_ms(&app, 0), vec![(0, 0, 250), (500, 500, 500)]);
-        assert_eq!(app.history.undo_name(), Some("Wissen"));
+        assert_eq!(app.history.undo_name(), Some("Erase"));
     }
 
     #[test]
@@ -3701,7 +3696,7 @@ mod tests {
         app.select_region(0, 0, false);
         app.move_selection(1, 0.0);
         assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)]);
-        assert!(app.status.contains("wis het spoor"), "{}", app.status);
+        assert!(app.status.contains("clear the track"), "{}", app.status);
     }
 
     #[test]
@@ -3713,7 +3708,7 @@ mod tests {
         assert!(app.tracks[0].regions.is_empty());
         assert_eq!(regions_ms(&app, 2), vec![(500, 0, 1000)]);
         assert_eq!(app.editor.selection, vec![(2, 0)]);
-        assert_eq!(app.history.undo_name(), Some("Verschuiven"));
+        assert_eq!(app.history.undo_name(), Some("Move"));
         app.move_selection(0, -5.0);
         assert_eq!(regions_ms(&app, 2), vec![(0, 0, 1000)], "not before 0:00");
     }
@@ -3726,7 +3721,7 @@ mod tests {
         assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)]);
         app.trim(0, 0, timeline::Edge::Start, 0.25);
         assert_eq!(regions_ms(&app, 0), vec![(250, 250, 750)]);
-        assert_eq!(app.history.undo_name(), Some("Inkorten"));
+        assert_eq!(app.history.undo_name(), Some("Trim"));
         assert_eq!(app.editor.selection, vec![(0, 0)]);
         app.trim(0, 0, timeline::Edge::Start, 0.0);
         assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)], "pulled back");
@@ -3738,9 +3733,9 @@ mod tests {
         let (mut app, _engines) = app_with_tracks(files.path(), 1);
         app.rename(0, " Kick ".into());
         assert_eq!(app.tracks[0].name, "Kick");
-        assert_eq!(app.history.undo_name(), Some("Naam"));
+        assert_eq!(app.history.undo_name(), Some("Rename"));
         app.undo();
-        assert_eq!(app.tracks[0].name, "01_spoor");
+        assert_eq!(app.tracks[0].name, "01_track");
     }
 
     #[test]
@@ -3756,13 +3751,13 @@ mod tests {
             })
             .collect();
         let text = files.path().join("notities.txt");
-        std::fs::write(&text, "geen audio").unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(&text, "no audio").unwrap_or_else(|e| panic!("{e}"));
         paths.push(text);
         app.drop_files(6, 1.0, paths);
         settle(&mut app);
         assert_eq!(regions_ms(&app, 6), vec![(1000, 0, 500)]);
         assert_eq!(regions_ms(&app, 7), vec![(1000, 0, 500)]);
-        assert!(app.status.contains("2 bestand(en) niet geplaatst"), "{}", app.status);
+        assert!(app.status.contains("2 file(s) not placed"), "{}", app.status);
         assert_eq!(app.history.len(), 1);
         app.undo();
         assert!(app.tracks[6].regions.is_empty() && app.tracks[7].regions.is_empty());
@@ -3783,12 +3778,12 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
         app.record();
-        assert!(app.status.contains("Sla het project eerst op"), "{}", app.status);
+        assert!(app.status.contains("Save the project first"), "{}", app.status);
         app.set_routing(Routing::Classic);
         app.tracks[3].channel = ChannelEntry::default();
         app.toggle_arm(3);
         assert!(app.tracks[3].armed);
-        assert!(app.status.contains("krijgt niets binnen"), "RMX without ASSIGN: {}", app.status);
+        assert!(app.status.contains("receives nothing"), "RMX without ASSIGN: {}", app.status);
         app.tracks[4].channel = ChannelEntry { source: ChannelSource::Line, direct: true, ..ChannelEntry::default() };
         app.status.clear();
         app.toggle_arm(4);
@@ -3859,8 +3854,8 @@ mod tests {
         assert!(app.save(Backup::Always));
         app.request(Pending::Close);
         assert!(app.tracks[0].regions.is_empty());
-        assert_eq!(app.project_name(), "Naamloos");
-        assert!(app.status.contains("Demo gesloten"), "{}", app.status);
+        assert_eq!(app.project_name(), "Untitled");
+        assert!(app.status.contains("Demo closed"), "{}", app.status);
         app.request(Pending::Quit);
         assert!(app.may_close, "nothing unsaved: quit straight away");
     }

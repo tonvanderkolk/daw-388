@@ -7,6 +7,11 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.21.1] - 2026-10-29
+
+### Gewijzigd
+- De interface is volledig Engels. Nieuwe opnames heten `01_Kick_take1.wav` in plaats van `01_Kick_opname1.wav`; oude namen tellen gewoon door.
+
 ## [0.21.0] - 2026-10-29
 
 ### Gewijzigd

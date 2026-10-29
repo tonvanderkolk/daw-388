@@ -53,10 +53,10 @@ pub enum ImportError {
 impl fmt::Display for ImportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Wav(e) => write!(f, "WAV-bestand niet leesbaar: {e}"),
-            Self::Decode(format, e) => write!(f, "{format}-bestand niet leesbaar: {e}"),
-            Self::Io(e) => write!(f, "bestand niet leesbaar: {e}"),
-            Self::Empty => write!(f, "het bestand bevat geen audio"),
+            Self::Wav(e) => write!(f, "WAV file not readable: {e}"),
+            Self::Decode(format, e) => write!(f, "{format} file not readable: {e}"),
+            Self::Io(e) => write!(f, "file not readable: {e}"),
+            Self::Empty => write!(f, "the file contains no audio"),
         }
     }
 }

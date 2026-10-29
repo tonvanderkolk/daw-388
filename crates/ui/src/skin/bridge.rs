@@ -29,7 +29,8 @@ impl DawApp {
                     let track = &self.tracks[index];
                     ui.vertical(|ui| {
                         ui.set_width(vu::SMALL.x);
-                        vu::draw(ui, vu::SMALL, track.vu.position(), now < track.ol_until).on_hover_text("OL: piek na de EQ boven -3 dBFS");
+                        vu::draw(ui, vu::SMALL, track.vu.position(), now < track.ol_until)
+                            .on_hover_text("OL: peak after the EQ above -3 dBFS");
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 3.0;
                             ui.add_space(vu::SMALL.x / 2.0 - 18.0);
@@ -44,7 +45,7 @@ impl DawApp {
                     ui.vertical(|ui| {
                         ui.set_width(vu::LARGE.x);
                         vu::draw(ui, vu::LARGE, self.big_vu[side].position(), now < self.big_ol_until[side])
-                            .on_hover_text("De METER-schakelaar kiest STEREO of AUX en EFF");
+                            .on_hover_text("The METER switch chooses STEREO or AUX and EFF");
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 3.0;
                             let lit = |on: bool| if on { palette::CREAM } else { palette::TEXT_DIM.gamma_multiply(0.6) };
@@ -75,7 +76,7 @@ impl DawApp {
             ui.add_space(8.0);
             ui.label(bold("DAW 388").italics().size(30.0).color(palette::RED));
             ui.label(bold("STUDIO 8").italics().size(15.0).color(palette::CREAM));
-            ui.label(RichText::new("tape-emulatie · 8 sporen").size(11.0).color(palette::TEXT_DIM));
+            ui.label(RichText::new("tape emulation · 8 tracks").size(11.0).color(palette::TEXT_DIM));
         });
     }
 

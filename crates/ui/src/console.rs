@@ -97,18 +97,18 @@ impl DawApp {
             // What the 388 does not have: loading, wiping and the interface input.
             section(ui, "", BAND_TRACK, |ui| {
                 let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
-                let laad = place(ui, cx - 16.0, top, vec2(30.0, KEY_NARROW_H), |ui| KeyCap::new("LAAD", keys::NARROW).show(ui));
-                if laad.on_hover_text("WAV-, AIFF-, FLAC- of MP3-bestand op dit spoor zetten, vanaf de afspeelpositie").clicked() {
+                let load_key = place(ui, cx - 16.0, top, vec2(30.0, KEY_NARROW_H), |ui| KeyCap::new("LOAD", keys::NARROW).show(ui));
+                if load_key.on_hover_text("Put a WAV, AIFF, FLAC or MP3 file on this track, from the play position").clicked() {
                     load = true;
                 }
                 let wipe = place(ui, cx + 16.0, top, vec2(30.0, KEY_NARROW_H), |ui| {
-                    ui.add_enabled_ui(has_content, |ui| KeyCap::new("WIS", keys::NARROW).show(ui)).inner
+                    ui.add_enabled_ui(has_content, |ui| KeyCap::new("CLEAR", keys::NARROW).show(ui)).inner
                 });
-                if wipe.on_hover_text("Alles van dit spoor halen (Cmd+Z zet het terug)").clicked() {
+                if wipe.on_hover_text("Remove everything from this track (Cmd+Z brings it back)").clicked() {
                     clear = true;
                 }
                 if track.channel.source != ChannelSource::Rmx || track.channel.auto {
-                    let text = |c: Option<u16>| c.map_or("geen ingang".to_string(), |c| format!("in {c}"));
+                    let text = |c: Option<u16>| c.map_or("no input".to_string(), |c| format!("in {c}"));
                     let mut input = track.input;
                     place(ui, cx, top + 31.0, vec2(84.0, 20.0), |ui| {
                         egui::ComboBox::from_id_salt(("strip-input", index)).selected_text(text(input)).width(76.0).show_ui(ui, |ui| {
@@ -137,7 +137,7 @@ impl DawApp {
                 let width = if simple { 52.0 } else { 78.0 };
                 let mut chosen = sources.iter().position(|s| *s == track.channel.source).unwrap_or(1);
                 let switch = place(ui, cx, top, vec2(width, 23.0), |ui| keys::slide_switch(ui, labels, &mut chosen, width)).on_hover_text(
-                    "INPUT: MIC via de voorversterker (verzadigt zacht boven ongeveer -6 dBFS), LINE schoon, RMX de weergave van dit spoor",
+                    "INPUT: MIC through the preamp (saturates softly above about -6 dBFS), LINE clean, RMX the playback of this track",
                 );
                 if switch.changed() {
                     track.channel.source = sources[chosen];
@@ -155,7 +155,7 @@ impl DawApp {
                     knob(ui, &mut track.channel.trim_db, range, 0.0, palette::RED, 30.0, true)
                 })
                 .on_hover_text(if track.channel.auto {
-                    format!("TRIM {:+.1} dB: alleen voor de ingang (dubbelklik: 0 dB)", track.channel.trim_db)
+                    format!("TRIM {:+.1} dB: for the input only (double-click: 0 dB)", track.channel.trim_db)
                 } else {
                     format!("TRIM {:+.1} dB (dubbelklik: 0 dB)", track.channel.trim_db)
                 });
@@ -175,7 +175,7 @@ impl DawApp {
                     let response =
                         place(ui, cx, y - 17.0, vec2(34.0, 34.0), |ui| eq_knob(ui, entry, &EQ_RANGES[band], EQ_DEFAULTS[band].freq, 34.0));
                     let tip = format!(
-                        "{} {} {:+.1} dB. Midden: gain, ring: frequentie. Dubbelklik zet terug.",
+                        "{} {} {:+.1} dB. Centre: gain, ring: frequency. Double-click resets.",
                         EQ_NAMES[band],
                         format_freq(entry.freq_hz),
                         entry.gain_db
@@ -187,7 +187,7 @@ impl DawApp {
             section(ui, "AUX", BAND_AUX, |ui| {
                 let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
                 let channel = &mut track.channel;
-                let tip = "PRE: de AUX-send hangt niet af van EQ, fader en MUTE (een koptelefoonmix)";
+                let tip = "PRE: the AUX send does not depend on EQ, fader and MUTE (a headphone mix)";
                 let pre = place(ui, cx - 36.0, top, vec2(34.0, KEY_NARROW_H), |ui| {
                     KeyCap::new("PRE", keys::NARROW).colour(KeyColour::Green).lamp(channel.aux_pre, palette::LED_GREEN).show(ui)
                 });
@@ -198,13 +198,16 @@ impl DawApp {
                 let aux = place(ui, cx, top, vec2(30.0, 30.0), |ui| {
                     knob(ui, &mut channel.aux_db, MIN_DB..=MAX_DB, MIN_DB, palette::GREEN, 30.0, true)
                 })
-                .on_hover_text(format!("AUX {}: PRE voor EQ en fader, POST na de fader (dubbelklik: dicht)", format_db(channel.aux_db)));
+                .on_hover_text(format!(
+                    "AUX {}: PRE before EQ and fader, POST after the fader (double-click: off)",
+                    format_db(channel.aux_db)
+                ));
                 changed |= aux.changed() || aux.double_clicked();
                 tag(ui, pos2(cx - 22.0, top + 51.0), Align2::RIGHT_CENTER, "EFF");
                 let eff = place(ui, cx, top + 36.0, vec2(30.0, 30.0), |ui| {
                     knob(ui, &mut channel.eff_db, MIN_DB..=MAX_DB, MIN_DB, palette::BLUE, 30.0, true)
                 })
-                .on_hover_text(format!("EFF {}: na de fader, naar de echo (dubbelklik: dicht)", format_db(channel.eff_db)));
+                .on_hover_text(format!("EFF {}: after the fader, to the echo (double-click: off)", format_db(channel.eff_db)));
                 changed |= eff.changed() || eff.double_clicked();
             });
             // ASSIGN to the PGM buses and to L-R: the keys in one column, their numbers in front.
@@ -224,10 +227,9 @@ impl DawApp {
                         let key =
                             place(ui, key_x, y - 7.0, keys::NARROW, |ui| KeyCap::new("", keys::NARROW).colour(colour).bare().show(ui));
                         let tip = if row < 4 {
-                            format!("Naar PGM-bus {} (PAN links) en {} (PAN rechts)", 2 * row + 1, 2 * row + 2)
+                            format!("To PGM bus {} (PAN left) and {} (PAN right)", 2 * row + 1, 2 * row + 2)
                         } else {
-                            "L-R: naar de stereobus. Staat er een kanaal op L-R, dan hoor je alleen de L-R-kanalen, niet de MONITOR"
-                                .to_string()
+                            "L-R: to the stereo bus. With a channel on L-R you hear only the L-R channels, not the MONITOR".to_string()
                         };
                         if key.on_hover_text(tip).clicked() {
                             if row < 4 {
@@ -239,7 +241,7 @@ impl DawApp {
                         }
                     }
                     let tip = format!(
-                        "DIRECT: spoor {} neemt dit kanaal op (na TRIM en EQ, voor de fader) in plaats van PGM-bus {}",
+                        "DIRECT: track {} records this channel (after TRIM and EQ, before the fader) instead of PGM bus {}",
                         index + 1,
                         index + 1
                     );
@@ -250,7 +252,7 @@ impl DawApp {
                         track.channel.direct = !track.channel.direct;
                         changed = true;
                     }
-                    let tip = "AUTO: de band, en de ingang zodra dit spoor op REC staat (met INSERT vanaf het inprikpunt). De opname krijgt geen EQ";
+                    let tip = "AUTO: the tape, and the input once this track is on REC (with INSERT from the punch-in point). The take gets no EQ";
                     let auto = place(ui, cx + 32.0, top + 36.0, vec2(46.0, KEY_NARROW_H), |ui| {
                         KeyCap::new("AUTO", keys::NARROW).lamp(track.channel.auto, palette::LED_GREEN).show(ui)
                     });
@@ -266,9 +268,9 @@ impl DawApp {
             section(ui, "PAN", BAND_PAN, |ui| {
                 let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
                 let pan_tip = if simple {
-                    format!("PAN {:+.2} (dubbelklik: midden)", track.pan)
+                    format!("PAN {:+.2} (double-click: centre)", track.pan)
                 } else {
-                    format!("PAN {:+.2}: links naar de oneven bus, rechts naar de even bus (dubbelklik: midden)", track.pan)
+                    format!("PAN {:+.2}: left to the odd bus, right to the even bus (double-click: centre)", track.pan)
                 };
                 let pan = place(ui, cx, top, vec2(30.0, 30.0), |ui| knob(ui, &mut track.pan, -1.0..=1.0, 0.0, palette::CREAM, 30.0, true))
                     .on_hover_text(pan_tip);
@@ -284,7 +286,7 @@ impl DawApp {
                 let rec = place(ui, cx - 34.0, top, vec2(34.0, KEY_NARROW_H), |ui| {
                     KeyCap::new("REC", keys::NARROW).colour(KeyColour::Red).lamp(lit, palette::LED).show(ui)
                 });
-                if rec.on_hover_text("REC FUNCTION: spoor klaar voor opname").clicked() {
+                if rec.on_hover_text("REC FUNCTION: track ready to record").clicked() {
                     arm = true;
                 }
                 let mute = place(ui, cx, top, vec2(34.0, KEY_NARROW_H), |ui| {
@@ -298,7 +300,7 @@ impl DawApp {
                 let button = place(ui, cx + 34.0, top, vec2(34.0, KEY_NARROW_H), |ui| {
                     KeyCap::new("SOLO", keys::NARROW).lamp(track.solo, palette::LED_GREEN).show(ui)
                 });
-                if button.on_hover_text("SOLO: alleen de gesoloode sporen horen. Opnames en bussen merken er niets van").clicked() {
+                if button.on_hover_text("SOLO: hear only the soloed tracks. Recordings and buses are not affected").clicked() {
                     track.solo = !track.solo;
                     solo = true;
                 }
@@ -312,10 +314,10 @@ impl DawApp {
             // The number and the name under the fader, as on the 388.
             ui.label(bold(format!("{}", index + 1)).size(20.0).color(palette::CREAM));
             let (name, colour) = match missing.first() {
-                _ if loading => ("laden...".to_string(), palette::ORANGE),
-                Some(path) => (format!("ontbreekt: {}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), palette::LED),
+                _ if loading => ("loading...".to_string(), palette::ORANGE),
+                Some(path) => (format!("missing: {}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), palette::LED),
                 None if has_content => (track.name.clone(), palette::TEXT_DIM),
-                None => ("leeg".to_string(), palette::TEXT_DIM),
+                None => ("empty".to_string(), palette::TEXT_DIM),
             };
             match &mut renaming {
                 Some((track_index, text, focus)) if *track_index == index => {
@@ -334,10 +336,10 @@ impl DawApp {
                 _ => {
                     let label = ui.add(egui::Label::new(RichText::new(name).size(11.0).color(colour)).truncate().sense(Sense::click()));
                     let label = if missing.is_empty() {
-                        label.on_hover_text("Dubbelklik: naam wijzigen")
+                        label.on_hover_text("Double-click: rename")
                     } else {
                         let paths: Vec<String> = missing.iter().map(|p| p.display().to_string()).collect();
-                        label.on_hover_text(format!("Niet gevonden: {}", paths.join(", ")))
+                        label.on_hover_text(format!("Not found: {}", paths.join(", ")))
                     };
                     if label.double_clicked() {
                         renaming = Some((index, track.name.clone(), true));
@@ -385,13 +387,13 @@ impl DawApp {
                     let y = top + 16.0 + 34.0 * index as f32;
                     tag(ui, pos2(cx - 56.0, y), Align2::CENTER_CENTER, &format!("{}", index + 1));
                     let rtn = &mut self.mixer.effects.rtn[index];
-                    let tip = format!("RTN {} ({name}) {} (dubbelklik: 0 dB)", index + 1, format_db(rtn.gain_db));
+                    let tip = format!("RTN {} ({name}) {} (double-click: 0 dB)", index + 1, format_db(rtn.gain_db));
                     let gain = place(ui, cx - 21.0, y - 15.0, vec2(30.0, 30.0), |ui| {
                         knob(ui, &mut rtn.gain_db, MIN_DB..=MAX_DB, 0.0, palette::BLUE, 30.0, true)
                     });
                     let gain = gain.on_hover_text(tip);
                     mixer_changed |= gain.changed() || gain.double_clicked();
-                    let tip = format!("PAN RTN {} {:+.2} (dubbelklik: midden)", index + 1, rtn.pan);
+                    let tip = format!("PAN RTN {} {:+.2} (double-click: centre)", index + 1, rtn.pan);
                     let pan = place(ui, cx + 21.0, y - 15.0, vec2(30.0, 30.0), |ui| {
                         knob(ui, &mut rtn.pan, -1.0..=1.0, 0.0, palette::CREAM, 30.0, true)
                     });
@@ -417,11 +419,11 @@ impl DawApp {
             section(ui, "PLATE (AUX)", BAND_PLATE, |ui| {
                 let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
                 let plate = &mut effects.plate;
-                let tip = format!("DECAY {:.1} s: hoe lang de galm duurt (dubbelklik: 2 s)", plate.decay_s);
+                let tip = format!("DECAY {:.1} s: how long the reverb lasts (double-click: 2 s)", plate.decay_s);
                 mixer_changed |= turn(ui, cx - 48.0, top, &mut plate.decay_s, 0.5..=6.0, 2.0, palette::GREEN, true, tip);
-                let tip = format!("PRE-DELAY {:.0} ms: wachttijd voor de galm begint (dubbelklik: 20 ms)", plate.predelay_ms);
+                let tip = format!("PRE-DELAY {:.0} ms: wait before the reverb starts (double-click: 20 ms)", plate.predelay_ms);
                 mixer_changed |= turn(ui, cx, top, &mut plate.predelay_ms, 0.0..=100.0, 20.0, palette::GREEN, true, tip);
-                let tip = format!("TONE {:.0}%: van donker naar helder (dubbelklik: midden)", plate.tone * 100.0);
+                let tip = format!("TONE {:.0}%: from dark to bright (double-click: centre)", plate.tone * 100.0);
                 mixer_changed |= turn(ui, cx + 48.0, top, &mut plate.tone, 0.0..=1.0, 0.5, palette::GREEN, true, tip);
                 for (x, name) in [(cx - 48.0, "DECAY"), (cx, "PRE"), (cx + 48.0, "TONE")] {
                     tag(ui, pos2(x, top + 38.0), Align2::CENTER_CENTER, name);
@@ -439,23 +441,23 @@ impl DawApp {
                         EchoSyncEntry::DottedEighth => quarter * 0.75,
                     };
                 let tip = if synced {
-                    format!("TIME {:.0} ms, volgt het tempo (kies VRIJ om zelf te kiezen)", sync_ms.min(2000.0))
+                    format!("TIME {:.0} ms, follows the tempo (choose FREE to set it yourself)", sync_ms.min(2000.0))
                 } else {
-                    format!("TIME {:.0} ms (dubbelklik: 300 ms)", echo.time_ms)
+                    format!("TIME {:.0} ms (double-click: 300 ms)", echo.time_ms)
                 };
                 mixer_changed |= turn(ui, cx - 48.0, top, &mut echo.time_ms, 40.0..=800.0, 300.0, palette::BLUE, !synced, tip);
-                let tip = format!("FEEDBACK {:.0}%: hoeveel herhalingen (dubbelklik: 35%)", echo.feedback * 100.0);
+                let tip = format!("FEEDBACK {:.0}%: how many repeats (double-click: 35%)", echo.feedback * 100.0);
                 mixer_changed |= turn(ui, cx, top, &mut echo.feedback, 0.0..=0.9, 0.35, palette::BLUE, true, tip);
-                let tip = format!("TONE {:.0}%: hoe donker de herhalingen worden (dubbelklik: midden)", echo.tone * 100.0);
+                let tip = format!("TONE {:.0}%: how dark the repeats get (double-click: centre)", echo.tone * 100.0);
                 mixer_changed |= turn(ui, cx + 48.0, top, &mut echo.tone, 0.0..=1.0, 0.5, palette::BLUE, true, tip);
                 for (x, name) in [(cx - 48.0, "TIME"), (cx, "FEEDB."), (cx + 48.0, "TONE")] {
                     tag(ui, pos2(x, top + 38.0), Align2::CENTER_CENTER, name);
                 }
                 for (column, (sync, label, tip)) in [
-                    (EchoSyncEntry::Off, "VRIJ", "TIME in milliseconden"),
-                    (EchoSyncEntry::Quarter, "1/4", "Een kwartnoot van het metronoomtempo"),
-                    (EchoSyncEntry::Eighth, "1/8", "Een achtste noot van het metronoomtempo"),
-                    (EchoSyncEntry::DottedEighth, "1/8.", "Een gepunteerde achtste van het metronoomtempo"),
+                    (EchoSyncEntry::Off, "FREE", "TIME in milliseconds"),
+                    (EchoSyncEntry::Quarter, "1/4", "A quarter note of the metronome tempo"),
+                    (EchoSyncEntry::Eighth, "1/8", "An eighth note of the metronome tempo"),
+                    (EchoSyncEntry::DottedEighth, "1/8.", "A dotted eighth of the metronome tempo"),
                 ]
                 .into_iter()
                 .enumerate()
@@ -526,10 +528,10 @@ impl DawApp {
             let gain = place(ui, gain_x, y - 12.0, vec2(24.0, 24.0), |ui| {
                 knob(ui, &mut monitor.gain_db, MIN_DB..=MONITOR_MAX_DB, 0.0, palette::CREAM, 24.0, true)
             })
-            .on_hover_text(format!("MONITOR GAIN spoor {}: {} (dubbelklik: 0 dB)", index + 1, format_db(monitor.gain_db)));
+            .on_hover_text(format!("MONITOR GAIN track {}: {} (double-click: 0 dB)", index + 1, format_db(monitor.gain_db)));
             let pan =
                 place(ui, pan_x, y - 12.0, vec2(24.0, 24.0), |ui| knob(ui, &mut monitor.pan, -1.0..=1.0, 0.0, palette::CREAM, 24.0, true))
-                    .on_hover_text(format!("MONITOR PAN {:+.2} (dubbelklik: midden)", monitor.pan));
+                    .on_hover_text(format!("MONITOR PAN {:+.2} (double-click: centre)", monitor.pan));
             keys::paint_lamp(ui.painter(), pos2(m_x - 18.0, y), monitor.mute, palette::LED_ORANGE);
             let mute = place(ui, m_x, y - 7.0, keys::NARROW, |ui| KeyCap::new("", keys::NARROW).bare().show(ui));
             if mute.clicked() {
@@ -544,8 +546,8 @@ impl DawApp {
         let y = top + 250.0;
         tag(ui, pos2(cx - 80.0, y + 20.0), Align2::CENTER_CENTER, "MON");
         for (x, (mon, label, tip)) in [
-            (cx - 24.0, (MonSwitch::Cue, "CUE", "Band of ingang, volgens REC FUNCTION en INSERT (zoals op de 388)")),
-            (cx + 24.0, (MonSwitch::Pgm, "PGM", "Altijd de PGM-bussen")),
+            (cx - 24.0, (MonSwitch::Cue, "CUE", "Tape or input, following REC FUNCTION and INSERT (as on the 388)")),
+            (cx + 24.0, (MonSwitch::Pgm, "PGM", "Always the PGM buses")),
         ] {
             let on = self.mixer.mon == mon;
             let key = place(ui, x, y, vec2(40.0, KEY_SMALL_H), |ui| KeyCap::new(label, keys::SMALL).lamp(on, palette::LED_GREEN).show(ui));
@@ -571,7 +573,7 @@ impl DawApp {
                     knob(ui, &mut self.mixer.aux_master_db, MIN_DB..=MAX_DB, 0.0, palette::GREEN, 30.0, true)
                 })
                 .on_hover_text(format!(
-                    "AUX MASTER {} (dubbelklik: 0 dB). De uitgang kies je in Instellingen, Audio",
+                    "AUX MASTER {} (double-click: 0 dB). Choose its output in Settings, Audio",
                     format_db(self.mixer.aux_master_db)
                 ));
                 mixer_changed |= aux.changed() || aux.double_clicked();
@@ -579,7 +581,7 @@ impl DawApp {
                     knob(ui, &mut self.mixer.eff_master_db, MIN_DB..=MAX_DB, 0.0, palette::BLUE, 30.0, true)
                 })
                 .on_hover_text(format!(
-                    "EFF MASTER {} (dubbelklik: 0 dB). De uitgang kies je in Instellingen, Audio",
+                    "EFF MASTER {} (double-click: 0 dB). Choose its output in Settings, Audio",
                     format_db(self.mixer.eff_master_db)
                 ));
                 mixer_changed |= eff.changed() || eff.double_clicked();
@@ -589,8 +591,8 @@ impl DawApp {
             section(ui, "", BAND_SWITCHES, |ui| {
                 let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
                 for (meter, label, tip, x) in [
-                    (MeterSwitch::Lr, "L-R", "De stereometers tonen links en rechts", cx - 24.0),
-                    (MeterSwitch::AuxEff, "AUX-EFF", "De stereometers tonen AUX en EFF na hun master", cx + 24.0),
+                    (MeterSwitch::Lr, "L-R", "The stereo meters show left and right", cx - 24.0),
+                    (MeterSwitch::AuxEff, "AUX-EFF", "The stereo meters show AUX and EFF after their master", cx + 24.0),
                 ] {
                     let on = self.mixer.meter == meter;
                     let key = place(ui, x, top, vec2(48.0, KEY_SMALL_H), |ui| {
@@ -602,8 +604,8 @@ impl DawApp {
                     }
                 }
                 for (post, label, tip, x) in [
-                    (false, "PRE", "TRK-meters tonen het niveau na TRIM, voor de fader (zoals op de 388)", cx - 24.0),
-                    (true, "POST", "TRK-meters tonen het niveau na fader en mute", cx + 24.0),
+                    (false, "PRE", "TRK meters show the level after TRIM, before the fader (as on the 388)", cx - 24.0),
+                    (true, "POST", "TRK meters show the level after fader and mute", cx + 24.0),
                 ] {
                     let lit = self.meter_post == post;
                     let key = place(ui, x, top + 35.0, vec2(48.0, KEY_SMALL_H), |ui| {
@@ -617,17 +619,17 @@ impl DawApp {
                 let mono = place(ui, cx, top + 70.0, vec2(48.0, KEY_SMALL_H), |ui| {
                     KeyCap::new("MONO", keys::SMALL).lamp(self.mixer.mono, palette::LED_GREEN).show(ui)
                 });
-                if mono.on_hover_text("Links en rechts samen op beide kanten").clicked() {
+                if mono.on_hover_text("Left and right together on both sides").clicked() {
                     self.mixer.mono = !self.mixer.mono;
                     mixer_changed = true;
                 }
             });
-            section(ui, "LUISTEREN", BAND_LISTEN, |ui| {
+            section(ui, "LISTEN", BAND_LISTEN, |ui| {
                 let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
                 for (listen, label, tip, x) in [
-                    (ListenSwitch::Stereo, "STEREO", "De hoofduitgang krijgt de STEREO MASTER", cx - 40.0),
-                    (ListenSwitch::Aux, "AUX", "De hoofduitgang krijgt AUX, mono op beide kanten", cx),
-                    (ListenSwitch::Eff, "EFF", "De hoofduitgang krijgt EFF, mono op beide kanten", cx + 40.0),
+                    (ListenSwitch::Stereo, "STEREO", "The main output gets the STEREO MASTER", cx - 40.0),
+                    (ListenSwitch::Aux, "AUX", "The main output gets AUX, mono on both sides", cx),
+                    (ListenSwitch::Eff, "EFF", "The main output gets EFF, mono on both sides", cx + 40.0),
                 ] {
                     let on = self.mixer.listen == listen;
                     let key = place(ui, x, top, vec2(40.0, KEY_SMALL_H), |ui| {
@@ -643,7 +645,7 @@ impl DawApp {
                     knob(ui, &mut self.mixer.phones_db, MIN_DB..=MAX_DB, 0.0, palette::CREAM, 30.0, true)
                 })
                 .on_hover_text(format!(
-                    "MONITOR/PHONES {}: niveau van de hoofduitgang. De klik heeft zijn eigen volume (dubbelklik: 0 dB)",
+                    "MONITOR/PHONES {}: level of the main output. The click has its own volume (double-click: 0 dB)",
                     format_db(self.mixer.phones_db)
                 ));
                 mixer_changed |= phones.changed() || phones.double_clicked();
