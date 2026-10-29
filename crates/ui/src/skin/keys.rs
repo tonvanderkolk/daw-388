@@ -141,6 +141,29 @@ pub fn paint_lamp(painter: &egui::Painter, centre: Pos2, lit: bool, colour: Colo
     painter.circle_filled(centre, 2.5, if lit { colour } else { Color32::from_rgb(0x2a, 0x26, 0x24) });
 }
 
+/// A blanking plate over an empty part of the console, as on a rack or console: a plate a
+/// shade lighter than the panel, its shadow, a highlight along the top and a screw in each corner.
+pub fn blank_plate(painter: &egui::Painter, rect: Rect) {
+    let plate = Color32::from_rgb(0x36, 0x36, 0x38);
+    painter.rect_filled(rect.translate(vec2(0.0, 2.0)), 3.0, Color32::from_black_alpha(90));
+    painter.rect_filled(rect, 3.0, plate);
+    painter.rect_stroke(rect, 3.0, Stroke::new(1.0, palette::EDGE), egui::StrokeKind::Inside);
+    let top = rect.shrink2(vec2(3.0, 1.0));
+    painter.line_segment([top.left_top(), top.right_top()], Stroke::new(1.0, Color32::from_white_alpha(18)));
+    let inset = 9.0;
+    for (corner, slant) in [
+        (rect.left_top() + vec2(inset, inset), 0.6_f32),
+        (rect.right_top() + vec2(-inset, inset), -0.4),
+        (rect.left_bottom() + vec2(inset, -inset), 0.2),
+        (rect.right_bottom() + vec2(-inset, -inset), -0.8),
+    ] {
+        painter.circle_filled(corner, 3.5, Color32::from_rgb(0x55, 0x55, 0x58));
+        painter.circle_stroke(corner, 3.5, Stroke::new(1.0, Color32::from_rgb(0x1e, 0x1e, 0x20)));
+        let slot = vec2(slant.cos(), slant.sin()) * 2.5;
+        painter.line_segment([corner - slot, corner + slot], Stroke::new(1.0, Color32::from_rgb(0x22, 0x22, 0x24)));
+    }
+}
+
 /// The look of a small LED display for the widgets inside `ui` (tempo, metre, input): a dark
 /// field with a thin edge and red figures in Plex Mono, like the counter.
 pub fn led_style(ui: &mut Ui) {

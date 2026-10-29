@@ -7,6 +7,11 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.22.1] - 2026-10-29
+
+### Gewijzigd
+- De lege delen van de console (onder ECHO in Simple, onder het transport) zijn afgedekt met een afdekplaat: een plaat die een tint lichter is dan het paneel, met een schaduwrand en een schroefje in elke hoek.
+
 ## [0.22.0] - 2026-10-29
 
 ### Gewijzigd

@@ -302,6 +302,8 @@ pub struct DawApp {
     fit_in: u8,
     /// The zoom to keep when the window is fitted after a switch (0: take it from the height).
     fit_zoom: f32,
+    /// Where the blanking plate in the EFFECT RTN column starts (Simple), for the mixer view to draw.
+    return_plate: Option<egui::Rect>,
     status: String,
     /// The project folder, once saved or opened.
     project_dir: Option<PathBuf>,
@@ -600,6 +602,7 @@ impl DawApp {
             fitted_for: None,
             fit_in: 0,
             fit_zoom: 0.0,
+            return_plate: None,
             status: String::new(),
             project_dir: None,
             dirty: false,
@@ -2828,14 +2831,23 @@ impl DawApp {
                                                 ui.add_space(12.0);
                                                 self.transport(ui);
                                             });
-                                            // The empty space under the transport as a darker field, like a blank panel.
+                                            // The empty space under the transport closed with a blanking plate.
+                                            // Both plates end on one line, just under the names of the strips.
+                                            let end = bottom - 6.0;
                                             let below = deck.response.rect;
-                                            if bottom - below.bottom() > 40.0 {
+                                            if end - below.bottom() > 40.0 {
                                                 let field = egui::Rect::from_min_max(
                                                     egui::pos2(below.left(), below.bottom() + 12.0),
-                                                    egui::pos2(below.right(), bottom),
+                                                    egui::pos2(below.right(), end),
                                                 );
-                                                ui.painter().rect_filled(field, 3.0, palette::PANEL_DARK.gamma_multiply(0.5));
+                                                keys::blank_plate(ui.painter(), field);
+                                            }
+                                            if let Some(start) = self.return_plate.take() {
+                                                let field = egui::Rect::from_min_max(
+                                                    start.min + vec2(6.0, 6.0),
+                                                    egui::pos2(start.max.x - 6.0, end),
+                                                );
+                                                keys::blank_plate(ui.painter(), field);
                                             }
                                             bottom = bottom.max(deck.response.rect.bottom());
                                         });

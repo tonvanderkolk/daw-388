@@ -485,10 +485,10 @@ impl DawApp {
             }
             let space = fader_top(classic) - return_bands(classic) + FADER_GAP;
             if !classic {
-                // Without MONITOR and PGM MASTERS this column is empty below ECHO: a darker field
-                // makes that look meant rather than missing.
-                let field = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), space + 300.0)).shrink(6.0);
-                ui.painter().rect_filled(field, 3.0, palette::PANEL_DARK.gamma_multiply(0.5));
+                // Without MONITOR and PGM MASTERS this column is empty below ECHO: a blanking
+                // plate makes that look meant rather than missing.
+                // Drawn by the mixer view, which knows where the strips end: both plates end on one line.
+                self.return_plate = Some(Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 0.0)));
             }
             ui.add_space(space);
             if classic {
