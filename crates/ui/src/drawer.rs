@@ -1,16 +1,20 @@
-//! The drawer with the tracks: it slides out of the leather armrest under the mixer. Drawing
-//! uses the painter; the mouse and keys become the edits in `edit.rs`.
+//! The SPOREN view with the tracks, one of the two views next to the mixer; the leather armrest
+//! under either view switches between them. Drawing uses the painter; the mouse and keys become
+//! the edits in `edit.rs`.
 
 use super::*;
 use crate::sources::SourceState;
 use crate::timeline::{self, Edge, Hit, Timeline};
 use egui::{Align2, CursorIcon, FontId, Pos2, Rect, pos2};
 
-/// Height of the armrest (the grip).
+/// Height of the armrest (the switch between the views).
 pub(crate) const ARMREST: f32 = 18.0;
 const RULER: f32 = 24.0;
-const HEAD: f32 = 120.0;
-const HEIGHT_MIN: f32 = 160.0;
+const HEAD: f32 = 190.0;
+/// A lane needs this height for its volume and pan under the name.
+const CONTROLS_MIN: f32 = 44.0;
+/// The lowest the eight lanes can go in the SPOREN view; the zoom keeps at least this.
+pub(crate) const LANES_MIN: f32 = 8.0 * 52.0 + RULER + 32.0;
 
 /// What the mouse is doing in the drawer.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -57,41 +61,32 @@ fn arrow(painter: &egui::Painter, centre: Pos2, up: bool, colour: Color32) {
 }
 
 impl DawApp {
-    /// The armrest and, when open, the drawer under it.
-    pub(crate) fn drawer(&mut self, ui: &mut Ui) {
-        self.armrest(ui);
-        if !self.editor.settings.open {
-            return;
-        }
+    /// The SPOREN view: the edit keys and the lanes.
+    pub(crate) fn tracks_view(&mut self, ui: &mut Ui) {
         let recording = self.recording_now();
         ui.add_enabled_ui(!recording, |ui| self.toolbar(ui));
         self.lanes(ui, recording);
     }
 
-    /// The leather armrest: click to slide the drawer out or in, drag to change its height.
-    fn armrest(&mut self, ui: &mut Ui) {
-        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ARMREST), Sense::click_and_drag());
-        let open = self.editor.settings.open;
+    /// Switch between the MIXER and the SPOREN view.
+    pub(crate) fn toggle_view(&mut self) {
+        self.editor.settings.open = !self.editor.settings.open;
+        self.mark_dirty();
+    }
+
+    /// The leather armrest: click it to switch to the other view.
+    pub(crate) fn armrest(&mut self, ui: &mut Ui) {
+        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), ARMREST), Sense::click());
+        let tracks = self.editor.settings.open;
         let painter = ui.painter();
         painter.rect_filled(rect, 0.0, palette::LEATHER);
-        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(2.0, palette::LEATHER_EDGE));
-        painter.text(rect.center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, "SPOREN", FontId::proportional(10.0), palette::TEXT_DIM);
-        arrow(painter, rect.center() - vec2(4.0, 0.0), !open, palette::TEXT_DIM);
-        if open && response.hovered() {
-            ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
-        }
-        let tip = if open { "Klik: la inschuiven, slepen: hoogte" } else { "Klik: de la met de sporen uitschuiven" };
-        let response = response.on_hover_text(tip);
-        if response.clicked() {
-            self.editor.settings.open = !open;
-            self.mark_dirty();
-        }
-        if open && response.dragged() {
-            let max = (ui.ctx().content_rect().height() * 0.8).max(HEIGHT_MIN);
-            self.editor.settings.height = (self.editor.settings.height - response.drag_delta().y).clamp(HEIGHT_MIN, max);
-        }
-        if open && response.drag_stopped() {
-            self.mark_dirty();
+        painter.line_segment([rect.left_top(), rect.right_top()], Stroke::new(2.0, palette::LEATHER_EDGE));
+        let label = if tracks { "MIXER" } else { "SPOREN" };
+        painter.text(rect.center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, label, FontId::proportional(10.0), palette::TEXT_DIM);
+        arrow(painter, rect.center() - vec2(4.0, 0.0), !tracks, palette::TEXT_DIM);
+        let tip = if tracks { "Klik of Tab: naar de mixer" } else { "Klik of Tab: naar de sporen" };
+        if response.on_hover_text(tip).clicked() {
+            self.toggle_view();
         }
     }
 
@@ -199,12 +194,35 @@ impl DawApp {
             self.lanes_input(ui, &response, &line, &areas);
         }
         self.paint(ui, rect, &areas, &line);
+        self.track_controls(ui, &areas);
         if !recording {
             self.rename_field(ui, &areas);
             let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
             if !dropped.is_empty() {
                 let at = self.playhead();
                 self.drop_files(self.editor.target, at, dropped);
+            }
+        }
+    }
+
+    /// Volume and pan per track under its name, as in the mixer (same values).
+    fn track_controls(&mut self, ui: &mut Ui, areas: &Areas) {
+        if areas.lane_h < CONTROLS_MIN {
+            return;
+        }
+        for index in 0..TRACKS {
+            let head = areas.lane(index, true);
+            let y = head.center().y + areas.lane_h * 0.22;
+            let fader = Rect::from_center_size(pos2(head.left() + 82.0, y), vec2(120.0, 14.0));
+            let pan = Rect::from_center_size(pos2(head.right() - 22.0, y), vec2(22.0, 22.0));
+            let track = &mut self.tracks[index];
+            let volume = ui.put(fader, |ui: &mut Ui| mini_fader(ui, &mut track.fader_db));
+            let volume = volume.on_hover_text(format!("Volume {} (dubbelklik: 0 dB)", format_db(track.fader_db)));
+            let turned = ui.put(pan, |ui: &mut Ui| knob(ui, &mut track.pan, -1.0..=1.0, 0.0, palette::CREAM, 20.0, true));
+            let turned = turned.on_hover_text(format!("PAN {:+.2} (dubbelklik: midden)", track.pan));
+            if volume.changed() || turned.changed() || turned.double_clicked() {
+                self.send_channel(index);
+                self.mark_dirty();
             }
         }
     }
@@ -361,8 +379,10 @@ impl DawApp {
             painter.line_segment([lane.left_bottom(), lane.right_bottom()], Stroke::new(1.0, palette::PANEL_DARK));
             let name_rect = areas.lane(track, true);
             painter.rect_filled(name_rect, 0.0, palette::PANEL);
+            // With room for volume and pan, number and name move up.
+            let up = if areas.lane_h >= CONTROLS_MIN { -areas.lane_h * 0.18 } else { 0.0 };
             painter.text(
-                name_rect.left_center() + vec2(8.0, 0.0),
+                name_rect.left_center() + vec2(8.0, up),
                 Align2::LEFT_CENTER,
                 format!("{}", track + 1),
                 FontId::proportional(14.0),
@@ -370,7 +390,7 @@ impl DawApp {
             );
             let name = &self.tracks[track].name;
             painter.with_clip_rect(name_rect.shrink(2.0)).text(
-                name_rect.left_center() + vec2(28.0, 0.0),
+                name_rect.left_center() + vec2(28.0, up),
                 Align2::LEFT_CENTER,
                 if name.is_empty() { "leeg" } else { name },
                 FontId::proportional(12.0),
@@ -579,4 +599,29 @@ fn trimmed(region: &Region, edge: Edge, at: f64) -> Region {
         }
         Edge::End => Region { length: (at - region.start).max(daw388_project::regions::MIN_LENGTH), ..region.clone() },
     }
+}
+
+/// A small horizontal fader on the mixer's scale: drag sideways (Shift for fine), double-click for 0 dB.
+fn mini_fader(ui: &mut Ui, db: &mut f32) -> egui::Response {
+    let (rect, mut response) = ui.allocate_exact_size(vec2(120.0, 14.0), Sense::click_and_drag());
+    if response.dragged() {
+        let fine = if ui.input(|i| i.modifiers.shift) { 0.2 } else { 1.0 };
+        let position = (fader_position(*db) + response.drag_delta().x / rect.width() * fine).clamp(0.0, 1.0);
+        *db = fader_db(position);
+        response.mark_changed();
+    }
+    if response.double_clicked() {
+        *db = 0.0;
+        response.mark_changed();
+    }
+    let painter = ui.painter();
+    let groove = Rect::from_center_size(rect.center(), vec2(rect.width() - 10.0, 3.0));
+    painter.rect_filled(groove, 1.0, Color32::BLACK);
+    let unity = groove.left() + fader_position(0.0) * groove.width();
+    painter.line_segment([pos2(unity, rect.top() + 1.0), pos2(unity, rect.bottom() - 1.0)], Stroke::new(1.0, palette::TEXT_DIM));
+    let x = groove.left() + fader_position(*db) * groove.width();
+    let cap = Rect::from_center_size(pos2(x, rect.center().y), vec2(10.0, rect.height()));
+    painter.rect_filled(cap, 2.0, palette::CREAM);
+    painter.line_segment([pos2(x, cap.top() + 2.0), pos2(x, cap.bottom() - 2.0)], Stroke::new(1.0, palette::EDGE));
+    response
 }

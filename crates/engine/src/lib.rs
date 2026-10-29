@@ -21,6 +21,7 @@
 
 mod click;
 mod eq;
+mod meter;
 mod mixer;
 mod monitor;
 mod record;
@@ -36,6 +37,7 @@ pub use record::{RecItem, RecMode, Recorder, input_ring};
 use click::Click;
 use daw388_fx::{Echo, Plate};
 use daw388_tape::TapeMachine;
+use meter::Energy;
 use mixer::{Channel, pan_gains};
 use monitor::{Monitor, MonitorSource, hears_input, monitor_source};
 
@@ -170,6 +172,12 @@ struct Shared {
     master_peaks: [AtomicU32; 2],
     /// AUX and EFF after their masters (the METER switch).
     send_peaks: [AtomicU32; 2],
+    /// Energy per track since the UI last read it, before the fader and after fader and mute (the VU needles).
+    track_energy: [Energy; TRACKS],
+    track_energy_post: [Energy; TRACKS],
+    master_energy: [Energy; 2],
+    /// AUX and EFF after their masters.
+    send_energy: [Energy; 2],
     rec_mode: AtomicU8,
     /// Bit per track that is recording.
     recording: AtomicU8,
@@ -195,6 +203,10 @@ impl Default for Shared {
             trk_peaks: Default::default(),
             master_peaks: Default::default(),
             send_peaks: Default::default(),
+            track_energy: Default::default(),
+            track_energy_post: Default::default(),
+            master_energy: Default::default(),
+            send_energy: Default::default(),
             rec_mode: AtomicU8::new(0),
             recording: AtomicU8::new(0),
             input_channels: AtomicU32::new(0),
@@ -283,8 +295,8 @@ fn sample_at(samples: &[f32], position: f64) -> f32 {
     ((c3 * t + c2) * t + c1) * t + y1
 }
 
-/// A channel's peak level after TRIM and EQ (before the fader; OL is read from it) and after fader and mute (pan does not
-/// count: the channel is mono).
+/// A channel's level after TRIM and EQ (before the fader; OL is read from it) and after fader and mute (pan does not
+/// count: the channel is mono): peaks from `take_track_peaks`, mean squares from `take_track_energy`.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TrackPeaks {
     pub pre: f32,
@@ -490,6 +502,24 @@ impl EngineHandle {
     /// Peaks of AUX and EFF after their masters since the last call, linear.
     pub fn take_send_peaks(&self) -> [f32; 2] {
         [take_peak(&self.shared.send_peaks[0]), take_peak(&self.shared.send_peaks[1])]
+    }
+
+    /// Mean square of a track since the last call, before and after the fader (in a `TrackPeaks`).
+    pub fn take_track_energy(&self, track: usize) -> TrackPeaks {
+        TrackPeaks {
+            pre: self.shared.track_energy.get(track).map_or(0.0, Energy::take),
+            post: self.shared.track_energy_post.get(track).map_or(0.0, Energy::take),
+        }
+    }
+
+    /// Mean square of the stereo master since the last call.
+    pub fn take_master_energy(&self) -> [f32; 2] {
+        [self.shared.master_energy[0].take(), self.shared.master_energy[1].take()]
+    }
+
+    /// Mean square of AUX and EFF after their masters since the last call.
+    pub fn take_send_energy(&self) -> [f32; 2] {
+        [self.shared.send_energy[0].take(), self.shared.send_energy[1].take()]
     }
 
     /// Free track buffers the audio thread no longer uses. Call regularly from the UI thread.
@@ -913,6 +943,10 @@ impl Engine {
         let mut trk_peaks = [0.0f32; TRACKS];
         let mut master_peaks = [0.0f32; 2];
         let mut send_peaks = [0.0f32; 2];
+        let mut track_energy = [0.0f64; TRACKS];
+        let mut track_energy_post = [0.0f64; TRACKS];
+        let mut master_energy = [0.0f64; 2];
+        let mut send_energy = [0.0f64; 2];
 
         for frame in out.chunks_mut(channels) {
             let playing = self.state == State::Playing;
@@ -969,6 +1003,8 @@ impl Engine {
                 let taps = self.channels[index].process(sample, from_input);
                 track_peaks[index] = track_peaks[index].max(taps.pre.abs());
                 track_peaks_post[index] = track_peaks_post[index].max(taps.post.abs());
+                track_energy[index] += f64::from(taps.pre * taps.pre);
+                track_energy_post[index] += f64::from(taps.post * taps.post);
                 // Only what comes from the interface is silent when the interface does the
                 // monitoring; an AUTO channel playing the tape stays audible.
                 let audible = if from_input && !self.monitoring { 0.0 } else { 1.0 };
@@ -1000,6 +1036,8 @@ impl Engine {
             let (aux, eff) = (sends[0] * self.send_gains[0], sends[1] * self.send_gains[1]);
             send_peaks[0] = send_peaks[0].max(aux.abs());
             send_peaks[1] = send_peaks[1].max(eff.abs());
+            send_energy[0] += f64::from(aux * aux);
+            send_energy[1] += f64::from(eff * eff);
             // Track N records PGM bus N (or the channel's DIRECT tap); its MONITOR hears the input,
             // the tape or nothing, as the 388's switching logic decides.
             let mut monitor = [0.0f32; 2];
@@ -1064,6 +1102,8 @@ impl Engine {
             }
             master_peaks[0] = master_peaks[0].max(left.abs());
             master_peaks[1] = master_peaks[1].max(right.abs());
+            master_energy[0] += f64::from(left * left);
+            master_energy[1] += f64::from(right * right);
             // The main output: STEREO, AUX or EFF, then MONITOR/PHONES.
             let (left, right) = match self.mixer.listen {
                 Listen::Stereo => (left, right),
@@ -1117,6 +1157,19 @@ impl Engine {
         for (cell, peak) in self.shared.send_peaks.iter().zip(send_peaks) {
             store_peak(cell, peak);
         }
+        let frames = u32::try_from(out.len() / channels).unwrap_or(u32::MAX);
+        for (cell, sum) in self.shared.track_energy.iter().zip(track_energy) {
+            cell.add(sum, frames);
+        }
+        for (cell, sum) in self.shared.track_energy_post.iter().zip(track_energy_post) {
+            cell.add(sum, frames);
+        }
+        for (cell, sum) in self.shared.master_energy.iter().zip(master_energy) {
+            cell.add(sum, frames);
+        }
+        for (cell, sum) in self.shared.send_energy.iter().zip(send_energy) {
+            cell.add(sum, frames);
+        }
     }
 }
 
@@ -1147,6 +1200,27 @@ mod tests {
     fn settle(engine: &mut Engine) {
         let mut scratch = vec![0.0; 2 * 20_000];
         engine.render(&mut scratch, 2);
+    }
+
+    #[test]
+    fn measures_the_energy_of_a_track_and_the_mix() {
+        let (mut handle, mut engine) = create(48_000);
+        // 1 kHz at amplitude 0.5: a mean square of 0.125.
+        let sine: Vec<f32> = (0..100_000).map(|i| 0.5 * (std::f32::consts::TAU * 1_000.0 * i as f32 / 48_000.0).sin()).collect();
+        handle.send(Command::SetTrack(0, audio(sine)));
+        handle.send(Command::SetMonitor(0, left()));
+        settle(&mut engine);
+        let _ = handle.take_track_energy(0);
+        let _ = handle.take_master_energy();
+        handle.play();
+        let mut out = vec![0.0; 2 * 4_800];
+        engine.render(&mut out, 2);
+        let energy = handle.take_track_energy(0);
+        assert!((energy.pre - 0.125).abs() < 0.0025, "{energy:?}");
+        assert_eq!(handle.take_track_energy(0), TrackPeaks::default(), "read once");
+        let master = handle.take_master_energy();
+        assert!(master[0] > 0.01 && master[1] < 1e-9, "the monitor is panned left: {master:?}");
+        assert_eq!(handle.take_send_energy(), [0.0, 0.0], "no sends open");
     }
 
     #[test]

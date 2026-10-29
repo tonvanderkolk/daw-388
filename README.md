@@ -37,3 +37,5 @@ Zie [PROJECT.md](PROJECT.md).
 ## Licentie
 
 Naar keuze [MIT](LICENSE-MIT) of [Apache 2.0](LICENSE-APACHE).
+
+Het lettertype IBM Plex staat onder de SIL Open Font License (`crates/ui/assets/fonts/OFL.txt`).

@@ -1,7 +1,7 @@
 # PROJECT - DAW 388
 
-Versie: 0.18.0
-Laatst bijgewerkt: 28-10-2026
+Versie: 0.19.0
+Laatst bijgewerkt: 29-10-2026
 
 ## Doel
 
@@ -21,11 +21,11 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 
 | Crate | Map | Taak |
 |---|---|---|
-| `daw388-engine` | `crates/engine` | Transport, 8 sporen en stereomix. Platformonafhankelijk, geen allocaties of locks in de audiothread |
+| `daw388-engine` | `crates/engine` | Transport, 8 sporen en stereomix, pieken en energie per meterpunt. Platformonafhankelijk, geen allocaties of locks in de audiothread |
 | `daw388-tape` | `crates/tape` | Tape-model bij afspelen (acht sporen tegelijk), met dbx |
 | `daw388-fx` | `crates/fx` | Plate reverb en tape echo: buffers bij het aanmaken, geen allocaties in `process` |
 | `daw388-project` | `crates/project` | Import van WAV (hound) en AIFF, FLAC en MP3 (symphonia, `decode.rs`; het formaat volgt uit de eerste bytes) naar mono, samplerate-conversie, de projectmap (`project.json`, `audio/`, `backups/`), de exportbestanden (`export.rs`: `rubato`-resampler, WAV- en AIFF-schrijvers, dither), het regiomodel (`regions.rs`), het uitrekenen van een spoor (`render.rs`) en golfvorm-overzichten (`peaks.rs`) |
-| `daw388-ui` | `crates/ui` | egui-interface, praat met het platform via de `Platform`-trait |
+| `daw388-ui` | `crates/ui` | egui-interface, praat met het platform via de `Platform`-trait. De vintage skin staat in `skin/`: palet, lettertype (IBM Plex), VU-meters, spoelen en meeschalen |
 | `daw388` | `crates/app-desktop` | Desktop-entrypoint: cpal-uitvoer, bestandsdialogen en het eframe-venster |
 
 ## Architectuur
@@ -39,7 +39,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 - Sporen zijn mono, zoals op de 388. Stereobestanden worden bij het laden gemiddeld naar mono.
 - Een spoor bestaat uit regio's: een stuk van een bron (een audiobestand) op een plek op de band, gesorteerd en zonder overlap. Wat op een plek komt, vervangt wat er lag; de bron blijft, dus een rand is terug te halen. De bewerkingen zijn pure functies in `regions.rs`, zodat undo de oude lijst kan bewaren.
 - De engine kent geen regio's. Na elke wijziging rekent de UI het spoor op de achtergrond uit tot één buffer (`render.rs`: stilte tussen regio's, een fade van 3 ms aan een vrije rand, een crossfade van 3 ms waar twee regio's elkaar raken, niets waar een regio zijn bron naadloos voortzet) en stuurt die met `SetTrack`. De bronnen staan in een gedeelde tabel (`crates/ui/src/sources.rs`), elk één keer gedecodeerd en één keer omgezet naar de samplerate van de engine.
-- De la (`crates/ui/src/drawer.rs`) tekent met de egui-painter en zet muis en toetsen om in bewerkingen (`edit.rs`), elk één undo-stap op basis van de pure functies in `regions.rs`. De tijd-as, het raster, vastklikken en wat onder de muis ligt staan los in `timeline.rs`.
+- De SPOREN-weergave (`crates/ui/src/drawer.rs`) tekent met de egui-painter en zet muis en toetsen om in bewerkingen (`edit.rs`), elk één undo-stap op basis van de pure functies in `regions.rs`. De tijd-as, het raster, vastklikken en wat onder de muis ligt staan los in `timeline.rs`.
 - Undo en redo (`crates/ui/src/history.rs`): 10 stappen voor alles wat de inhoud van de sporen verandert. Een stap bewaart de regio's van de sporen die hij raakte; de bronnen worden gedeeld.
 - Het formaat van een audiobestand wordt herkend aan de eerste bytes (`RIFF` of `FORM`), niet aan de extensie.
 
@@ -52,7 +52,7 @@ Mijn liedje/
 └── backups/            # eerdere versies van project.json (laatste 10)
 ```
 
-- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 3), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `editor` (de la: `open`, `height` in pixels, `zoom` in pixels per seconde of leeg voor het hele nummer, `snap` voor RASTER; ontbreekt: dicht, 320, hele nummer, RASTER aan), `tape` (`mode` clean/388, ontbreekt: clean; `speed` 3.75/7.5/15, `kind` 456/250/911, `saturation`, `wow_flutter`, `noise`, `crosstalk` van 0 tot 2, `dbx` twee booleans, ontbreekt: aan), `mixer` (`mode` simple/388, ontbreekt: 388; `odd_db`, `even_db`, `mon` pgm/cue, `mono`, `aux_master_db`, `eff_master_db`, `phones_db`, `listen` stereo/aux/eff, `meter` lr/aux_eff, `effects` met `plate` (`decay_s`, `predelay_ms`, `tone`), `echo` (`time_ms`, `sync` off/quarter/eighth/dotted_eighth, `feedback`, `tone`) en `rtn` (twee keer `gain_db` en `pan`; ontbreken ze, dan zijn de RTN's dicht)) en per spoor `number`, `name`, `regions` (elk `file` met een relatief pad, `start` op de band en `offset` in het bestand in seconden, `length` en `name`), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `aux_db`, `aux_pre`, `eff_db` (ontbreken ze, dan zijn de sends dicht: `SEND_CLOSED_DB`, -60 dB), `eq` met `low`, `mid` en `high` (elk `freq_hz` en `gain_db`; ontbreekt `eq`, dan is hij vlak), `assign`, `lr`, `direct`, `auto`) en `monitor` (`gain_db`, `pan`, `mute`).
+- `project.json` bevat `format` (`daw388-project`), `version` (formaatversie, nu 3), `app_version`, `master_db` (STEREO MASTER), `meter_post` (kanaalmeters na de fader, standaard `false`), `transport` (zie hierboven), `metronome`, `editor` (de sporen: `open` voor de SPOREN-weergave, `height` sinds 0.19.0 ongebruikt, `zoom` in pixels per seconde of leeg voor het hele nummer, `snap` voor RASTER; ontbreekt: dicht, 320, hele nummer, RASTER aan), `tape` (`mode` clean/388, ontbreekt: clean; `speed` 3.75/7.5/15, `kind` 456/250/911, `saturation`, `wow_flutter`, `noise`, `crosstalk` van 0 tot 2, `dbx` twee booleans, ontbreekt: aan), `mixer` (`mode` simple/388, ontbreekt: 388; `odd_db`, `even_db`, `mon` pgm/cue, `mono`, `aux_master_db`, `eff_master_db`, `phones_db`, `listen` stereo/aux/eff, `meter` lr/aux_eff, `effects` met `plate` (`decay_s`, `predelay_ms`, `tone`), `echo` (`time_ms`, `sync` off/quarter/eighth/dotted_eighth, `feedback`, `tone`) en `rtn` (twee keer `gain_db` en `pan`; ontbreken ze, dan zijn de RTN's dicht)) en per spoor `number`, `name`, `regions` (elk `file` met een relatief pad, `start` op de band en `offset` in het bestand in seconden, `length` en `name`), `fader_db`, `pan`, `mute` en `input` (de kanaalinstellingen), `channel` (`source` mic/line/rmx, `trim_db`, `aux_db`, `aux_pre`, `eff_db` (ontbreken ze, dan zijn de sends dicht: `SEND_CLOSED_DB`, -60 dB), `eq` met `low`, `mid` en `high` (elk `freq_hz` en `gain_db`; ontbreekt `eq`, dan is hij vlak), `assign`, `lr`, `direct`, `auto`) en `monitor` (`gain_db`, `pan`, `mute`).
 - `length` ontbreekt alleen bij de enige regio van een spoor die vanaf 0:00 een heel bestand speelt waarvan de lengte nog niet bekend is: een spoor dat nog geladen wordt of waarvan het bestand ontbreekt. Zo'n spoor neemt niets nieuws aan (geen REC FUNCTION, geen Laad) tot het bestand geladen is of het spoor gewist.
 - Een project met formaatversie 2 (0.16.0 en ouder) opent met per spoor één regio over het hele bestand vanaf 0:00. Een regio die niet klopt (geen lengte, overlap, negatieve tijden) wordt bij het openen weggelaten met een melding.
 - Een project met formaatversie 1 (0.7.0 en ouder) opent als eenvoudig project: fader, pan en mute blijven de kanaalfader, elk kanaal krijgt de eenvoudige instelling (LINE, AUTO, DIRECT, L-R) en houdt zijn ingang. Een project van 0.8.0 of 0.9.0 (zonder `mode`) opent in de 388-stand.
@@ -171,15 +171,16 @@ Er zijn twee routes: wat er op band komt (kanaal, bus, spoor) en wat je hoort (M
 
 ## Bewerken
 
-- De leren armsteun onder de mixer is de greep van de la: klikken schuift hem uit of in, slepen verandert de hoogte. De la ligt over het onderste deel van de mixer; die scrolt.
-- Werkbalk: SPLITS (S), KNIP (Cmd+X), KOPIEER (Cmd+C), PLAK (Cmd+V), WIS (Delete), RASTER, zoom (−, PAST, +), rechts de stand van undo en het tempo. De sneltoetsen werken alleen als de la open is en geen tekstveld de focus heeft.
+- Twee weergaven: MIXER (de hele console, meeschalend met het venster) en SPOREN (de sporen over het hele venster, met daarboven de VU-brug, de teller en de transporttoetsen). De leren armsteun onderaan of Tab wisselt; de weergave wordt per project bewaard.
+- Per spoor in SPOREN een kleine fader voor het volume en een PAN-knop, dezelfde waarden als in de mixer.
+- Werkbalk: SPLITS (S), KNIP (Cmd+X), KOPIEER (Cmd+C), PLAK (Cmd+V), WIS (Delete), RASTER, zoom (−, PAST, +), rechts de stand van undo en het tempo. De sneltoetsen werken alleen in SPOREN en geen tekstveld de focus heeft.
 - Tijdlijnbalk: klikken zet de band daar, slepen selecteert een tijdvak over alle sporen. Met RASTER aan toont hij maten (maat 1 begint aan het begin van de band, zoals de klik), anders minuten en seconden; het nulpunt en het CUE-punt staan erin.
 - Regio's: klikken selecteert (Shift voegt toe of haalt weg), klikken op een leeg stuk haalt de selectie weg. Slepen verschuift de selectie, ook naar een ander spoor; een rand slepen kort in of trekt terug tot het einde van de opname. Wat op een plek komt, vervangt wat er lag.
 - SPLITS splitst de geselecteerde regio's op de afspeelpositie, zonder selectie alle sporen. KNIP, KOPIEER en WIS werken op het tijdvak als er een is, anders op de geselecteerde regio's. Knippen van een tijdvak is een splice (de rest schuift aan); een geplakt tijdvak wordt op de afspeelpositie ingevoegd. Geplakte regio's komen op de afspeelpositie, elk op zijn eigen spoor.
 - Vastklikken op tellen (met RASTER), randen van regio's, nulpunt, CUE-punt en afspeelpositie, binnen 8 pixels; Alt ingedrukt is vrij.
-- Zoomen met Cmd en scrollen rond de muis, scrollen schuift door de tijd. Tijdens het afspelen bladert de la mee.
+- Zoomen met Cmd en scrollen rond de muis, scrollen schuift door de tijd. Tijdens het afspelen bladeren de sporen mee.
 - Bestanden uit de Finder komen op het laatst aangeklikte spoor (en de sporen erna) vanaf de afspeelpositie, samen één undo-stap. Waar je loslaat kan niet: winit geeft bij het slepen van bestanden geen muispositie door.
-- Dubbelklik op de naam van een spoor in de la wijzigt hem.
+- Dubbelklik op de naam van een spoor wijzigt hem.
 - Een spoor dat nog geladen wordt of waarvan het bestand ontbreekt, neemt niets nieuws aan; bewerkingen over alle sporen wachten tot het geladen of gewist is. Tijdens een opname kan er niet bewerkt worden.
 - Undo-namen: Splitsen, Knippen, Splice, Plakken, Invoegen, Wissen, Verwijderen, Verschuiven, Inkorten, Naam, Importeren, Laden, Wis en Opname spoor N.
 

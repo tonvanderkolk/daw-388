@@ -7,6 +7,7 @@ mod edit;
 mod export;
 mod history;
 mod recording;
+mod skin;
 mod sources;
 mod timeline;
 
@@ -29,6 +30,7 @@ use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, M
 use export::{ExportJob, ExportTrack, Progress, StemKind};
 use history::History;
 use recording::{StoredTake, TakeDone};
+pub(crate) use skin::palette;
 use sources::Sources;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -208,33 +210,6 @@ enum Pending {
     Quit,
 }
 
-/// Colours from mockup A2.
-mod palette {
-    use egui::Color32;
-    pub const BACKGROUND: Color32 = Color32::from_rgb(0x1a, 0x17, 0x16);
-    pub const WOOD: Color32 = Color32::from_rgb(0x3a, 0x1d, 0x1a);
-    pub const PANEL: Color32 = Color32::from_rgb(0x2f, 0x2f, 0x31);
-    pub const PANEL_DARK: Color32 = Color32::from_rgb(0x1f, 0x1f, 0x21);
-    pub const EDGE: Color32 = Color32::from_rgb(0x1b, 0x1b, 0x1c);
-    pub const TEXT: Color32 = Color32::from_rgb(0xd9, 0xd3, 0xc6);
-    pub const TEXT_DIM: Color32 = Color32::from_rgb(0xb9, 0xb2, 0xa4);
-    pub const CREAM: Color32 = Color32::from_rgb(0xef, 0xe6, 0xcc);
-    pub const LED: Color32 = Color32::from_rgb(0xff, 0x5a, 0x3c);
-    pub const RED: Color32 = Color32::from_rgb(0xc8, 0x40, 0x2a);
-    pub const ORANGE: Color32 = Color32::from_rgb(0xe5, 0x83, 0x2c);
-    pub const GREEN: Color32 = Color32::from_rgb(0x9f, 0xd3, 0x9a);
-    pub const BLUE: Color32 = Color32::from_rgb(0x7f, 0xa8, 0xcc);
-    pub const KEY: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9c);
-    pub const LEATHER: Color32 = Color32::from_rgb(0x4b, 0x23, 0x1d);
-    pub const LEATHER_EDGE: Color32 = Color32::from_rgb(0x2a, 0x12, 0x0f);
-    pub const LANE: Color32 = Color32::from_rgb(0x2b, 0x2b, 0x2d);
-    pub const LANE_ALT: Color32 = Color32::from_rgb(0x29, 0x29, 0x2b);
-    pub const REGION: Color32 = Color32::from_rgb(0xe9, 0xdf, 0xc8);
-    pub const REGION_PICKED: Color32 = Color32::from_rgb(0xf6, 0xee, 0xdb);
-    pub const REGION_INK: Color32 = Color32::from_rgb(0x1b, 0x17, 0x16);
-    pub const RANGE: Color32 = Color32::from_rgba_premultiplied(0x38, 0x14, 0x0d, 0x38);
-}
-
 /// The pitch control's range in percent (plus or minus).
 const PITCH_PERCENT: f32 = (PITCH_RANGE * 100.0) as f32;
 
@@ -275,8 +250,8 @@ struct TrackState {
     fader_db: f32,
     pan: f32,
     mute: bool,
-    /// Displayed meter level in dB, with a slow fall.
-    meter_db: f32,
+    /// The track's VU needle in the meter bridge.
+    vu: skin::vu::Needle,
     /// REC FUNCTION: the track is ready to record.
     armed: bool,
     /// The input channel of its mixer channel (MIC and LINE), counted from 1.
@@ -308,9 +283,21 @@ pub struct DawApp {
     mixer: MixerEntry,
     /// Track meters after the fader (POST) instead of the track's own level (PRE, as on the 388).
     meter_post: bool,
-    master_meter_db: [f32; 2],
-    /// Displayed AUX and EFF meter levels in dB (the METER switch).
-    send_meter_db: [f32; 2],
+    /// The two big VU needles: stereo L and R, or AUX and EFF (the METER switch).
+    big_vu: [skin::vu::Needle; 2],
+    /// The big meters' OL lamps stay lit until this time.
+    big_ol_until: [f64; 2],
+    /// The reels in the tape deck.
+    reels: skin::reels::Reels,
+    /// Where each channel strip's centre was in the last frame (0: not drawn yet), so the meter
+    /// bridge can put each TRK meter above its strip.
+    strip_centres: [f32; TRACKS],
+    /// The height all faders start at (from the last frame), and the lowest a fader wanted to
+    /// start this frame: every fader stands on one line, as on the machine.
+    fader_row: f32,
+    fader_row_next: f32,
+    /// What the console, header and drawer needed in the last frame, in points: the zoom fits it in the window.
+    needed: egui::Vec2,
     status: String,
     /// The project folder, once saved or opened.
     project_dir: Option<PathBuf>,
@@ -601,8 +588,13 @@ impl DawApp {
             master_db: 0.0,
             mixer: new_mixer(),
             meter_post: false,
-            master_meter_db: [MIN_DB; 2],
-            send_meter_db: [MIN_DB; 2],
+            big_vu: Default::default(),
+            big_ol_until: [0.0; 2],
+            reels: Default::default(),
+            strip_centres: [0.0; TRACKS],
+            fader_row: 0.0,
+            fader_row_next: 0.0,
+            needed: egui::Vec2::ZERO,
             status: String::new(),
             project_dir: None,
             dirty: false,
@@ -649,7 +641,6 @@ impl DawApp {
             taps: Vec::new(),
         };
         for (index, track) in app.tracks.iter_mut().enumerate() {
-            track.meter_db = MIN_DB;
             track.trk_meter_db = MIN_DB;
             track.input = default_input(index);
             track.channel = ChannelEntry::simple(ChannelSource::Line);
@@ -816,12 +807,12 @@ impl DawApp {
     /// Put every track and the mix back to an empty project.
     fn reset(&mut self) {
         for index in 0..TRACKS {
-            let meter_db = self.tracks[index].meter_db;
+            let vu = self.tracks[index].vu;
             // A fresh generation drops any render still running for the old project.
             let generation = self.next_generation;
             self.next_generation += 1;
             self.tracks[index] = TrackState {
-                meter_db,
+                vu,
                 trk_meter_db: MIN_DB,
                 render_generation: generation,
                 input: default_input(index),
@@ -1571,7 +1562,7 @@ impl DawApp {
     fn update_meters(&mut self, dt: f32) {
         let Some(engine) = &mut self.engine else { return };
         engine.collect_garbage();
-        // VU-like fall of about 20 dB per second.
+        // VU-like fall of about 20 dB per second for the TRK bars of the MONITOR section.
         let fall = 20.0 * dt;
         let now = self.now;
         for (index, track) in self.tracks.iter_mut().enumerate() {
@@ -1580,19 +1571,24 @@ impl DawApp {
             if overload(peaks.pre) {
                 track.ol_until = now + OL_HOLD;
             }
-            let peak = gain_to_db(if self.meter_post { peaks.post } else { peaks.pre });
-            track.meter_db = peak.max(track.meter_db - fall);
+            let energy = engine.take_track_energy(index);
+            track.vu.step(dt, skin::vu::target(if self.meter_post { energy.post } else { energy.pre }));
             let trk = gain_to_db(engine.take_trk_peak(index));
             track.trk_meter_db = trk.max(track.trk_meter_db - fall);
         }
-        let master = engine.take_master_peaks();
-        for (shown, peak) in self.master_meter_db.iter_mut().zip(master) {
-            *shown = gain_to_db(peak).max(*shown - fall);
+        // Both sources are read every frame, so the one not shown does not pile up.
+        let (master, sends) = (engine.take_master_energy(), engine.take_send_energy());
+        let (master_peaks, send_peaks) = (engine.take_master_peaks(), engine.take_send_peaks());
+        let (energy, peaks) = if self.mixer.meter == MeterSwitch::AuxEff { (sends, send_peaks) } else { (master, master_peaks) };
+        for side in 0..2 {
+            if overload(peaks[side]) {
+                self.big_ol_until[side] = now + OL_HOLD;
+            }
+            self.big_vu[side].step(dt, skin::vu::target(energy[side]));
         }
-        let sends = engine.take_send_peaks();
-        for (shown, peak) in self.send_meter_db.iter_mut().zip(sends) {
-            *shown = gain_to_db(peak).max(*shown - fall);
-        }
+        let position = engine.position_seconds();
+        let length = self.tracks.iter().map(|t| track_end(&t.regions)).fold(0.0, f64::max);
+        self.reels.advance(position, length, dt);
     }
 
     fn handle_keys(&mut self, ui: &Ui) {
@@ -1677,12 +1673,12 @@ impl DawApp {
         let mut solo = false;
         let recording = self.engine.as_ref().is_some_and(|e| e.is_recording(index));
         let blink = (self.now * 2.0).fract() < 0.5;
-        let now = self.now;
         let input_channels = self.output.as_ref().and_then(|o| o.input.as_ref()).map_or(0, |i| i.channels);
         // The simple mode shows one strip per track: input, EQ, PAN, REC and fader.
         let simple = self.mixer.mode == Routing::Simple;
         // Asked before `track` borrows the tracks.
         let (loading, missing) = (self.track_loading(index), self.track_missing(index));
+        let (row, mut lowest) = (self.fader_row, 0.0f32);
         let track = &mut self.tracks[index];
         let has_content = !track.regions.is_empty() || track.unresolved.is_some();
         column(ui, 112.0, |ui| {
@@ -1754,10 +1750,6 @@ impl DawApp {
                         format!("TRIM {:+.1} dB (dubbelklik: 0 dB)", track.channel.trim_db)
                     });
                 changed |= trim.changed() || trim.double_clicked();
-                let lit = now < track.ol_until;
-                let (dot, ol) = ui.allocate_exact_size(vec2(8.0, 30.0), Sense::hover());
-                ui.painter().circle_filled(dot.center(), 3.0, if lit { palette::LED } else { palette::PANEL_DARK });
-                ol.on_hover_text("OL: piek na de EQ boven -3 dBFS");
                 let pan_tip = if simple {
                     format!("PAN {:+.2} (dubbelklik: midden)", track.pan)
                 } else {
@@ -1892,15 +1884,14 @@ impl DawApp {
                 }
             });
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let fader = fader(ui, &mut track.fader_db, palette::CREAM);
-                if fader.changed() || fader.double_clicked() {
-                    changed = true;
-                }
-                meter(ui, track.meter_db, true);
-            });
+            to_fader_row(ui, row, &mut lowest);
+            let fader = fader(ui, &mut track.fader_db, palette::CREAM);
+            if fader.changed() || fader.double_clicked() {
+                changed = true;
+            }
             ui.label(RichText::new(format_db(track.fader_db)).size(11.0).color(palette::TEXT_DIM));
         });
+        self.fader_row_next = self.fader_row_next.max(lowest);
         if arm {
             self.toggle_arm(index);
         }
@@ -1923,6 +1914,7 @@ impl DawApp {
     /// PGM MASTERS: ODD for buses 1, 3, 5 and 7, EVEN for 2, 4, 6 and 8.
     fn pgm_masters(&mut self, ui: &mut Ui) {
         let mut changed = false;
+        let (row, mut lowest) = (self.fader_row, 0.0f32);
         column(ui, 120.0, |ui| {
             ui.label(RichText::new("PGM").strong().size(14.0).color(palette::CREAM));
             ui.label(RichText::new("MASTERS").size(9.0).color(palette::TEXT_DIM));
@@ -1930,6 +1922,7 @@ impl DawApp {
                 for (label, db) in [("ODD", &mut self.mixer.odd_db), ("EVEN", &mut self.mixer.even_db)] {
                     ui.vertical(|ui| {
                         ui.label(RichText::new(label).size(10.0).color(palette::TEXT_DIM));
+                        to_fader_row(ui, row, &mut lowest);
                         let response = fader(ui, db, palette::ORANGE);
                         changed |= response.changed() || response.double_clicked();
                         ui.label(RichText::new(format_db(*db)).size(10.0).color(palette::TEXT_DIM));
@@ -1937,6 +1930,7 @@ impl DawApp {
                 }
             });
         });
+        self.fader_row_next = self.fader_row_next.max(lowest);
         if changed {
             self.send_mixer();
             self.mark_dirty();
@@ -2087,6 +2081,7 @@ impl DawApp {
 
     fn master_section(&mut self, ui: &mut Ui) {
         let mut mixer_changed = false;
+        let (row, mut lowest) = (self.fader_row, 0.0f32);
         column(ui, 136.0, |ui| {
             mixer_changed |= self.effects_controls(ui);
             ui.add_space(6.0);
@@ -2172,58 +2167,96 @@ impl DawApp {
                 self.mark_dirty();
             }
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let response = fader(ui, &mut self.master_db, palette::RED);
-                if response.changed() || response.double_clicked() {
-                    let gain = db_to_gain(self.master_db);
-                    self.engine_send(Command::SetMaster(gain));
-                    self.mark_dirty();
-                }
-                let shown = if self.mixer.meter == MeterSwitch::AuxEff { self.send_meter_db } else { self.master_meter_db };
-                meter(ui, shown[0], true);
-                meter(ui, shown[1], false);
-            });
+            to_fader_row(ui, row, &mut lowest);
+            let response = fader(ui, &mut self.master_db, palette::RED);
+            if response.changed() || response.double_clicked() {
+                let gain = db_to_gain(self.master_db);
+                self.engine_send(Command::SetMaster(gain));
+                self.mark_dirty();
+            }
             ui.label(RichText::new(format_db(self.master_db)).size(11.0).color(palette::TEXT_DIM));
         });
+        self.fader_row_next = self.fader_row_next.max(lowest);
         if mixer_changed {
             self.send_mixer();
             self.mark_dirty();
         }
     }
 
-    fn transport(&mut self, ui: &mut Ui) {
+    /// The LED counter: min:sec, the CUE point, the pitch and the bar and beat.
+    fn led_counter(&self, ui: &mut Ui) {
         let (counter, motion) = self.engine.as_ref().map_or((0.0, Motion::Stopped), |e| (e.counter_seconds(), e.motion()));
+        let cue_counter = self.cue_seconds.map(|cue| cue - self.zero_seconds);
+        let (tape, count_in) = self.engine.as_ref().map_or((0.0, 0.0), |e| (e.position_seconds(), e.count_in_seconds()));
+        let (bar, beat) = meter_of(&self.metronome).bar_and_beat(tape - count_in);
+        Frame::new()
+            .fill(Color32::from_rgb(0x12, 0x08, 0x07))
+            .corner_radius(CornerRadius::same(4))
+            .inner_margin(Margin::symmetric(14, 6))
+            .stroke(Stroke::new(2.0, palette::EDGE))
+            .show(ui, |ui| {
+                ui.set_width(200.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new(format_counter(counter)).monospace().size(34.0).color(palette::LED));
+                    let cue = cue_counter.map_or("CUE  --:--.-".to_string(), |c| format!("CUE  {}", format_counter(c)));
+                    let pitch = if self.vari { format!("   PITCH {:+.1}%", self.pitch_percent) } else { String::new() };
+                    ui.label(RichText::new(format!("{cue}{pitch}")).monospace().size(11.0).color(Color32::from_rgb(0xc8, 0x55, 0x3c)));
+                    let bars = if motion == Motion::CountingIn {
+                        format!("AFTELLEN  {}.{}", bar, beat)
+                    } else {
+                        format!("MAAT  {bar}.{beat}   {}/{}", self.metronome.beats, self.metronome.unit)
+                    };
+                    ui.label(RichText::new(bars).monospace().size(11.0).color(Color32::from_rgb(0xc8, 0x55, 0x3c)));
+                });
+            });
+    }
+
+    /// REW, F FWD, STOP, PLAY and REC.
+    fn transport_keys(&mut self, ui: &mut Ui) {
+        let motion = self.engine.as_ref().map_or(Motion::Stopped, EngineHandle::motion);
         let rec_mode = self.engine.as_ref().map_or(RecMode::Off, EngineHandle::rec_mode);
         let blink = (self.now * 2.0).fract() < 0.5;
-        let cue_counter = self.cue_seconds.map(|cue| cue - self.zero_seconds);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let size = vec2(48.0, 40.0);
+            if transport_key(ui, "REW", motion == Motion::Rewinding, size).on_hover_text("Terugspoelen (,)").clicked() {
+                self.rewind();
+            }
+            if transport_key(ui, "F FWD", motion == Motion::Forwarding, size).on_hover_text("Vooruitspoelen (.)").clicked() {
+                self.fast_forward();
+            }
+            if transport_key(ui, "STOP", motion == Motion::Stopped, size).on_hover_text("Stop (spatie)").clicked() {
+                self.stop();
+            }
+            if transport_key(ui, "PLAY", motion == Motion::Playing, size)
+                .on_hover_text("Afspelen; tijdens opnemen: punch-out (spatie)")
+                .clicked()
+            {
+                self.play();
+            }
+            // REC: blinks when record-ready, lit while recording.
+            let lit = rec_mode == RecMode::Recording || (rec_mode == RecMode::Ready && blink);
+            let text = RichText::new("REC").strong().size(12.0).color(if lit { Color32::WHITE } else { palette::RED });
+            let rec = egui::Button::new(text)
+                .fill(if lit { palette::RED } else { palette::KEY })
+                .min_size(size)
+                .corner_radius(CornerRadius::same(3));
+            if ui.add(rec).on_hover_text("Opnemen op de sporen met REC FUNCTION (R); tijdens het afspelen: punch-in").clicked() {
+                self.record();
+            }
+        });
+    }
+
+    fn transport(&mut self, ui: &mut Ui) {
+        let motion = self.engine.as_ref().map_or(Motion::Stopped, EngineHandle::motion);
         let (tape, count_in) = self.engine.as_ref().map_or((0.0, 0.0), |e| (e.position_seconds(), e.count_in_seconds()));
         let meter = meter_of(&self.metronome);
         // The tape's bar grid; during the count-in it runs ahead of the waiting tape.
         let grid = tape - count_in;
-        let (bar, beat) = meter.bar_and_beat(grid);
         let on_beat = (grid / meter.beat_seconds()).fract() < 0.15
             && (motion == Motion::CountingIn || (motion == Motion::Playing && self.metronome.click));
         column(ui, 262.0, |ui| {
-            Frame::new()
-                .fill(Color32::from_rgb(0x12, 0x08, 0x07))
-                .corner_radius(CornerRadius::same(4))
-                .inner_margin(Margin::symmetric(14, 6))
-                .stroke(Stroke::new(2.0, palette::EDGE))
-                .show(ui, |ui| {
-                    ui.set_width(200.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(RichText::new(format_counter(counter)).monospace().size(34.0).color(palette::LED));
-                        let cue = cue_counter.map_or("CUE  --:--.-".to_string(), |c| format!("CUE  {}", format_counter(c)));
-                        let pitch = if self.vari { format!("   PITCH {:+.1}%", self.pitch_percent) } else { String::new() };
-                        ui.label(RichText::new(format!("{cue}{pitch}")).monospace().size(11.0).color(Color32::from_rgb(0xc8, 0x55, 0x3c)));
-                        let bars = if motion == Motion::CountingIn {
-                            format!("AFTELLEN  {}.{}", bar, beat)
-                        } else {
-                            format!("MAAT  {bar}.{beat}   {}/{}", self.metronome.beats, self.metronome.unit)
-                        };
-                        ui.label(RichText::new(bars).monospace().size(11.0).color(Color32::from_rgb(0xc8, 0x55, 0x3c)));
-                    });
-                });
+            self.led_counter(ui);
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -2246,35 +2279,7 @@ impl DawApp {
                 }
             });
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                let size = vec2(48.0, 40.0);
-                if transport_key(ui, "REW", motion == Motion::Rewinding, size).on_hover_text("Terugspoelen (,)").clicked() {
-                    self.rewind();
-                }
-                if transport_key(ui, "F FWD", motion == Motion::Forwarding, size).on_hover_text("Vooruitspoelen (.)").clicked() {
-                    self.fast_forward();
-                }
-                if transport_key(ui, "STOP", motion == Motion::Stopped, size).on_hover_text("Stop (spatie)").clicked() {
-                    self.stop();
-                }
-                if transport_key(ui, "PLAY", motion == Motion::Playing, size)
-                    .on_hover_text("Afspelen; tijdens opnemen: punch-out (spatie)")
-                    .clicked()
-                {
-                    self.play();
-                }
-                // REC: blinks when record-ready, lit while recording.
-                let lit = rec_mode == RecMode::Recording || (rec_mode == RecMode::Ready && blink);
-                let text = RichText::new("REC").strong().size(12.0).color(if lit { Color32::WHITE } else { palette::RED });
-                let rec = egui::Button::new(text)
-                    .fill(if lit { palette::RED } else { palette::KEY })
-                    .min_size(size)
-                    .corner_radius(CornerRadius::same(3));
-                if ui.add(rec).on_hover_text("Opnemen op de sporen met REC FUNCTION (R); tijdens het afspelen: punch-in").clicked() {
-                    self.record();
-                }
-            });
+            self.transport_keys(ui);
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -2799,6 +2804,15 @@ fn describe_output(output: &OutputInfo) -> String {
 }
 
 /// A top-down column of a fixed width with centred contents.
+/// Pad down to `row`, where every fader starts, and note in `lowest` where this fader would start by itself.
+fn to_fader_row(ui: &mut Ui, row: f32, lowest: &mut f32) {
+    let natural = ui.cursor().min.y;
+    *lowest = lowest.max(natural);
+    if row > natural {
+        ui.add_space(row - natural);
+    }
+}
+
 fn column(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
     ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Center), |ui| {
         ui.set_width(width);
@@ -2986,10 +3000,6 @@ const FADER_MARKS: [(f32, &str); 11] = [
 /// steps from 0 to -24 dB, compressed below that.
 const METER_TAPER: [(f32, f32); 3] = [(0.0, MIN_DB), (0.47, -24.0), (1.0, 0.0)];
 
-/// Scale marks printed next to the meters (dB below full scale).
-const METER_MARKS: [(f32, &str); 9] =
-    [(0.0, "0"), (-6.0, "6"), (-12.0, "12"), (-18.0, "18"), (-24.0, "24"), (-30.0, "30"), (-40.0, "40"), (-50.0, "50"), (MIN_DB, "60")];
-
 /// Position (0 to 1) of a value on a piecewise linear scale.
 fn scale_position(taper: &[(f32, f32)], value: f32) -> f32 {
     let (first, last) = (taper[0], taper[taper.len() - 1]);
@@ -3029,9 +3039,10 @@ fn format_db(db: f32) -> String {
 /// five times finer; double-click resets it to 0 dB.
 fn fader(ui: &mut Ui, db: &mut f32, cap: Color32) -> egui::Response {
     let height = FADER_HEIGHT + 2.0 * FADER_MARGIN;
-    let (rect, mut response) = ui.allocate_exact_size(vec2(54.0, height), Sense::click_and_drag());
+    // As wide left of the slot (for the scale) as right of it, so a centred fader has its slot in the middle.
+    let (rect, mut response) = ui.allocate_exact_size(vec2(74.0, height), Sense::click_and_drag());
     let travel = FADER_HEIGHT;
-    let slot_x = rect.right() - 17.0;
+    let slot_x = rect.center().x;
     let to_y = |value: f32| rect.bottom() - FADER_MARGIN - fader_position(value) * travel;
     if response.dragged() {
         let fine = if ui.input(|i| i.modifiers.shift) { 0.2 } else { 1.0 };
@@ -3061,42 +3072,10 @@ fn fader(ui: &mut Ui, db: &mut f32, cap: Color32) -> egui::Response {
     response.on_hover_text("Slepen: niveau, shift: fijn, dubbelklik: 0 dB")
 }
 
-/// A vertical peak meter on Logic's scale (0 dBFS at the top, 60 below at the bottom), green
-/// below -6 dB, amber up to 0 and red when it clips. With `scale`, the numbers are printed on
-/// its left.
-fn meter(ui: &mut Ui, db: f32, scale: bool) {
-    let width = if scale { 26.0 } else { 9.0 };
-    let (rect, _) = ui.allocate_exact_size(vec2(width, FADER_HEIGHT + 2.0 * FADER_MARGIN), Sense::hover());
-    let bar = egui::Rect::from_min_max(
-        egui::pos2(rect.right() - 9.0, rect.top() + FADER_MARGIN),
-        egui::pos2(rect.right(), rect.bottom() - FADER_MARGIN),
-    );
-    let painter = ui.painter();
-    if scale {
-        let font = egui::FontId::proportional(8.5);
-        for (value, label) in METER_MARKS {
-            let y = bar.bottom() - scale_position(&METER_TAPER, value) * bar.height();
-            painter.line_segment([egui::pos2(bar.left() - 4.0, y), egui::pos2(bar.left() - 1.0, y)], Stroke::new(1.0, palette::TEXT_DIM));
-            painter.text(egui::pos2(bar.left() - 5.0, y), egui::Align2::RIGHT_CENTER, label, font.clone(), palette::TEXT_DIM);
-        }
-    }
-    painter.rect_filled(bar, 2.0, Color32::BLACK);
-    let level = if db > MIN_DB { scale_position(&METER_TAPER, db) } else { 0.0 };
-    let lit = egui::Rect::from_min_max(
-        egui::pos2(bar.left() + 1.0, bar.bottom() - level * bar.height()),
-        egui::pos2(bar.right() - 1.0, bar.bottom()),
-    );
-    let colour = if db > 0.0 {
-        palette::LED
-    } else if db > -6.0 {
-        palette::ORANGE
-    } else {
-        palette::GREEN
-    };
-    painter.rect_filled(lit, 1.0, colour);
-}
-
 fn apply_style(ctx: &egui::Context) {
+    skin::fonts::install(ctx);
+    // The zoom follows the window (`skin::zoom`); Cmd and +/- belong to the drawer.
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = palette::PANEL;
     visuals.window_fill = palette::PANEL;
@@ -3110,6 +3089,15 @@ impl DawApp {
     pub fn ui(&mut self, ui: &mut Ui) {
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         self.now = ui.input(|i| i.time);
+        // The window's size at zoom 1, whatever the zoom is now.
+        let ctx = ui.ctx().clone();
+        let window = ui.input(|i| i.viewport_rect().size()) * ctx.zoom_factor();
+        if self.needed.y > 0.0 {
+            let zoom = skin::zoom::zoom_for(window, self.needed);
+            if (zoom - ctx.zoom_factor()).abs() > 1e-3 {
+                ctx.set_zoom_factor(zoom);
+            }
+        }
         self.watch_output();
         self.poll_loads();
         self.poll_takes();
@@ -3119,25 +3107,79 @@ impl DawApp {
         self.sync_transport();
         self.update_meters(dt);
         self.handle_file_shortcuts(ui);
+        let mut switched = false;
         if self.pending.is_none() {
             self.handle_keys(ui);
             self.handle_drawer_keys(ui);
+            // Tab switches between the MIXER and SPOREN views, unless a text field has the keyboard.
+            if !ctx.text_edit_focused() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Tab)) {
+                self.toggle_view();
+                switched = true;
+            }
         }
         self.autosave();
         self.handle_close(ui);
         self.update_title(ui);
 
-        egui::Panel::top("header")
+        let header = egui::Panel::top("header")
             .frame(Frame::new().fill(Color32::from_rgb(0x12, 0x10, 0x11)).inner_margin(Margin::symmetric(16, 8)))
             .show(ui, |ui| self.header(ui));
-        // The drawer slides out of the armrest under the mixer, over the bottom of the mixer
-        // (which scrolls, as before).
-        let height = if self.editor.settings.open { self.editor.settings.height } else { drawer::ARMREST };
-        egui::Panel::bottom("drawer")
-            .resizable(false) // the armrest is the grip; the panel's own handle would take its top pixels
-            .exact_size(height)
+        // Two views, switched with the armrest under them: the MIXER (the whole console) and
+        // SPOREN (the tracks, under the meter bridge and the transport).
+        egui::Panel::bottom("armrest")
+            .resizable(false)
+            .exact_size(drawer::ARMREST)
             .frame(Frame::new().fill(palette::LEATHER))
-            .show(ui, |ui| self.drawer(ui));
+            .show(ui, |ui| self.armrest(ui));
+        let chrome = header.response.rect.height() + drawer::ARMREST;
+        if self.editor.settings.open {
+            // No strips in this view: the TRK meters stand side by side.
+            self.strip_centres = [0.0; TRACKS];
+            let deck =
+                egui::Panel::top("deck").frame(Frame::new().fill(palette::PANEL).inner_margin(Margin::symmetric(12, 10))).show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        self.meter_bridge(ui);
+                        ui.add_space(16.0);
+                        ui.vertical(|ui| {
+                            self.led_counter(ui);
+                            ui.add_space(6.0);
+                            self.transport_keys(ui);
+                        });
+                    })
+                    .response
+                    .rect
+                    .size()
+                });
+            egui::CentralPanel::default().frame(Frame::new().fill(palette::LANE)).show(ui, |ui| self.tracks_view(ui));
+            let bar = deck.inner;
+            self.needed = egui::vec2(bar.x + 24.0, bar.y + 20.0 + chrome + drawer::LANES_MIN);
+        } else {
+            self.mixer_view(ui, chrome);
+        }
+
+        self.settings_window(&ctx);
+        self.tape_window(&ctx);
+        self.export_window(&ctx);
+        self.unsaved_dialog(&ctx);
+        self.confirm_simple_dialog(&ctx);
+        // egui moves the focus to the next widget on Tab; after a switch nothing should keep it,
+        // or the space bar and the other keys would stop working.
+        if switched {
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+        }
+        if self.may_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    }
+
+    /// The MIXER view: the whole console, scaled to fit the window.
+    fn mixer_view(&mut self, ui: &mut Ui, chrome: f32) {
+        let mut console = egui::Vec2::ZERO;
         egui::CentralPanel::default().frame(Frame::new().fill(palette::BACKGROUND).inner_margin(Margin::same(16))).show(ui, |ui| {
             Frame::new().fill(palette::WOOD).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(18, 18)).show(ui, |ui| {
                 Frame::new()
@@ -3146,44 +3188,51 @@ impl DawApp {
                     .inner_margin(Margin::same(14))
                     .stroke(Stroke::new(2.0, palette::EDGE))
                     .show(ui, |ui| {
-                        egui::ScrollArea::both().show(ui, |ui| {
-                            ui.horizontal_top(|ui| {
-                                for index in 0..TRACKS {
-                                    self.channel_strip(ui, index);
-                                    ui.separator();
-                                }
-                                ui.add_space(8.0);
-                                // The buses and the MONITOR section belong to the 388 routing.
-                                if self.mixer.mode == Routing::Classic {
-                                    self.pgm_masters(ui);
-                                    ui.separator();
-                                    self.monitor_section(ui);
-                                    ui.separator();
-                                }
-                                self.master_section(ui);
-                                ui.add_space(24.0);
-                                ui.vertical(|ui| {
-                                    ui.label(RichText::new("DAW 388").strong().size(26.0).color(palette::CREAM));
-                                    ui.label(RichText::new("STUDIO 8").size(13.0).color(palette::TEXT_DIM));
+                        console = egui::ScrollArea::both()
+                            .show(ui, |ui| {
+                                let top = ui.cursor().min.y;
+                                self.meter_bridge(ui);
+                                ui.add_space(12.0);
+                                // The bottom of what the sections hold: the separators reach down to the
+                                // bottom of the panel and would make the console look as tall as the window.
+                                let mut bottom = top;
+                                ui.horizontal_top(|ui| {
+                                    // As far in as the meter bridge's margin, so TRK 1 can stand above strip 1.
+                                    ui.add_space(12.0);
+                                    for index in 0..TRACKS {
+                                        let left = ui.cursor().min.x;
+                                        bottom = bottom.max(ui.scope(|ui| self.channel_strip(ui, index)).response.rect.bottom());
+                                        self.strip_centres[index] = (left + ui.cursor().min.x - ui.spacing().item_spacing.x) / 2.0;
+                                        ui.separator();
+                                    }
+                                    ui.add_space(8.0);
+                                    // The buses and the MONITOR section belong to the 388 routing.
+                                    if self.mixer.mode == Routing::Classic {
+                                        bottom = bottom.max(ui.scope(|ui| self.pgm_masters(ui)).response.rect.bottom());
+                                        ui.separator();
+                                        bottom = bottom.max(ui.scope(|ui| self.monitor_section(ui)).response.rect.bottom());
+                                        ui.separator();
+                                    }
+                                    bottom = bottom.max(ui.scope(|ui| self.master_section(ui)).response.rect.bottom());
                                     ui.add_space(24.0);
-                                    self.transport(ui);
+                                    let deck = ui.vertical(|ui| {
+                                        self.tape_deck(ui);
+                                        ui.add_space(12.0);
+                                        self.transport(ui);
+                                    });
+                                    bottom = bottom.max(deck.response.rect.bottom());
                                 });
-                            });
-                        });
+                                egui::vec2(ui.min_rect().width(), bottom - top)
+                            })
+                            .inner;
                     });
             });
         });
-
-        let ctx = ui.ctx().clone();
-        self.settings_window(&ctx);
-        self.tape_window(&ctx);
-        self.export_window(&ctx);
-        self.unsaved_dialog(&ctx);
-        self.confirm_simple_dialog(&ctx);
-        if self.may_close {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        self.fader_row = self.fader_row_next;
+        self.fader_row_next = 0.0;
+        // The console plus its frames (16, 18 and 14 points a side and the panel's edge), the
+        // header and the armrest.
+        self.needed = egui::vec2(console.x + 100.0, console.y + 100.0 + chrome);
     }
 
     /// Save automatically some time after a change, once the project has a folder.
@@ -3334,6 +3383,27 @@ mod tests {
         app.new_project();
         assert_eq!(app.tape, new_tape());
         assert!(!tape_params(&TapeSettings::default()).on, "older projects: Clean");
+    }
+
+    #[test]
+    fn the_armrest_switches_between_mixer_and_tracks() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        assert!(!app.editor.settings.open, "a new project shows the mixer");
+        app.toggle_view();
+        assert!(app.editor.settings.open && app.dirty, "the view is kept with the project");
+        app.toggle_view();
+        assert!(!app.editor.settings.open);
+    }
+
+    #[test]
+    fn the_needles_rest_without_sound() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.mixer.meter = MeterSwitch::AuxEff;
+        app.update_meters(0.5);
+        assert_eq!(app.big_vu[0].position(), 0.0, "no AUX without sound");
+        assert!(app.tracks.iter().all(|t| t.vu.position() == 0.0));
     }
 
     #[test]

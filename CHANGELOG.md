@@ -7,6 +7,21 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.19.0] - 2026-10-29
+
+### Toegevoegd
+- Meterbrug met VU-meters: TRK 1-8 en twee grote meters voor STEREO L/R of AUX en EFFECT (de METER-schakelaar). De naalden lezen als een echte VU (gemiddeld, ongeveer 300 ms, 0 VU = -18 dBFS); het OL-lampje van een spoor zit in zijn meter.
+- Naamplaat "DAW 388 / STUDIO 8".
+- Bandrecorder met spoelen achter rookglas, die met de band meedraaien bij afspelen en spoelen; de wikkel verschuift van links naar rechts. Erboven de tape-regel, bijvoorbeeld "456-stijl · 7½ IPS · dbx aan".
+- Lettertype IBM Plex Sans Condensed en IBM Plex Mono (SIL Open Font License).
+
+### Gewijzigd
+- Twee weergaven in plaats van de la: MIXER met de hele console en SPOREN met de sporen over het hele venster, onder de VU-brug, de teller en de transporttoetsen. Wisselen met de armsteun of Tab.
+- In SPOREN per spoor een kleine fader voor het volume en een PAN-knop.
+- De UI schaalt mee met het venster (50% tot 125%), zodat de weergave altijd helemaal past.
+- Alle faders staan op één hoogte, ook die van de master-sectie.
+- De balkmeters in de kanaalstrips en in de master-sectie zijn vervangen door de meterbrug. De TRK-balkjes van de MONITOR-sectie blijven.
+
 ## [0.18.0] - 2026-10-28
 
 ### Toegevoegd

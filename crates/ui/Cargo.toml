@@ -10,7 +10,8 @@ publish.workspace = true
 [dependencies]
 daw388-engine.workspace = true
 daw388-project.workspace = true
-egui.workspace = true
+# Its own fonts stay behind IBM Plex for characters Plex lacks.
+egui = { workspace = true, features = ["default_fonts"] }
 log.workspace = true
 hound.workspace = true
 
