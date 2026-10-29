@@ -38,6 +38,11 @@ pub fn bold(text: impl Into<String>) -> RichText {
     RichText::new(text).family(FontFamily::Name(BOLD.into()))
 }
 
+/// Plex SemiBold at `size`, for text the painter draws.
+pub fn bold_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, FontFamily::Name(BOLD.into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

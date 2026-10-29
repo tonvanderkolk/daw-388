@@ -141,6 +141,29 @@ pub fn paint_lamp(painter: &egui::Painter, centre: Pos2, lit: bool, colour: Colo
     painter.circle_filled(centre, 2.5, if lit { colour } else { Color32::from_rgb(0x2a, 0x26, 0x24) });
 }
 
+/// The look of a small LED display for the widgets inside `ui` (tempo, metre, input): a dark
+/// field with a thin edge and red figures in Plex Mono, like the counter.
+pub fn led_style(ui: &mut Ui) {
+    let style = ui.style_mut();
+    let field = Color32::from_rgb(0x12, 0x08, 0x07);
+    for state in [
+        &mut style.visuals.widgets.inactive,
+        &mut style.visuals.widgets.hovered,
+        &mut style.visuals.widgets.active,
+        &mut style.visuals.widgets.open,
+    ] {
+        state.weak_bg_fill = field;
+        state.bg_fill = field;
+        state.bg_stroke = Stroke::new(1.0, palette::EDGE);
+        state.fg_stroke = Stroke::new(1.0, palette::LED);
+        state.corner_radius = egui::CornerRadius::same(2);
+    }
+    style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, palette::LED.gamma_multiply(0.5));
+    style.visuals.extreme_bg_color = field;
+    style.visuals.override_text_color = Some(palette::LED);
+    style.override_font_id = Some(FontId::monospace(11.0));
+}
+
 /// How wide a key is drawn: its own width, or wider when its label (and LED) need it.
 pub fn key_width(key: f32, label: f32, lamp: f32) -> f32 {
     key.max(label + lamp)

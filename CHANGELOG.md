@@ -7,6 +7,15 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.22.0] - 2026-10-29
+
+### Gewijzigd
+- De vensters Tape settings, Export en Settings en de dialogen staan op crème papier met een donkere titelbalk, zoals in de mockup: sectiekoppen in kleine kapitalen, keuzekaarten (de gekozen kaart zwart met oranje tekst), vinkjes, rondjes en schuifjes in roestbruin (`crates/ui/src/skin/paper.rs`).
+- De kopregel is rustig: File en Edit als menutekst, de projectnaam in het midden, rechts de status, de opslagmelding en volledig scherm. De uitvoerkeuze staat alleen nog in Settings.
+- SIMPLE / 388 is een schuifschakelaar in het vlak ROUTING bovenaan de MASTER-kolom.
+- Tempo, maatsoort en de ingangskeuze van de strips zijn kleine LED-displays in de stijl van de teller.
+- Onder een lege strip staat een streepje in plaats van "empty"; lege delen van de console (onder ECHO in Simple, onder het transport) zijn een donkerder vlak.
+
 ## [0.21.1] - 2026-10-29
 
 ### Gewijzigd

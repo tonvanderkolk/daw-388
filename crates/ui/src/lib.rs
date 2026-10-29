@@ -300,6 +300,8 @@ pub struct DawApp {
     /// (the console's size is measured a frame later).
     fitted_for: Option<Routing>,
     fit_in: u8,
+    /// The zoom to keep when the window is fitted after a switch (0: take it from the height).
+    fit_zoom: f32,
     status: String,
     /// The project folder, once saved or opened.
     project_dir: Option<PathBuf>,
@@ -597,6 +599,7 @@ impl DawApp {
             needed: egui::Vec2::ZERO,
             fitted_for: None,
             fit_in: 0,
+            fit_zoom: 0.0,
             status: String::new(),
             project_dir: None,
             dirty: false,
@@ -1148,19 +1151,14 @@ impl DawApp {
             return;
         }
         let mut answer = None;
-        let response = egui::Modal::new(egui::Id::unique("confirm-simple")).show(ctx, |ui| {
-            ui.set_width(380.0);
-            ui.label(RichText::new("Switch to Simple?").strong().size(16.0));
-            ui.add_space(6.0);
-            ui.label(
-                "The buses, ASSIGN and the MONITOR settings go back to the simple setup. Fader, PAN, EQ, TRIM and the input stay as they are.",
-            );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.button("Continue").clicked() {
+        let response = skin::paper::paper_modal(ctx, "confirm-simple", "Switch to Simple?", 400.0, |ui| {
+            ui.label("The buses, ASSIGN and the MONITOR settings go back to the simple setup. Fader, PAN, EQ, TRIM and the input stay as they are.");
+            ui.add_space(14.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if skin::paper::primary_button(ui, "Continue").clicked() {
                     answer = Some(true);
                 }
-                if ui.button("Cancel").clicked() {
+                if skin::paper::plain_button(ui, "Cancel").clicked() {
                     answer = Some(false);
                 }
             });
@@ -1175,25 +1173,24 @@ impl DawApp {
     fn unsaved_dialog(&mut self, ctx: &egui::Context) {
         let Some(action) = self.pending.clone() else { return };
         let mut answer = None;
-        let response = egui::Modal::new(egui::Id::unique("unsaved-changes")).show(ctx, |ui| {
-            ui.set_width(360.0);
-            ui.label(RichText::new(format!("Save changes to {}?", self.project_name())).strong().size(16.0));
-            ui.add_space(6.0);
+        let mut cancel = false;
+        let title = format!("Save changes to {}?", self.project_name());
+        let response = skin::paper::paper_modal(ctx, "unsaved-changes", &title, 400.0, |ui| {
             ui.label("If you don't save, the changes since the last save are lost.");
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
+            ui.add_space(14.0);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if skin::paper::primary_button(ui, "Save").clicked() {
                     answer = Some(true);
                 }
-                if ui.button("Don't save").clicked() {
+                if skin::paper::plain_button(ui, "Don't save").clicked() {
                     answer = Some(false);
                 }
-                if ui.button("Cancel").clicked() {
-                    self.pending = None;
+                if skin::paper::plain_button(ui, "Cancel").clicked() {
+                    cancel = true;
                 }
             });
         });
-        if response.should_close() && answer.is_none() {
+        if cancel || (response.should_close() && answer.is_none()) {
             self.pending = None;
         }
         if let Some(save) = answer {
@@ -1533,7 +1530,7 @@ impl DawApp {
     }
 
     fn metronome_settings(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("Metronome").strong());
+        skin::paper::section_title(ui, "Metronome");
         ui.add_space(4.0);
         let mut metronome = self.metronome;
         egui::Grid::new("metronome-settings").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -1553,7 +1550,7 @@ impl DawApp {
             });
             ui.end_row();
             ui.label("Click");
-            ui.checkbox(&mut metronome.always, "Also during normal playback (otherwise only when recording)");
+            skin::paper::check(ui, &mut metronome.always, "Also during normal playback (otherwise only when recording)");
             ui.end_row();
         });
         ui.label(
@@ -1563,7 +1560,7 @@ impl DawApp {
                  Tempo, time signature and these settings are saved with the project.",
             )
             .size(11.0)
-            .color(palette::TEXT_DIM),
+            .color(skin::paper::INK_SOFT),
         );
         self.set_metronome(metronome);
     }
@@ -1633,47 +1630,39 @@ impl DawApp {
         }
     }
 
+    /// The header: File and Edit on the left, the project in the middle, status, saved and full
+    /// screen on the right. The output device lives in Settings; Simple / 388 on the console.
     fn header(&mut self, ui: &mut Ui) {
+        let full = ui.max_rect();
         ui.horizontal(|ui| {
-            self.file_menu(ui);
-            self.edit_menu(ui);
-            let name = format!("{}{}", self.project_name(), if self.dirty { " (modified)" } else { "" });
-            ui.label(RichText::new(name).color(palette::TEXT_DIM).size(13.0));
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 2.0;
-                for (mode, label, tip) in [
-                    (Routing::Simple, "Simple", "One strip per track: input, REC and fader, as in most DAWs"),
-                    (Routing::Classic, "388", "The routing of the 388: buses, ASSIGN, DIRECT and the MONITOR section"),
-                ] {
-                    let on = self.mixer.mode == mode;
-                    let text = RichText::new(label).size(13.0).color(if on { Color32::BLACK } else { palette::TEXT });
-                    let button = egui::Button::new(text).fill(if on { palette::CREAM } else { palette::PANEL_DARK });
-                    if ui.add(button).on_hover_text(tip).clicked() {
-                        self.set_routing(mode);
-                    }
+            // Menus as plain text that lights up under the mouse, no button frames.
+            ui.scope(|ui| {
+                let widgets = &mut ui.visuals_mut().widgets;
+                for state in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.active, &mut widgets.open] {
+                    state.weak_bg_fill = Color32::TRANSPARENT;
+                    state.bg_stroke = Stroke::NONE;
                 }
+                widgets.inactive.fg_stroke = Stroke::new(1.0, palette::TEXT);
+                widgets.hovered.fg_stroke = Stroke::new(1.0, palette::CREAM);
+                self.file_menu(ui);
+                self.edit_menu(ui);
             });
-            ui.separator();
-            ui.label(RichText::new("Output").color(palette::TEXT_DIM));
-            if let Some(choice) = self.device_combo(ui, "output-device") {
-                self.set_output(Preferences { output_device: choice, ..self.preferences.clone() });
-            }
-            if ui.button("Refresh").on_hover_text("Fetch the list of audio devices again").clicked() {
-                self.devices = self.platform.output_devices();
-            }
+            let name = format!("{}{}", self.project_name(), if self.dirty { " (modified)" } else { "" });
+            ui.painter().text(full.center(), egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(12.0), palette::TEXT_DIM);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if fullscreen_icon(ui).clicked() {
                     toggle_fullscreen(ui.ctx());
                 }
-                ui.separator();
                 if let Some(saved) = &self.saved_label
                     && !self.dirty
                 {
-                    ui.label(RichText::new(saved).color(palette::GREEN).size(13.0));
-                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(saved).color(palette::GREEN).size(11.0));
                 }
+                // The status keeps clear of the project name in the middle.
+                let room = (ui.available_width() - full.width() / 2.0 - 120.0).max(0.0);
                 let colour = if self.engine.is_some() { palette::TEXT_DIM } else { palette::LED };
-                ui.add(egui::Label::new(RichText::new(&self.status).color(colour).size(13.0)).truncate());
+                ui.add_sized(vec2(room, 16.0), egui::Label::new(RichText::new(&self.status).color(colour).size(11.0)).truncate());
             });
         });
     }
@@ -1881,11 +1870,13 @@ impl DawApp {
             let row = top + 186.0;
             tag(ui, egui::pos2(col(0) - 22.0, row + 10.0), egui::Align2::LEFT_CENTER, "TEMPO");
             place(ui, (col(1) + col(2)) / 2.0 - 12.0, row, vec2(84.0, 20.0), |ui| {
+                keys::led_style(ui);
                 ui.add(egui::DragValue::new(&mut metronome.bpm).range(20.0..=400.0).speed(0.2).fixed_decimals(1).suffix(" BPM"))
                     .on_hover_text("Tempo in quarter notes per minute (drag, or click and type)");
             });
             tag(ui, egui::pos2(col(3) - 14.0, row + 10.0), egui::Align2::RIGHT_CENTER, "METER");
             place(ui, col(3) + 18.0, row, vec2(56.0, 20.0), |ui| {
+                keys::led_style(ui);
                 let signature = format!("{}/{}", metronome.beats, metronome.unit);
                 egui::ComboBox::from_id_salt("time-signature").selected_text(signature).width(48.0).show_ui(ui, |ui| {
                     for (beats, unit) in TIME_SIGNATURES {
@@ -1923,7 +1914,7 @@ impl DawApp {
     }
 
     fn audio_settings(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("Audio").strong());
+        skin::paper::section_title(ui, "Audio");
         ui.add_space(4.0);
         let mut wanted = self.preferences.clone();
         egui::Grid::new("audio-settings").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
@@ -1966,7 +1957,7 @@ impl DawApp {
             ui.end_row();
 
             ui.label("Monitoring");
-            ui.checkbox(&mut wanted.software_monitoring, "Through DAW 388 (off: direct monitoring on the interface)");
+            skin::paper::check(ui, &mut wanted.software_monitoring, "Through DAW 388 (off: direct monitoring on the interface)");
             ui.end_row();
 
             // AUX and EFF to free outputs of the interface; 1 and 2 carry the main output.
@@ -2039,7 +2030,7 @@ impl DawApp {
             }
             None => "Now: no audio output, the transport runs on without sound".into(),
         };
-        ui.label(RichText::new(now).size(11.0).color(palette::TEXT_DIM));
+        ui.label(RichText::new(now).size(11.0).color(skin::paper::INK_SOFT));
         ui.label(
             RichText::new(
                 "A smaller buffer gives less latency but asks more of the computer. If the device goes away, \
@@ -2047,7 +2038,7 @@ impl DawApp {
                  to the app, not per project.",
             )
             .size(11.0)
-            .color(palette::TEXT_DIM),
+            .color(skin::paper::INK_SOFT),
         );
         self.set_output(wanted);
     }
@@ -2137,78 +2128,126 @@ impl DawApp {
     }
 
     fn export_window(&mut self, ctx: &egui::Context) {
+        use skin::paper::{self, check, note, plain_button, primary_button, radio, section_title, toggle_cards};
         let mut open = self.show_export;
         let mut choices = self.export.clone();
         let mut start = false;
         let names: [String; TRACKS] =
             std::array::from_fn(|i| if self.tracks[i].name.is_empty() { "empty".to_string() } else { self.tracks[i].name.clone() });
+        let has: [bool; TRACKS] = std::array::from_fn(|i| !self.tracks[i].regions.is_empty());
         let running = self.running_export.as_ref().map(|r| Arc::clone(&r.progress));
-        egui::Window::new("Export").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.set_width(420.0);
+        let machine = self.tape.mode == TapeMode::Machine;
+        let project = self.project_name();
+        let place = self.project_dir.as_ref().map_or("Save the project first".to_string(), |d| d.join("export").display().to_string());
+        paper::paper_window(ctx, "export-window", "Export", "", &mut open, 460.0, |ui| {
             ui.add_enabled_ui(running.is_none(), |ui| {
-                ui.checkbox(&mut choices.stereo, "Stereo bounce (the mix as you hear it)");
-                ui.add_enabled_ui(choices.stereo && self.tape.mode == TapeMode::Machine, |ui| {
-                    ui.checkbox(&mut choices.stereo_tape, "with tape character");
+                section_title(ui, "What");
+                toggle_cards(ui, &mut [("Stereo bounce", &mut choices.stereo), ("Separate tracks", &mut choices.stems)]);
+                ui.add_enabled_ui(choices.stereo && machine, |ui| {
+                    check(ui, &mut choices.stereo_tape, "Stereo bounce with tape character");
                 });
-                ui.add_space(4.0);
-                ui.checkbox(&mut choices.stems, "Separate tracks");
                 ui.add_enabled_ui(choices.stems, |ui| {
-                    egui::Grid::new("export-stems").num_columns(4).show(ui, |ui| {
+                    section_title(ui, "Tracks");
+                    egui::Grid::new("export-stems").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
                         for (index, name) in names.iter().enumerate() {
-                            let has = !self.tracks[index].regions.is_empty();
-                            ui.add_enabled(has, egui::Checkbox::new(&mut choices.stem_tracks[index], format!("{} {name}", index + 1)));
-                            if index % 4 == 3 {
+                            ui.add_enabled_ui(has[index], |ui| {
+                                check(ui, &mut choices.stem_tracks[index], &format!("{:02}  {name}", index + 1));
+                            });
+                            if index % 2 == 1 {
                                 ui.end_row();
                             }
                         }
                     });
-                    ui.horizontal(|ui| {
-                        for (kind, label, tip) in [
-                            (StemKind::Mixed, "with mixer and tape", "Stereo, as in the mix: EQ, fader, pan, and its own reverb and echo"),
-                            (StemKind::TapeOnly, "tape only", "Mono, the track as it comes off the tape"),
-                            (StemKind::Dry, "dry", "Mono, the recording itself"),
-                        ] {
-                            ui.selectable_value(&mut choices.stem_kind, kind, label).on_hover_text(tip);
+                    section_title(ui, "Processing");
+                    for (kind, label, tip) in [
+                        (
+                            StemKind::Mixed,
+                            "With mixer (EQ, pan, fader) and tape character",
+                            "Stereo, as in the mix, with its own reverb and echo",
+                        ),
+                        (StemKind::TapeOnly, "Tape character only, mixer dry", "Mono, the track as it comes off the tape"),
+                        (StemKind::Dry, "Completely dry", "Mono, the recording itself"),
+                    ] {
+                        if radio(ui, choices.stem_kind == kind, label).on_hover_text(tip).clicked() {
+                            choices.stem_kind = kind;
                         }
-                    });
-                });
-                ui.add_space(4.0);
-                ui.checkbox(&mut choices.to_cue, "Only from the zero point to the CUE point");
-                ui.add_enabled_ui(choices.to_cue, |ui| {
-                    ui.checkbox(&mut choices.from_zero, "All files start at 0:00");
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut choices.format, ExportFormat::Wav, "WAV");
-                    ui.selectable_value(&mut choices.format, ExportFormat::Aiff, "AIFF");
-                    ui.separator();
-                    ui.selectable_value(&mut choices.depth, BitDepth::Int16, "16 bit");
-                    ui.selectable_value(&mut choices.depth, BitDepth::Int24, "24 bit");
-                    ui.selectable_value(&mut choices.depth, BitDepth::Float32, "32 bit float");
-                });
-                ui.horizontal(|ui| {
-                    for rate in [44_100, 48_000, 96_000] {
-                        ui.selectable_value(&mut choices.rate, rate, format!("{}.{} kHz", rate / 1000, (rate % 1000) / 100));
                     }
                 });
-                ui.add_space(6.0);
-                let place =
-                    self.project_dir.as_ref().map_or("Save the project first".to_string(), |d| d.join("export").display().to_string());
-                ui.label(RichText::new(format!("Folder: {place}")).size(11.0).color(palette::TEXT_DIM));
-                ui.add_space(6.0);
-                if ui.button("Export").clicked() {
-                    start = true;
-                }
+                section_title(ui, "Range");
+                check(ui, &mut choices.to_cue, "Only from the zero point to the CUE point");
+                ui.add_enabled_ui(choices.to_cue, |ui| {
+                    check(ui, &mut choices.from_zero, "All files start at 0:00");
+                });
+                ui.add_space(8.0);
+                ui.columns(3, |columns| {
+                    let rate_text = |rate: u32| format!("{}.{} kHz", rate / 1000, (rate % 1000) / 100);
+                    columns[0].label(RichText::new("Format").size(11.5).color(paper::INK_SOFT));
+                    egui::ComboBox::from_id_salt("export-format")
+                        .selected_text(if choices.format == ExportFormat::Wav { "WAV" } else { "AIFF" })
+                        .width(columns[0].available_width())
+                        .show_ui(&mut columns[0], |ui| {
+                            ui.selectable_value(&mut choices.format, ExportFormat::Wav, "WAV");
+                            ui.selectable_value(&mut choices.format, ExportFormat::Aiff, "AIFF");
+                        });
+                    columns[1].label(RichText::new("Bit depth").size(11.5).color(paper::INK_SOFT));
+                    let depth_text = |depth: BitDepth| match depth {
+                        BitDepth::Int16 => "16-bit",
+                        BitDepth::Int24 => "24-bit",
+                        BitDepth::Float32 => "32-bit float",
+                    };
+                    egui::ComboBox::from_id_salt("export-depth")
+                        .selected_text(depth_text(choices.depth))
+                        .width(columns[1].available_width())
+                        .show_ui(&mut columns[1], |ui| {
+                            for depth in [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32] {
+                                ui.selectable_value(&mut choices.depth, depth, depth_text(depth));
+                            }
+                        });
+                    columns[2].label(RichText::new("Sample rate").size(11.5).color(paper::INK_SOFT));
+                    egui::ComboBox::from_id_salt("export-rate")
+                        .selected_text(rate_text(choices.rate))
+                        .width(columns[2].available_width())
+                        .show_ui(&mut columns[2], |ui| {
+                            for rate in [44_100, 48_000, 96_000] {
+                                ui.selectable_value(&mut choices.rate, rate, rate_text(rate));
+                            }
+                        });
+                });
+                ui.add_space(8.0);
+                let example = if choices.stems {
+                    daw388_project::export::export_name(&project, Some(0), Some(&names[0]))
+                } else {
+                    daw388_project::export::export_name(&project, None, None)
+                };
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("File name:").size(11.5).color(paper::INK_SOFT));
+                    ui.label(RichText::new(format!("{example}.{}", choices.format.extension())).monospace().size(12.0));
+                });
+                note(ui, &format!("Folder: {place}"));
             });
+            ui.add_space(10.0);
             if let Some(progress) = &running {
                 let done = progress.done.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
-                ui.add(egui::ProgressBar::new(done).show_percentage());
-                if ui.button("Cancel").clicked() {
-                    progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
+                ui.add(egui::ProgressBar::new(done).show_percentage().fill(paper::RUST));
                 ctx.request_repaint();
             }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if running.is_none() {
+                    if primary_button(ui, "Export").clicked() {
+                        start = true;
+                    }
+                    if plain_button(ui, "Close").clicked() {
+                        self.show_export = false;
+                    }
+                } else if let Some(progress) = &running
+                    && plain_button(ui, "Cancel").clicked()
+                {
+                    progress.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
         });
+        // The Close button above clears `show_export` directly; the cross clears `open`.
+        let open = open && self.show_export;
         self.show_export = open;
         self.export = choices;
         if start {
@@ -2218,59 +2257,50 @@ impl DawApp {
 
     /// Clean or 388, tape speed and kind, and four amounts from 0 to 200%.
     fn tape_window(&mut self, ctx: &egui::Context) {
+        use skin::paper::{self, check, choice_cards, note, section_title, slider_row, switch_pair};
         let mut open = self.show_tape;
         let mut tape = self.tape;
-        egui::Window::new("Tape").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.set_width(340.0);
-            ui.label("The character of the tape on playback. Recordings through the input stay clean.");
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut tape.mode, TapeMode::Clean, "Clean").on_hover_text("The tape passes untouched");
-                ui.selectable_value(&mut tape.mode, TapeMode::Machine, "388").on_hover_text("The character of the 388");
-            });
-            ui.add_space(6.0);
+        paper::paper_window(ctx, "tape-window", "Tape settings", "per project", &mut open, 380.0, |ui| {
+            section_title(ui, "Machine");
+            let mut machine = 0;
+            choice_cards(ui, &[(0, "388 Studio 8", Some("2 heads · 1/4 inch · 8 tracks"))], &mut machine);
+            section_title(ui, "Character");
+            switch_pair(ui, [(TapeMode::Clean, "Clean"), (TapeMode::Machine, "388")], &mut tape.mode, 200.0);
+            note(ui, "The character of the tape on playback. Recordings through the input stay clean.");
             ui.add_enabled_ui(tape.mode == TapeMode::Machine, |ui| {
-                egui::Grid::new("tape-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                    ui.label("Speed");
-                    ui.horizontal(|ui| {
-                        for (speed, label) in
-                            [(SpeedEntry::Ips3_75, "3¾ IPS"), (SpeedEntry::Ips7_5, "7½ IPS"), (SpeedEntry::Ips15, "15 IPS")]
-                        {
-                            ui.selectable_value(&mut tape.speed, speed, label);
-                        }
-                    });
-                    ui.end_row();
-                    ui.label("Tape type");
-                    ui.horizontal(|ui| {
-                        for (kind, label, tip) in [
-                            (KindEntry::T456, "456", "Plenty of headroom, the standard"),
-                            (KindEntry::T250, "250", "Warm, saturates sooner"),
-                            (KindEntry::T911, "911", "A little brighter"),
-                        ] {
-                            ui.selectable_value(&mut tape.kind, kind, label).on_hover_text(tip);
-                        }
-                    });
-                    ui.end_row();
-                    ui.label("dbx");
-                    ui.horizontal(|ui| {
-                        let tip = "Noise reduction: the noise drops away in silences and breathes with the music";
-                        ui.checkbox(&mut tape.dbx[0], "tracks 1-4").on_hover_text(tip);
-                        ui.checkbox(&mut tape.dbx[1], "tracks 5-8").on_hover_text(tip);
-                    });
-                    ui.end_row();
-                    for (label, amount) in [
-                        ("Saturation", &mut tape.saturation),
-                        ("Wow & flutter", &mut tape.wow_flutter),
-                        ("Noise", &mut tape.noise),
-                        ("Crosstalk", &mut tape.crosstalk),
-                    ] {
-                        ui.label(label);
-                        let slider = egui::Slider::new(amount, 0.0..=2.0).custom_formatter(|v, _| format!("{:.0}%", v * 100.0));
-                        if ui.add(slider).on_hover_text("100% is the machine as it is (double-click: 100%)").double_clicked() {
-                            *amount = 1.0;
-                        }
-                        ui.end_row();
-                    }
+                section_title(ui, "Tape speed");
+                choice_cards(
+                    ui,
+                    &[(SpeedEntry::Ips3_75, "3¾ IPS", None), (SpeedEntry::Ips7_5, "7½ IPS", None), (SpeedEntry::Ips15, "15 IPS", None)],
+                    &mut tape.speed,
+                );
+                note(ui, "7½ IPS is the original speed of the 388.");
+                section_title(ui, "Tape type");
+                choice_cards(
+                    ui,
+                    &[
+                        (KindEntry::T456, "456 style", Some("plenty of headroom")),
+                        (KindEntry::T250, "250 style", Some("warm, saturates sooner")),
+                        (KindEntry::T911, "911 style", Some("a little brighter")),
+                    ],
+                    &mut tape.kind,
+                );
+                section_title(ui, "Amounts");
+                for (label, amount) in [
+                    ("Saturation", &mut tape.saturation),
+                    ("Wow & flutter", &mut tape.wow_flutter),
+                    ("Noise (hiss)", &mut tape.noise),
+                    ("Crosstalk", &mut tape.crosstalk),
+                ] {
+                    let shown = format!("{:.0}%", *amount * 100.0);
+                    slider_row(ui, label, amount, 0.0..=2.0, 1.0, shown, "100% is the machine as it is (double-click: 100%)");
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 18.0;
+                    let tip = "Noise reduction: the noise drops away in silences and breathes with the music";
+                    check(ui, &mut tape.dbx[0], "dbx tracks 1-4").on_hover_text(tip);
+                    check(ui, &mut tape.dbx[1], "dbx tracks 5-8").on_hover_text(tip);
                 });
             });
         });
@@ -2285,30 +2315,24 @@ impl DawApp {
 
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
-        egui::Window::new("Settings").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            ui.set_width(440.0);
+        skin::paper::paper_window(ctx, "settings-window", "Settings", "", &mut open, 480.0, |ui| {
             self.audio_settings(ui);
             ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
             self.metronome_settings(ui);
             ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(4.0);
-            ui.label(RichText::new("REPEAT, RTZ and STC").strong());
-            ui.add_space(4.0);
+            skin::paper::section_title(ui, "REPEAT, RTZ and STC");
             let mut mode = self.repeat_mode;
-            ui.radio_value(&mut mode, RepeatMode::Tape, "388: the tape rewinds to the zero point in real time");
-            ui.radio_value(&mut mode, RepeatMode::Cycle, "Cycle: jumps straight back, as in Logic");
+            if skin::paper::radio(ui, mode == RepeatMode::Tape, "388: the tape rewinds to the zero point in real time").clicked() {
+                mode = RepeatMode::Tape;
+            }
+            if skin::paper::radio(ui, mode == RepeatMode::Cycle, "Cycle: jumps straight back, as in Logic").clicked() {
+                mode = RepeatMode::Cycle;
+            }
             self.set_repeat_mode(mode);
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(
-                    "REPEAT repeats from the zero point (RESET) to the CUE point. In 388 mode every transport key except PLAY \
-                     and RTZ switches REPEAT off; in cycle mode REPEAT stays on. This setting is saved with the project.",
-                )
-                .size(11.0)
-                .color(palette::TEXT_DIM),
+            skin::paper::note(
+                ui,
+                "REPEAT repeats from the zero point (RESET) to the CUE point. In 388 mode every transport key except PLAY \
+                 and RTZ switches REPEAT off; in cycle mode REPEAT stays on. This setting is saved with the project.",
             );
         });
         if open && !self.show_settings {
@@ -2669,7 +2693,7 @@ impl DawApp {
         self.update_title(ui);
 
         let header = egui::Panel::top("header")
-            .frame(Frame::new().fill(Color32::from_rgb(0x12, 0x10, 0x11)).inner_margin(Margin::symmetric(16, 8)))
+            .frame(Frame::new().fill(palette::PANEL_DARK).inner_margin(Margin::symmetric(14, 5)))
             .show(ui, |ui| self.header(ui));
         // Two views, switched with the armrest under them: the MIXER (the whole console) and
         // SPOREN (the tracks, under the meter bridge and the transport).
@@ -2731,6 +2755,9 @@ impl DawApp {
             return;
         }
         if self.fitted_for != Some(self.mixer.mode) {
+            // After a switch the controls keep their size and the window follows the console;
+            // at startup the window's height sets the zoom.
+            self.fit_zoom = if self.fitted_for.is_some() { ctx.zoom_factor() } else { 0.0 };
             self.fitted_for = Some(self.mixer.mode);
             self.fit_in = 3;
         }
@@ -2743,16 +2770,17 @@ impl DawApp {
             (viewport.fullscreen.unwrap_or(false), viewport.maximized.unwrap_or(false), viewport.monitor_size)
         });
         if self.fit_in == 0 && self.needed.x > 0.0 && !full && !maximized {
-            // The height stays and sets the zoom; the width follows the console, so a switch to
-            // 388 widens the window instead of shrinking everything (never past the screen).
-            let zoom = skin::zoom::zoom_for(egui::vec2(f32::MAX, window.y), self.needed);
-            // `window` is at zoom 1; the viewport command takes egui points at the current zoom.
+            // Sizes here are at zoom 1 (as `window`); the viewport takes egui points at the
+            // current zoom, and so does the monitor size.
             let current = ctx.zoom_factor();
-            let screen = monitor.map_or(f32::MAX, |m| m.x);
-            let width = (self.needed.x * zoom / current).ceil().min(screen);
-            let height = window.y / current;
-            if (width - window.x / current).abs() > 2.0 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(width, height)));
+            let zoom = if self.fit_zoom > 0.0 { self.fit_zoom } else { skin::zoom::zoom_for(egui::vec2(f32::MAX, window.y), self.needed) };
+            let mut size = self.needed * zoom;
+            // Never past the screen (minus the menu and title bars): then the zoom gives way.
+            if let Some(screen) = monitor.map(|m| m * current - egui::vec2(0.0, 90.0)) {
+                size *= (screen.x / size.x).min(screen.y / size.y).min(1.0);
+            }
+            if (size - window).length() > 2.0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize((size / current).ceil()));
             }
         }
     }
@@ -2800,6 +2828,15 @@ impl DawApp {
                                                 ui.add_space(12.0);
                                                 self.transport(ui);
                                             });
+                                            // The empty space under the transport as a darker field, like a blank panel.
+                                            let below = deck.response.rect;
+                                            if bottom - below.bottom() > 40.0 {
+                                                let field = egui::Rect::from_min_max(
+                                                    egui::pos2(below.left(), below.bottom() + 12.0),
+                                                    egui::pos2(below.right(), bottom),
+                                                );
+                                                ui.painter().rect_filled(field, 3.0, palette::PANEL_DARK.gamma_multiply(0.5));
+                                            }
                                             bottom = bottom.max(deck.response.rect.bottom());
                                         });
                                         // The width of the strips and sections, not of the bridge: the bridge

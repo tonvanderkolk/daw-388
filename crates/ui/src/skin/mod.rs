@@ -3,6 +3,7 @@
 pub(crate) mod bridge;
 pub(crate) mod fonts;
 pub(crate) mod keys;
+pub(crate) mod paper;
 pub(crate) mod reels;
 pub(crate) mod vu;
 pub(crate) mod zoom;

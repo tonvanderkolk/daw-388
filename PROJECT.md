@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.21.1
+Versie: 0.22.0
 Laatst bijgewerkt: 29-10-2026
 
 ## Doel

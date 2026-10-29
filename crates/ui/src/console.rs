@@ -20,6 +20,7 @@ pub(crate) const BAND_PLATE: f32 = 66.0;
 pub(crate) const BAND_ECHO: f32 = 96.0;
 pub(crate) const BAND_MONITOR: f32 = 302.0;
 /// Bands of the MASTER column.
+pub(crate) const BAND_ROUTING: f32 = 48.0;
 pub(crate) const BAND_MASTER: f32 = 66.0;
 pub(crate) const BAND_SWITCHES: f32 = 110.0;
 pub(crate) const BAND_LISTEN: f32 = 100.0;
@@ -111,6 +112,7 @@ impl DawApp {
                     let text = |c: Option<u16>| c.map_or("no input".to_string(), |c| format!("in {c}"));
                     let mut input = track.input;
                     place(ui, cx, top + 31.0, vec2(84.0, 20.0), |ui| {
+                        keys::led_style(ui);
                         egui::ComboBox::from_id_salt(("strip-input", index)).selected_text(text(input)).width(76.0).show_ui(ui, |ui| {
                             ui.selectable_value(&mut input, None, text(None));
                             for c in 1..=input_channels {
@@ -317,7 +319,8 @@ impl DawApp {
                 _ if loading => ("loading...".to_string(), palette::ORANGE),
                 Some(path) => (format!("missing: {}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), palette::LED),
                 None if has_content => (track.name.clone(), palette::TEXT_DIM),
-                None => ("empty".to_string(), palette::TEXT_DIM),
+                // A dash, not a word: eight empty strips stay quiet.
+                None => ("–".to_string(), palette::TEXT_DIM.gamma_multiply(0.6)),
             };
             match &mut renaming {
                 Some((track_index, text, focus)) if *track_index == index => {
@@ -480,7 +483,14 @@ impl DawApp {
                     mixer_changed |= mon;
                 });
             }
-            ui.add_space(fader_top(classic) - return_bands(classic) + FADER_GAP);
+            let space = fader_top(classic) - return_bands(classic) + FADER_GAP;
+            if !classic {
+                // Without MONITOR and PGM MASTERS this column is empty below ECHO: a darker field
+                // makes that look meant rather than missing.
+                let field = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), space + 300.0)).shrink(6.0);
+                ui.painter().rect_filled(field, 3.0, palette::PANEL_DARK.gamma_multiply(0.5));
+            }
+            ui.add_space(space);
             if classic {
                 // `horizontal_top`: both faders start on the fader line (`horizontal` would
                 // centre them on each other).
@@ -564,8 +574,20 @@ impl DawApp {
     pub(crate) fn master_column(&mut self, ui: &mut Ui) {
         let classic = self.mixer.mode == Routing::Classic;
         let mut mixer_changed = false;
+        let mut routing = None;
         column(ui, 124.0, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
+            // SIMPLE or the 388's routing, the switch that was in the header.
+            section(ui, "ROUTING", BAND_ROUTING, |ui| {
+                let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
+                let mut chosen = usize::from(classic);
+                let switch = place(ui, cx, top, vec2(80.0, 23.0), |ui| keys::slide_switch(ui, &["SIMPLE", "388"], &mut chosen, 80.0)).on_hover_text(
+                    "SIMPLE: one strip per track (input, REC and fader), as in most DAWs. 388: the buses, ASSIGN, DIRECT and the MONITOR section",
+                );
+                if switch.changed() {
+                    routing = Some(if chosen == 1 { Routing::Classic } else { Routing::Simple });
+                }
+            });
             // AUX MASTER and EFF MASTER, to their own interface outputs (Instellingen, Audio).
             section(ui, "MASTER", BAND_MASTER, |ui| {
                 let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
@@ -650,7 +672,7 @@ impl DawApp {
                 ));
                 mixer_changed |= phones.changed() || phones.double_clicked();
             });
-            ui.add_space(fader_top(classic) - BAND_MASTER - BAND_SWITCHES - BAND_LISTEN + FADER_GAP);
+            ui.add_space(fader_top(classic) - BAND_ROUTING - BAND_MASTER - BAND_SWITCHES - BAND_LISTEN + FADER_GAP);
             let response = fader(ui, &mut self.master_db, palette::RED);
             if response.changed() || response.double_clicked() {
                 let gain = db_to_gain(self.master_db);
@@ -660,6 +682,9 @@ impl DawApp {
             ui.label(RichText::new(format_db(self.master_db)).size(11.0).color(palette::TEXT_DIM));
             ui.label(RichText::new("STEREO MASTER").size(9.0).color(palette::TEXT_DIM));
         });
+        if let Some(mode) = routing {
+            self.set_routing(mode);
+        }
         if mixer_changed {
             self.send_mixer();
             self.mark_dirty();
@@ -677,6 +702,6 @@ mod tests {
         assert_eq!(fader_top(false), 552.0 - BAND_ASSIGN, "no ASSIGN in the simple mode");
         assert!(return_bands(true) <= fader_top(true), "EFFECT RTN, PLATE, ECHO and MONITOR fit above the faders");
         assert!(return_bands(false) <= fader_top(false));
-        assert!(BAND_MASTER + BAND_SWITCHES + BAND_LISTEN <= fader_top(false));
+        assert!(BAND_ROUTING + BAND_MASTER + BAND_SWITCHES + BAND_LISTEN <= fader_top(false), "the MASTER column fits");
     }
 }
