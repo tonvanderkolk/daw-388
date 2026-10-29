@@ -625,10 +625,17 @@ impl DawApp {
                         mixer_changed = true;
                     }
                 }
-                for (post, label, tip, x) in [
-                    (false, "PRE", "TRK meters show the level after TRIM, before the fader (as on the 388)", cx - 24.0),
-                    (true, "POST", "TRK meters show the level after fader and mute", cx + 24.0),
-                ] {
+                // In the 388 routing the TRK meters follow the MONITOR section, as on the machine;
+                // only the simple mode chooses the channel before or after the fader.
+                let choices: &[(bool, &str, &str, f32)] = if classic {
+                    &[]
+                } else {
+                    &[
+                        (false, "PRE", "TRK meters show the channel after TRIM and EQ, before the fader", cx - 24.0),
+                        (true, "POST", "TRK meters show the channel after fader and mute", cx + 24.0),
+                    ]
+                };
+                for &(post, label, tip, x) in choices {
                     let lit = self.meter_post == post;
                     let key = place(ui, x, top + 35.0, vec2(48.0, KEY_SMALL_H), |ui| {
                         KeyCap::new(label, keys::SMALL).lamp(lit, palette::LED_GREEN).show(ui)

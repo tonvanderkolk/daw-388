@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.23.1
+Versie: 0.23.2
 Laatst bijgewerkt: 29-10-2026
 
 ## Doel
@@ -32,7 +32,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 
 - De UI-thread bezit een `EngineHandle`, de audio-callback bezit de `Engine`.
 - Commando's (PLAY, STOP, locate, spoor laden, kanaal, monitor, mixer, master) gaan via een lock-free ringbuffer naar de audiothread.
-- Positie, afspeelstatus en piekmeters komen terug via atomics. Per kanaal meet de engine twee pieken: na TRIM (voor de fader) en na fader en mute; de schakelaar TRACK METERS PRE/POST kiest welke de UI toont. Per spoor meet hij wat de MONITOR hoort (TRK/PGM).
+- Positie, afspeelstatus en meters komen terug via atomics. Per kanaal meet de engine pieken en energie na TRIM en EQ (voor de fader) en na fader en mute; per spoor meet hij pieken en energie van wat de MONITOR hoort. In de 388-stand tonen de TRK-meters in de brug dat laatste, zoals de TRK/PGM-meters van de 388 (blokschema, pagina 47 van de handleiding): de bus naar het spoor of de band. In de eenvoudige stand tonen ze het kanaal, voor of na de fader (TRACK METERS PRE/POST, alleen in die stand). Het PEAK-lampje van een meter brandt bij de piek van zijn eigen bron boven ongeveer -0,5 dBFS, zoals de PEAK IND van de 388 bij +8 dBV; het OL-lampje bij TRIM blijft het kanaal na de EQ boven -3 dBFS.
 - Sporenbuffers die de engine loslaat gaan via een tweede ringbuffer terug naar de UI-thread en worden daar vrijgegeven. Er wordt dus nooit geheugen vrijgegeven in de audiothread.
 - De engine kent geen audioapparaten. `app-desktop` roept `Engine::render` aan vanuit de cpal-callback; een latere browserversie doet hetzelfde vanuit WebAudio.
 - Bij het wisselen van apparaat bouwt de app een nieuwe engine op de samplerate van het apparaat en stuurt de sporen (opnieuw geconverteerd), mixinstellingen en positie opnieuw.

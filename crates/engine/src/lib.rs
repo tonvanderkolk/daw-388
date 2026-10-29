@@ -178,6 +178,8 @@ struct Shared {
     master_energy: [Energy; 2],
     /// AUX and EFF after their masters.
     send_energy: [Energy; 2],
+    /// Energy of what each track's MONITOR hears (the 388's TRK/PGM meters).
+    trk_energy: [Energy; TRACKS],
     rec_mode: AtomicU8,
     /// Bit per track that is recording.
     recording: AtomicU8,
@@ -207,6 +209,7 @@ impl Default for Shared {
             track_energy_post: Default::default(),
             master_energy: Default::default(),
             send_energy: Default::default(),
+            trk_energy: Default::default(),
             rec_mode: AtomicU8::new(0),
             recording: AtomicU8::new(0),
             input_channels: AtomicU32::new(0),
@@ -510,6 +513,11 @@ impl EngineHandle {
             pre: self.shared.track_energy.get(track).map_or(0.0, Energy::take),
             post: self.shared.track_energy_post.get(track).map_or(0.0, Energy::take),
         }
+    }
+
+    /// Mean square of what a track's MONITOR heard since the last call (TRK/PGM meter).
+    pub fn take_trk_energy(&self, track: usize) -> f32 {
+        self.shared.trk_energy.get(track).map_or(0.0, Energy::take)
     }
 
     /// Mean square of the stereo master since the last call.
@@ -948,6 +956,7 @@ impl Engine {
         let mut track_energy_post = [0.0f64; TRACKS];
         let mut master_energy = [0.0f64; 2];
         let mut send_energy = [0.0f64; 2];
+        let mut trk_energy = [0.0f64; TRACKS];
 
         for frame in out.chunks_mut(channels) {
             let playing = self.state == State::Playing;
@@ -1059,6 +1068,7 @@ impl Engine {
                     MonitorSource::Silent => 0.0,
                 };
                 trk_peaks[index] = trk_peaks[index].max(value.abs());
+                trk_energy[index] += f64::from(value * value);
                 let gains = self.monitors[index].gains();
                 let heard = value * self.solo_gains[index];
                 monitor[0] += heard * gains[0];
@@ -1171,6 +1181,9 @@ impl Engine {
         for (cell, sum) in self.shared.send_energy.iter().zip(send_energy) {
             cell.add(sum, frames);
         }
+        for (cell, sum) in self.shared.trk_energy.iter().zip(trk_energy) {
+            cell.add(sum, frames);
+        }
     }
 }
 
@@ -1243,6 +1256,7 @@ mod tests {
         handle.send(Command::SetMonitor(0, left()));
         handle.send(Command::SetMonitor(7, MonitorParams { pan: 1.0, ..MonitorParams::default() }));
         settle(&mut engine);
+        let _ = handle.take_trk_energy(7);
         handle.play();
         let mut out = vec![0.0; 2 * 4];
         engine.render(&mut out, 2);
@@ -1255,6 +1269,7 @@ mod tests {
         assert!((handle.take_track_peaks(0).pre - 0.25).abs() < 1e-6);
         assert_eq!(handle.take_track_peaks(0), TrackPeaks::default());
         assert!((handle.take_trk_peak(7) - 0.5).abs() < 1e-6, "the TRK meter shows what the monitor hears");
+        assert!((handle.take_trk_energy(7) - 0.25).abs() < 1e-4, "and its energy, for the TRK/PGM needle");
     }
 
     #[test]

@@ -267,6 +267,8 @@ struct TrackState {
     solo: bool,
     /// OL stays lit until this time (`DawApp::now`).
     ol_until: f64,
+    /// The PEAK lamp of the track's VU meter stays lit until this time.
+    peak_until: f64,
 }
 
 pub struct DawApp {
@@ -388,6 +390,10 @@ const EQ_RANGES: [std::ops::RangeInclusive<f32>; 3] = [50.0..=1000.0, 500.0..=50
 const EQ_NAMES: [&str; 3] = ["LOW", "MID", "HIGH"];
 /// How long OL stays lit after a peak, in seconds.
 const OL_HOLD: f64 = 0.5;
+
+/// The PEAK lamp of a VU meter: on the 388 at +8 dBV, 18 dB above 0 VU, which is about full
+/// scale with 0 VU at -18 dBFS.
+const VU_PEAK: f32 = 0.944;
 
 /// Where `freq` sits on a frequency knob's travel: logarithmic, 0 to 1.
 fn freq_fraction(freq: f32, range: &std::ops::RangeInclusive<f32>) -> f32 {
@@ -1575,6 +1581,7 @@ impl DawApp {
         // VU-like fall of about 20 dB per second for the TRK bars of the MONITOR section.
         let fall = 20.0 * dt;
         let now = self.now;
+        let classic = self.mixer.mode == Routing::Classic;
         for (index, track) in self.tracks.iter_mut().enumerate() {
             let peaks = engine.take_track_peaks(index);
             // The PRE peak lies after the EQ: where the 388's OL looks.
@@ -1582,8 +1589,22 @@ impl DawApp {
                 track.ol_until = now + OL_HOLD;
             }
             let energy = engine.take_track_energy(index);
-            track.vu.step(dt, skin::vu::target(if self.meter_post { energy.post } else { energy.pre }));
-            let trk = gain_to_db(engine.take_trk_peak(index));
+            let (trk_peak, trk_energy) = (engine.take_trk_peak(index), engine.take_trk_energy(index));
+            // On the 388 the meter of track N is its TRK/PGM meter: what its MONITOR hears (the
+            // bus going to the track, or the tape). The simple mode has no MONITOR section: there
+            // it shows the channel, before or after the fader.
+            let (level, peak) = if classic {
+                (trk_energy, trk_peak)
+            } else if self.meter_post {
+                (energy.post, peaks.post)
+            } else {
+                (energy.pre, peaks.pre)
+            };
+            track.vu.step(dt, skin::vu::target(level));
+            if peak > VU_PEAK {
+                track.peak_until = now + OL_HOLD;
+            }
+            let trk = gain_to_db(trk_peak);
             track.trk_meter_db = trk.max(track.trk_meter_db - fall);
         }
         // Both sources are read every frame, so the one not shown does not pile up.
@@ -1591,7 +1612,7 @@ impl DawApp {
         let (master_peaks, send_peaks) = (engine.take_master_peaks(), engine.take_send_peaks());
         let (energy, peaks) = if self.mixer.meter == MeterSwitch::AuxEff { (sends, send_peaks) } else { (master, master_peaks) };
         for side in 0..2 {
-            if overload(peaks[side]) {
+            if peaks[side] > VU_PEAK {
                 self.big_ol_until[side] = now + OL_HOLD;
             }
             self.big_vu[side].step(dt, skin::vu::target(energy[side]));

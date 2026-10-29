@@ -12,6 +12,7 @@ impl DawApp {
     /// TRK 1-8, the two big meters and the name plate, along the top of the console.
     pub(crate) fn meter_bridge(&mut self, ui: &mut Ui) {
         let now = self.now;
+        let classic = self.mixer.mode == crate::Routing::Classic;
         // In the MIXER the bridge spans the console it stands on (as wide as last frame's
         // console), with the name plate at its right end.
         let span = if self.editor.settings.open { 0.0 } else { (self.needed.x - 100.0 - 24.0).max(0.0) };
@@ -29,8 +30,12 @@ impl DawApp {
                     let track = &self.tracks[index];
                     ui.vertical(|ui| {
                         ui.set_width(vu::SMALL.x);
-                        vu::draw(ui, vu::SMALL, track.vu.position(), now < track.ol_until)
-                            .on_hover_text("OL: peak after the EQ above -3 dBFS");
+                        let tip = if classic {
+                            "TRK/PGM: what this track's MONITOR hears, the bus to the track or the tape. PEAK lights near full scale"
+                        } else {
+                            "The channel, before or after the fader (TRACK METERS). PEAK lights near full scale"
+                        };
+                        vu::draw(ui, vu::SMALL, track.vu.position(), now < track.peak_until).on_hover_text(tip);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 3.0;
                             ui.add_space(vu::SMALL.x / 2.0 - 18.0);

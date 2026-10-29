@@ -33,7 +33,7 @@
 - [x] Eenvoudige stand naast de 388-routering, met AUTO per kanaal (0.10.0)
 - [x] SOLO per spoor, alleen voor wat je hoort (0.10.1)
 - [x] Master-sectie: MONITOR/PHONES, AUX- en EFF-masters naar interface-uitgangen, STEREO/AUX/EFF, METER, STEREO MASTER (0.11.0; EFFECT RTN in fase 6)
-- [ ] Signaalroute controleren met het blokschema uit de handleiding
+- [x] Signaalroute controleren met het blokschema uit de handleiding (0.23.2: alles klopt, op de TRK-meters na; die volgen nu de MONITOR)
 
 ## Fase 5: Bewerken
 - [x] Niet-destructieve regio's: verschuiven, knippen, kopiëren, plakken, splitsen (0.17.0 en 0.18.0)

@@ -7,6 +7,12 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.23.2] - 2026-10-29
+
+### Gewijzigd
+- De signaalroute is nagelopen met het blokschema uit de handleiding van de 388. Alles klopte, op de TRK-meters na: in de 388-stand tonen ze nu, zoals de TRK/PGM-meters van de 388, wat de MONITOR van dat spoor hoort (de bus naar het spoor, of de band), en niet meer het kanaal. In de eenvoudige stand blijven ze het kanaal tonen; TRACK METERS PRE/POST staat alleen nog in die stand.
+- Het PEAK-lampje van een VU-meter volgt de piek van zijn eigen bron bij ongeveer 0 dBFS, zoals op de 388. Het OL-lampje bij TRIM blijft het kanaal na de EQ.
+
 ## [0.23.1] - 2026-10-29
 
 ### Gewijzigd
