@@ -11,10 +11,11 @@ pub const SCALE_MAX: f32 = 3.0;
 /// The size of a TRK meter and of a big meter, at zoom 1.
 pub const SMALL: Vec2 = Vec2::new(112.0, 60.0);
 pub const LARGE: Vec2 = Vec2::new(150.0, 80.0);
-/// The scale marks, in VU.
+/// The scale marks, in VU, and the ones with a figure (without sign, as on the 388's meters).
 const MARKS: [f32; 11] = [-20.0, -10.0, -7.0, -5.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0];
+const FIGURES: [(f32, &str); 7] = [(-20.0, "20"), (-10.0, "10"), (-7.0, "7"), (-5.0, "5"), (-3.0, "3"), (0.0, "0"), (3.0, "3")];
 /// The scale's sweep either side of straight up, in radians.
-const SWEEP: f32 = 0.85;
+const SWEEP: f32 = 0.9;
 /// Damping ratio: a little under critical, for the VU's slight overshoot (about 1%).
 const DAMPING: f32 = 0.81;
 /// Natural frequency in rad/s: within 1% of a step after 300 ms.
@@ -70,45 +71,60 @@ impl Needle {
     }
 }
 
-/// Draw a VU meter of `size` with the needle at `needle` (0 to 1) and the OL lamp.
+/// Draw a VU meter of `size` with the needle at `needle` (0 to 1) and the OL lamp, after the
+/// meters of the 388: the figures above the arc, the red stretch from 0 to +3 heavier, "VU"
+/// under the arc, and the warm light of a lamp behind the face, strongest at the needle's pivot.
 pub fn draw(ui: &mut Ui, size: Vec2, needle: f32, ol: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, 3.0, palette::EDGE);
     let face = rect.shrink(3.0);
     painter.rect_filled(face, 2.0, palette::VU_FACE);
-    // The pivot sits under the face, so only the top of the arc shows, as on a real VU.
-    let pivot = pos2(face.center().x, face.bottom() + face.height() * 0.35);
-    let radius = face.height() * 1.05;
+    let h = face.height();
+    // The pivot sits just under the face, in the middle, where the lamp is.
+    let pivot = pos2(face.center().x, face.bottom() + h * 0.12);
+    let face_painter = painter.with_clip_rect(face);
+    // The lamp: warm light in layers, strongest at the bottom in the middle.
+    for step in 0..14 {
+        let r = h * (1.45 - 0.09 * step as f32);
+        face_painter.circle_filled(pivot, r, Color32::from_rgba_unmultiplied(255, 176, 72, 9));
+    }
+    face_painter.circle_filled(pivot, h * 0.22, Color32::from_rgba_unmultiplied(255, 214, 140, 70));
+
+    // Room above the arc for the marks and the figures.
+    let radius = h * 0.68;
     let at = |fraction: f32, r: f32| -> Pos2 {
         let angle = -SWEEP + 2.0 * SWEEP * fraction;
         pivot + vec2(angle.sin(), -angle.cos()) * r
     };
-    let arc = |from: f32, to: f32, stroke: Stroke| {
-        let points: Vec<Pos2> = (0..=24).map(|i| at(from + (to - from) * i as f32 / 24.0, radius)).collect();
-        painter.add(egui::Shape::line(points, stroke));
+    let arc = |from: f32, to: f32, r: f32, stroke: Stroke| {
+        let points: Vec<Pos2> = (0..=32).map(|i| at(from + (to - from) * i as f32 / 32.0, r)).collect();
+        face_painter.add(egui::Shape::line(points, stroke));
     };
     let zero = position(0.0);
-    arc(0.0, zero, Stroke::new(1.2, palette::VU_INK));
-    arc(zero, 1.0, Stroke::new(3.0, palette::VU_RED));
-    let tick = face.height() * 0.12;
+    // The arc, and the red stretch from 0 to +3 heavier, just outside it.
+    arc(0.0, 1.0, radius, Stroke::new(1.0, palette::VU_INK));
+    arc(zero, 1.0, radius + h * 0.03, Stroke::new(h * 0.06, palette::VU_RED));
+    // The marks point up from the arc to the figures above it.
+    let (long, short) = (h * 0.13, h * 0.08);
     for mark in MARKS {
         let fraction = position(mark);
-        let colour = if mark > 0.0 { palette::VU_RED } else { palette::VU_INK };
-        painter.line_segment([at(fraction, radius), at(fraction, radius + tick)], Stroke::new(1.0, colour));
+        let colour = if mark >= 0.0 { palette::VU_RED } else { palette::VU_INK };
+        let figure = FIGURES.iter().any(|(m, _)| *m == mark);
+        let length = if figure { long } else { short };
+        face_painter.line_segment([at(fraction, radius), at(fraction, radius + length)], Stroke::new(1.0, colour));
     }
-    let small = FontId::proportional((face.height() * 0.16).clamp(7.0, 12.0));
-    // Inside the arc, so the ends of the scale stay on the face.
-    let numbers = radius - face.height() * 0.15;
-    painter.text(at(0.0, numbers), Align2::CENTER_CENTER, "-20", small.clone(), palette::VU_INK);
-    painter.text(at(zero, numbers), Align2::CENTER_CENTER, "0", small.clone(), palette::VU_RED);
-    painter.text(at(1.0, numbers), Align2::CENTER_CENTER, "+3", small, palette::VU_RED);
-    let label = FontId::proportional((face.height() * 0.2).clamp(8.0, 15.0));
-    painter.text(at(0.5, radius * 0.72), Align2::CENTER_CENTER, "VU", label, palette::VU_INK);
-    painter.line_segment([pivot, at(needle, radius + tick)], Stroke::new(1.4, Color32::BLACK));
-    if ol {
-        painter.circle_filled(pos2(face.right() - 7.0, face.top() + 7.0), 3.5, palette::LED);
+    let font = FontId::proportional((h * 0.17).clamp(7.0, 13.0));
+    for (mark, text) in FIGURES {
+        let colour = if mark >= 0.0 { palette::VU_RED } else { palette::VU_INK };
+        face_painter.text(at(position(mark), radius + long + h * 0.11), Align2::CENTER_CENTER, text, font.clone(), colour);
     }
+    let label = FontId::proportional((h * 0.24).clamp(9.0, 18.0));
+    face_painter.text(pos2(pivot.x, pivot.y - radius * 0.55), Align2::CENTER_CENTER, "VU", label, palette::VU_INK);
+    face_painter.line_segment([pivot, at(needle, radius + long)], Stroke::new(1.3, Color32::from_rgb(0x1a, 0x16, 0x14)));
+    // The peak lamp in the top right corner, as on the 388's meters: dark until OL.
+    let lamp = pos2(face.right() - 7.0, face.top() + 7.0);
+    painter.circle_filled(lamp, 3.5, if ol { palette::LED } else { Color32::from_rgb(0x6a, 0x3a, 0x34) });
     painter.rect_stroke(face, 2.0, Stroke::new(1.0, palette::EDGE), egui::StrokeKind::Inside);
     response
 }

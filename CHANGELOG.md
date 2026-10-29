@@ -7,6 +7,11 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.23.1] - 2026-10-29
+
+### Gewijzigd
+- De VU-meters lijken meer op die van de 388: de cijfers (20, 10, 7, 5, 3, 0, 3) staan boven de boog met de streepjes ernaar toe, het rode stuk van 0 tot +3 is dikker, "VU" staat onder de boog, en een warm lampje achter de plaat geeft een gele gloed vanuit het draaipunt van de naald. Het piek-lampje rechtsboven is ook uit zichtbaar, donkerrood.
+
 ## [0.23.0] - 2026-10-29
 
 ### Toegevoegd
