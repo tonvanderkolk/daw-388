@@ -2,8 +2,9 @@ name: build
 
 # Elke push naar main en elke pull request: alleen een controle op Windows (opmaak, Clippy,
 # tests). macOS wordt lokaal al bij elke wijziging gebouwd en getest, en een macOS-minuut telt
-# op GitHub voor tien. Een versielabel (v0.7.0 en verder) of een handmatige start bouwt de
-# release voor macOS en Windows, met downloadbare apps.
+# op GitHub voor tien. Een versielabel (v0.25.0 en verder) of een handmatige start bouwt de apps:
+# een universal DMG voor macOS en een ZIP voor Windows; bij een versielabel komen ze in een
+# GitHub Release.
 
 on:
   push:
@@ -32,19 +33,43 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
-  release:
+  # Een versielabel of een handmatige start: de apps voor macOS (universal, Apple Silicon en
+  # Intel, als DMG) en Windows (ZIP). Bij een versielabel komen ze daarna in een GitHub Release.
+  macos:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            artifact: daw388-macos-arm64
-            binary: daw388
-          - os: windows-latest
-            artifact: daw388-windows-x64
-            binary: daw388.exe
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Formattering
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --release
+      - name: Release-builds (Apple Silicon en Intel)
+        run: |
+          cargo build --release -p daw388 --target aarch64-apple-darwin
+          cargo build --release -p daw388 --target x86_64-apple-darwin
+      - name: App en DMG
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          mkdir -p dist
+          packaging/macos/bundle.sh "$version" dist \
+            target/aarch64-apple-darwin/release/daw388 \
+            target/x86_64-apple-darwin/release/daw388
+      - uses: actions/upload-artifact@v7
+        with:
+          name: daw388-macos
+          path: dist/*.dmg
+
+  windows:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -55,13 +80,38 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-      # Tests draaien in het release-profiel, zodat de release-build daarna dezelfde
-      # gecompileerde afhankelijkheden hergebruikt in plaats van alles opnieuw te bouwen.
       - name: Tests
         run: cargo test --workspace --release
       - name: Release-build
         run: cargo build --release -p daw388
+      - name: ZIP
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          mkdir -p "dist/DAW 388"
+          cp target/release/daw388.exe "dist/DAW 388/DAW 388.exe"
+          cp LICENSE-MIT LICENSE-APACHE "dist/DAW 388/"
+          cd dist && 7z a "DAW-388-$version-windows.zip" "DAW 388" >/dev/null
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact }}
-          path: target/release/${{ matrix.binary }}
+          name: daw388-windows
+          path: dist/*.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          body: |
+            **macOS** (Apple Silicon and Intel, macOS 11 or later): open the DMG and drag DAW 388 to Applications. The app is not signed with an Apple Developer ID, so the first time macOS says it cannot check it: open System Settings, Privacy & Security, and choose "Open Anyway" under DAW 388.
+
+            **Windows** (64-bit): unzip and start `DAW 388.exe`. Windows SmartScreen may warn about an unknown publisher: choose "More info", then "Run anyway".

@@ -2,7 +2,16 @@
 
 A very simple 8-track DAW for macOS and Windows, modelled on the Tascam 388 (Studio 8): an 8:8:2 mixer combined with an 8-track tape recorder with tape character. Load or record eight tracks, mix them on a vintage console with EQ, AUX and EFF sends, a plate reverb and a tape echo, and export a stereo bounce or separate tracks. The interface is in English and uses the names of the 388 (TRK, PGM, AUX, REC, RTZ, CUE, ...).
 
-A hobby project by Ton van der Kolk. Free to share, not for sale. Not affiliated with Tascam. Build it with `cargo run --release` (a recent stable Rust toolchain via [rustup](https://rustup.rs)). The rest of the documentation is in Dutch.
+A hobby project by Ton van der Kolk. Free to share, not for sale. Not affiliated with Tascam. The rest of the documentation is in Dutch.
+
+### Download
+
+Get the latest version from [Releases](https://github.com/tonvanderkolk/daw-388/releases).
+
+- **macOS** (Apple Silicon and Intel, macOS 11 or later): open the DMG and drag DAW 388 to Applications. The app is not signed with an Apple Developer ID, so the first time macOS says it cannot check it: open System Settings, Privacy & Security, and choose "Open Anyway" under DAW 388.
+- **Windows** (64-bit): unzip and start `DAW 388.exe`. If SmartScreen warns about an unknown publisher, choose "More info", then "Run anyway".
+
+Or build it yourself with `cargo run --release` (a recent stable Rust toolchain via [rustup](https://rustup.rs)).
 
 ---
 
@@ -10,9 +19,13 @@ Een super eenvoudige 8-sporen DAW voor macOS en Windows, qua opzet gebaseerd op 
 
 Hobbyproject van Ton van der Kolk. Gratis te delen, niet te verkopen. Geen relatie met Tascam.
 
+## Downloaden
+
+De nieuwste versie staat bij [Releases](https://github.com/tonvanderkolk/daw-388/releases): een DMG voor macOS (Apple Silicon en Intel) en een ZIP voor Windows. De apps zijn niet ondertekend met een Apple Developer ID; zie hierboven (Download) hoe je ze de eerste keer opent.
+
 ## Status
 
-Versie 0.16.0: 8 sporen laden (WAV, AIFF, FLAC en MP3) en afspelen, transport naar het voorbeeld van de 388, opnemen met REC FUNCTION, punch-in en AUTO PUNCH, een metronoom, een mixer met EQ, AUX- en EFF-sends, een plate reverb, een tape echo en het tape-karakter van de 388 met dbx bij afspelen in een eenvoudige stand (één strook per spoor) of met de volledige 388-routering (ASSIGN naar de PGM-bussen, DIRECT en een MONITOR-sectie), export van een stereo bounce en losse sporen als WAV of AIFF, projecten met autosave en backups, en keuze van audio-interface, samplerate en buffer. Hoe de routing werkt staat in [PROJECT.md](PROJECT.md#routing-in-de-praktijk). Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
+Versie 0.25.0. Sinds 0.16.0 kwamen er de vintage console naar de 388 (VU-meters, bandrecorder, toetsen, vensters), de weergaven MIXER en SPOREN, opnemen op VARI, projectpakketten `.daw388` en downloadbare apps bij. Daarvoor al: 8 sporen laden (WAV, AIFF, FLAC en MP3) en afspelen, transport naar het voorbeeld van de 388, opnemen met REC FUNCTION, punch-in en AUTO PUNCH, een metronoom, een mixer met EQ, AUX- en EFF-sends, een plate reverb, een tape echo en het tape-karakter van de 388 met dbx bij afspelen in een eenvoudige stand (één strook per spoor) of met de volledige 388-routering (ASSIGN naar de PGM-bussen, DIRECT en een MONITOR-sectie), export van een stereo bounce en losse sporen als WAV of AIFF, projecten met autosave en backups, en keuze van audio-interface, samplerate en buffer. Hoe de routing werkt staat in [PROJECT.md](PROJECT.md#routing-in-de-praktijk). Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
 
 ## Bouwen en starten
 

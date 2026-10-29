@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.24.0
+Versie: 0.25.0
 Laatst bijgewerkt: 29-10-2026
 
 ## Doel
@@ -15,7 +15,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 - Audiobestanden: `hound` (WAV) en `symphonia` (AIFF en AIFF-C)
 - Realtime-communicatie: `rtrb` (lock-free ringbuffer)
 - Bestandsdialogen: `rfd`
-- Builds: GitHub Actions. Bij elke push een controle op Windows (opmaak, Clippy, tests); bij een versielabel `v*` of handmatig de release voor macOS en Windows met downloadbare apps
+- Builds: GitHub Actions. Bij elke push een controle op Windows (opmaak, Clippy, tests). Bij een versielabel `v*` of handmatig: een universal macOS-app (Apple Silicon en Intel via `lipo`) in een DMG (`packaging/macos/bundle.sh`, met `Info.plist`, `AppIcon.icns` en een ad-hoc-handtekening) en een Windows-ZIP met `DAW 388.exe` (icoon via `crates/app-desktop/build.rs` en `winresource`). Bij een versielabel komen beide in een GitHub Release. Het icoon tekent `packaging/make_icon.py`; `packaging/make_icons.sh` maakt er de .icns en .ico van. De Info.plist meldt het pakket `.daw388` aan, zodat de Finder een project als één document toont. Een project openen door erop te dubbelklikken start de app nog zonder het project (winit geeft het open-event van macOS niet door); gebruik File, Open of Open Recent.
 
 ## Workspace
 

@@ -23,6 +23,10 @@ log.workspace = true
 env_logger.workspace = true
 dirs = "7"
 
+# Puts the icon into the Windows exe (build.rs); does nothing when building for macOS.
+[build-dependencies]
+winresource = "0.1"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # Same version eframe uses; needed to switch off winit's default macOS menu.
 winit = "0.30"

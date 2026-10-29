@@ -64,5 +64,7 @@
 - [ ] WebAudio-koppeling, lite-versie met cross-origin isolation
 
 ## Fase 10: Delen
-- [ ] macOS-app-bundel met icoon, en het projectpakket `.daw388` aangemeld in de Info.plist (`LSTypeIsPackage`), zodat de Finder een project als één document toont
-- [ ] Signing en notarization (macOS), releases via GitHub
+- [x] macOS-app-bundel met icoon, en het projectpakket `.daw388` aangemeld in de Info.plist (`LSTypeIsPackage`), zodat de Finder een project als één document toont (0.25.0)
+- [x] Releases via GitHub: universal DMG voor macOS, ZIP voor Windows, met icoon (0.25.0)
+- [ ] Signing en notarization (macOS): bewust niet, zonder Apple Developer-account; gebruikers openen de app de eerste keer via Privacy en beveiliging
+- [ ] Een project openen door erop te dubbelklikken in de Finder (vraagt het open-event van macOS, dat winit nog niet doorgeeft)

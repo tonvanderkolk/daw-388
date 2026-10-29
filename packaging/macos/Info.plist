@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The macOS bundle of DAW 388. bundle.sh replaces @VERSION@. The project package `.daw388`
+     is declared as a package type, so the Finder shows a project as one document. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>DAW 388</string>
+	<key>CFBundleDisplayName</key>
+	<string>DAW 388</string>
+	<key>CFBundleIdentifier</key>
+	<string>nl.tonvanderkolk.daw388</string>
+	<key>CFBundleExecutable</key>
+	<string>daw388</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.music</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>DAW 388 records from the audio input you choose in Settings.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>DAW 388 by Ton van der Kolk. MIT or Apache-2.0.</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>nl.tonvanderkolk.daw388.project</string>
+			<key>UTTypeDescription</key>
+			<string>DAW 388 Project</string>
+			<key>UTTypeIconFile</key>
+			<string>AppIcon</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>com.apple.package</string>
+				<string>public.composite-content</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>daw388</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>DAW 388 Project</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSTypeIsPackage</key>
+			<true/>
+			<key>CFBundleTypeIconFile</key>
+			<string>AppIcon</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>nl.tonvanderkolk.daw388.project</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

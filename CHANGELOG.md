@@ -7,6 +7,13 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 ### Gewijzigd
 - CI: bij een gewone push alleen een controle op Windows (opmaak, Clippy, tests). De release voor macOS en Windows, met downloadbare apps, wordt gebouwd bij een versielabel of een handmatige start. Dat spaart build-minuten.
 
+## [0.25.0] - 2026-10-29
+
+### Toegevoegd
+- Downloadbare apps: een universal macOS-app (Apple Silicon en Intel, macOS 11 en nieuwer) in een DMG en een ZIP met `DAW 388.exe` voor Windows. Bij een versielabel bouwt GitHub Actions ze en zet ze in een GitHub Release, met uitleg over het openen van een niet-ondertekende app.
+- Een app-icoon in de stijl van de console: het bandvenster met twee spoelen en "388" in het rood van de naamplaat (`packaging/`).
+- De macOS-app meldt het projectpakket `.daw388` aan: de Finder toont een project als één document met het icoon van DAW 388. Ook vraagt de app nu netjes om de microfoon, met uitleg.
+
 ## [0.24.0] - 2026-10-29
 
 ### Toegevoegd
