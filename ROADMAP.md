@@ -38,7 +38,7 @@
 ## Fase 5: Bewerken
 - [x] Niet-destructieve regio's: verschuiven, knippen, kopiëren, plakken, splitsen (0.17.0 en 0.18.0)
 - [x] Undo (maximaal 10 stappen) (0.17.0, met redo)
-- [ ] Ping-pong bounce naar een vrij spoor (kan via de bussen sinds 0.8.0)
+- [x] Ping-pong bounce naar een vrij spoor (0.8.0: in de 388-stand via ASSIGN en de bussen, zie PROJECT.md)
 
 ## Fase 6: Effecten en tape-model
 - [x] Plate reverb (aux) en tape echo (eff), met EFFECT RTN (0.12.0)
