@@ -6,6 +6,7 @@ mod content;
 mod drawer;
 mod edit;
 mod export;
+mod help;
 mod history;
 mod recording;
 mod skin;
@@ -168,6 +169,8 @@ struct Loaded {
     at_rate: Arc<Vec<f32>>,
     /// The overview for drawing; a resample keeps the one it has.
     peaks: Option<Arc<Peaks>>,
+    /// A stereo file's channels, written as two mono files.
+    split: Option<[PathBuf; 2]>,
 }
 
 /// The drawer: what is saved with the project, and what is not.
@@ -342,6 +345,8 @@ pub struct DawApp {
     /// The tape on playback, saved with the project.
     tape: TapeSettings,
     show_tape: bool,
+    /// The About sheet or the guide, when one is open.
+    help: Option<help::Help>,
     export: ExportChoices,
     show_export: bool,
     running_export: Option<RunningExport>,
@@ -636,6 +641,7 @@ impl DawApp {
             show_settings: false,
             tape: new_tape(),
             show_tape: false,
+            help: None,
             export: ExportChoices::default(),
             show_export: false,
             running_export: None,
@@ -689,7 +695,8 @@ impl DawApp {
                 let fallback = OutputRequest { device: None, ..request.clone() };
                 match request.device.is_some().then(|| self.platform.open_output(&fallback)) {
                     Some(Ok((engine, info))) => {
-                        let status = format!("{first}, now through {} ({})", info.device, describe_output(&info));
+                        let chosen = request.device.as_deref().unwrap_or_default();
+                        let status = format!("{chosen} is not connected: playing through {} ({})", info.device, describe_output(&info));
                         (engine, Some(info), status)
                     }
                     other => {
@@ -1479,7 +1486,19 @@ impl DawApp {
                 index + 1,
                 index + 1
             );
+        } else if armed && self.unheard(index) {
+            let n = index + 1;
+            self.status = format!(
+                "Track {n} records, but you won't hear it: channel {n} is not on L-R, and the MONITOR section only \
+                 reaches STEREO when no channel is on L-R"
+            );
         }
+    }
+
+    /// In 388 mode: the channel is off L-R while others are on it, so neither the channel nor the
+    /// MONITOR section reaches STEREO.
+    fn unheard(&self, index: usize) -> bool {
+        self.mixer.mode == Routing::Classic && !self.tracks[index].channel.lr && self.tracks.iter().any(|t| t.channel.lr)
     }
 
     /// REC: check what recording needs, then start it.
@@ -1703,6 +1722,7 @@ impl DawApp {
                 widgets.hovered.fg_stroke = Stroke::new(1.0, palette::CREAM);
                 self.file_menu(ui);
                 self.edit_menu(ui);
+                self.help_menu(ui);
             });
             let name = format!("{}{}", self.project_name(), if self.dirty { " (modified)" } else { "" });
             ui.painter().text(full.center(), egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(12.0), palette::TEXT_DIM);
@@ -2341,7 +2361,7 @@ impl DawApp {
                     ui,
                     &[
                         (KindEntry::T456, "456 style", Some("plenty of headroom")),
-                        (KindEntry::T250, "250 style", Some("warm, saturates sooner")),
+                        (KindEntry::T250, "250 style", Some("warm, less headroom")),
                         (KindEntry::T911, "911 style", Some("a little brighter")),
                     ],
                     &mut tape.kind,
@@ -2791,6 +2811,7 @@ impl DawApp {
 
         self.settings_window(&ctx);
         self.tape_window(&ctx);
+        self.help_window(&ctx);
         self.export_window(&ctx);
         self.unsaved_dialog(&ctx);
         self.confirm_simple_dialog(&ctx);
@@ -3237,7 +3258,7 @@ mod tests {
         render_latest(&engines);
         assert!(app.engine.as_ref().is_some_and(EngineHandle::is_playing), "it keeps playing on the new device");
         assert_eq!(app.output.as_ref().map(|o| o.device.as_str()), Some("Built-in"));
-        assert!(app.status.contains("went away") && app.status.contains("now through Built-in"), "{}", app.status);
+        assert!(app.status.contains("went away") && app.status.contains("playing through Built-in"), "{}", app.status);
         assert!(app.on_fallback());
 
         // Plugged back in: the next check returns to it.
@@ -3838,6 +3859,68 @@ mod tests {
     }
 
     #[test]
+    fn a_track_without_a_name_takes_the_name_of_what_lands_on_it() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 1);
+        app.tracks[0].name = "bass".into();
+        app.select_region(0, 0, false);
+        app.move_selection(3, 0.0);
+        assert_eq!(app.tracks[3].name, "bass", "the name comes along");
+        app.undo();
+        assert!(app.tracks[3].name.is_empty(), "and goes back with undo");
+        app.tracks[5].name = "keep".into();
+        app.select_region(0, 0, false);
+        app.move_selection(5, 0.0);
+        assert_eq!(app.tracks[5].name, "keep", "a named track keeps its name");
+    }
+
+    #[test]
+    fn alt_drag_copies_the_selection() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 1);
+        app.select_region(0, 0, false);
+        app.copy_selection(1, 2.0);
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)], "the original stays");
+        assert_eq!(regions_ms(&app, 1), vec![(2000, 0, 1000)]);
+        assert_eq!(app.tracks[1].name, "01_track");
+        assert_eq!(app.editor.selection, vec![(1, 0)], "the copy is selected");
+        assert_eq!(app.history.undo_name(), Some("Copy"));
+    }
+
+    #[test]
+    fn a_stereo_file_goes_on_two_tracks() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let stereo = files.path().join("Stereo split test.wav");
+        let spec = hound::WavSpec { channels: 2, sample_rate: 48_000, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+        let mut writer = hound::WavWriter::create(&stereo, spec).unwrap_or_else(|e| panic!("{e}"));
+        for _ in 0..4_800 {
+            writer.write_sample(0.5f32).unwrap_or_else(|e| panic!("{e}"));
+            writer.write_sample(-0.25f32).unwrap_or_else(|e| panic!("{e}"));
+        }
+        writer.finalize().unwrap_or_else(|e| panic!("{e}"));
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.import_path(2, &stereo);
+        settle(&mut app);
+        assert_eq!(regions_ms(&app, 2), vec![(0, 0, 100)]);
+        assert_eq!(regions_ms(&app, 3), vec![(0, 0, 100)]);
+        assert_eq!((app.tracks[2].name.as_str(), app.tracks[3].name.as_str()), ("Stereo split test L", "Stereo split test R"));
+        assert_eq!((app.tracks[2].pan, app.tracks[3].pan), (-1.0, 1.0));
+        let level = |track: usize| {
+            let source = app.tracks[track].regions[0].source;
+            app.sources.get(source).and_then(|s| s.clip.as_ref()).map_or(0.0, |c| c.samples[10])
+        };
+        assert!((level(2) - 0.5).abs() < 1e-3 && (level(3) + 0.25).abs() < 1e-3, "left and right apart");
+        app.undo();
+        assert!(app.tracks[2].regions.is_empty() && app.tracks[3].regions.is_empty(), "one undo step");
+
+        app.import_path(7, &stereo);
+        settle(&mut app);
+        assert_eq!(app.tracks[7].regions.len(), 1, "no track 9: mono on track 8");
+        assert!(app.status.contains("mixed to mono"), "{}", app.status);
+    }
+
+    #[test]
     fn trimming_stops_at_the_source() {
         let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let (mut app, _engines) = app_with_tracks(files.path(), 1);
@@ -3908,10 +3991,13 @@ mod tests {
         app.toggle_arm(3);
         assert!(app.tracks[3].armed);
         assert!(app.status.contains("receives nothing"), "RMX without ASSIGN: {}", app.status);
-        app.tracks[4].channel = ChannelEntry { source: ChannelSource::Line, direct: true, ..ChannelEntry::default() };
+        app.tracks[4].channel = ChannelEntry { source: ChannelSource::Line, direct: true, lr: true, ..ChannelEntry::default() };
         app.status.clear();
         app.toggle_arm(4);
-        assert!(app.status.is_empty(), "LINE with DIRECT and an input: {}", app.status);
+        assert!(app.status.is_empty(), "LINE with DIRECT, an input and L-R: {}", app.status);
+        app.tracks[5].channel.lr = false;
+        app.toggle_arm(5);
+        assert!(app.status.contains("you won't hear it"), "off L-R while others are on it: {}", app.status);
     }
 
     #[test]

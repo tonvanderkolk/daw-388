@@ -4,6 +4,20 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-30
+
+### Toegevoegd
+- Help-menu met About DAW 388 (versie, maker, licentie) en een Quick guide: de basis van opnemen, de standen SIMPLE en 388, de TRACKS-weergave en de sneltoetsen. Werkt zonder internet.
+- Een stereobestand importeren zet links op het gekozen spoor en rechts op het volgende, met PAN helemaal links en rechts en de namen "naam L" en "naam R". Is het volgende spoor bezet of is er geen volgend spoor, dan komt het als mono op één spoor en zegt de statusregel waarom.
+- TRACKS: Alt en slepen kopieert de selectie in plaats van hem te verschuiven. Cmd+Links en Cmd+Rechts zoomen uit en in.
+- REC op een spoor dat je in de 388-stand niet hoort (het kanaal staat niet op L-R, andere wel, dus de MONITOR-sectie zwijgt) geeft een melding die zegt waarom.
+
+### Gewijzigd
+- Een spoor zonder naam krijgt bij verschuiven, kopiëren of plakken de naam van het spoor waar de audio vandaan komt (of van de regio). Undo zet de naam terug.
+- Vrij slepen zonder vastklikken gaat nu met Cmd in plaats van Alt, omdat Alt kopieert.
+- De melding bij het opstarten zonder het gekozen apparaat is rustiger: "Fireface 800 is not connected: playing through ...".
+- Tape type 250: de beschrijving "warm, less headroom" past in het vakje.
+
 ## [0.25.1] - 2026-10-30
 
 ### Gewijzigd

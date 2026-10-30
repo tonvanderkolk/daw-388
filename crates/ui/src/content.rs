@@ -8,6 +8,19 @@ use crate::sources::SourceState;
 use daw388_project::regions::{Unresolved, place};
 use daw388_project::render::{RateSources, render_track};
 
+/// Write a stereo file's sides as `<name> L.wav` and `<name> R.wav` in `dir`; `None` when that fails
+/// (the file then goes on one track as mono).
+fn write_sides(dir: &Path, clip: &daw388_project::MonoClip, sides: &[Vec<f32>; 2]) -> Option<[PathBuf; 2]> {
+    let write = |side: &str, samples: &[f32]| -> Result<PathBuf, String> {
+        let path = dir.join(format!("{} {side}.wav", clip.name));
+        daw388_project::take::write_wav_24(&path, clip.sample_rate, samples).map_err(|e| e.to_string())?;
+        Ok(path)
+    };
+    let written =
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string()).and_then(|()| Ok([write("L", &sides[0])?, write("R", &sides[1])?]));
+    written.map_err(|e| log::warn!("splitting {}: {e}", clip.name)).ok()
+}
+
 /// A file's name without its extension: the name of a region or a track.
 fn stem(path: &Path) -> String {
     path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
@@ -122,12 +135,14 @@ impl DawApp {
         source.generation = generation;
         source.state = SourceState::Loading;
         let path = source.path.clone();
+        let split_dir = self.platform.temp_dir().join(format!("split-{generation}"));
         self.platform.spawn(Box::new(move || {
-            let outcome = daw388_project::load_audio(&path)
-                .map(|clip| {
+            let outcome = daw388_project::load_audio_sides(&path)
+                .map(|(clip, sides)| {
+                    let split = sides.and_then(|sides| write_sides(&split_dir, &clip, &sides));
                     let at_rate = Arc::new(clip.at_rate(rate));
                     let peaks = Some(Arc::new(Peaks::of(&clip.samples, clip.sample_rate)));
-                    Loaded { clip: Arc::new(clip), at_rate, peaks }
+                    Loaded { clip: Arc::new(clip), at_rate, peaks, split }
                 })
                 .map_err(|e| e.to_string());
             let _ = tx.send(LoadResult { source: id, generation, outcome, rate });
@@ -144,7 +159,7 @@ impl DawApp {
         source.generation = generation;
         self.platform.spawn(Box::new(move || {
             let at_rate = Arc::new(clip.at_rate(rate));
-            let _ = tx.send(LoadResult { source: id, generation, outcome: Ok(Loaded { clip, at_rate, peaks: None }), rate });
+            let _ = tx.send(LoadResult { source: id, generation, outcome: Ok(Loaded { clip, at_rate, peaks: None, split: None }), rate });
             ctx.request_repaint();
         }));
     }
@@ -182,6 +197,9 @@ impl DawApp {
             source.at_rate = (rate == engine_rate).then_some((rate, loaded.at_rate));
             if loaded.peaks.is_some() {
                 source.peaks = loaded.peaks;
+            }
+            if loaded.split.is_some() {
+                source.split = loaded.split;
             }
         }
         if rate != engine_rate {
@@ -330,6 +348,10 @@ impl DawApp {
         if self.refuse_unresolved(track) {
             return;
         }
+        let mono_note = match self.import_sides(&import) {
+            Ok(()) => return,
+            Err(note) => note,
+        };
         let Some(clip) = self.sources.get(import.source).and_then(|s| s.clip.clone()) else { return };
         let region =
             Region { source: import.source, start: import.start, offset: 0.0, length: clip.duration_seconds(), name: clip.name.clone() };
@@ -341,11 +363,42 @@ impl DawApp {
             }
         });
         self.status = format!("Track {}: {} placed at {}", track + 1, clip.name, format_counter(import.start));
+        if let Some(note) = mono_note {
+            self.status = format!("{}; {note}", self.status);
+        }
         if let Some((group, note)) = &self.editor.drop_note
             && import.group == Some(*group)
         {
             self.status = format!("{}; {note}", self.status);
         }
+    }
+
+    /// A stereo file: left on the track, right on the next one, panned apart. An error when it
+    /// goes on one track as mono, with a note when it is stereo but the next track is not free.
+    fn import_sides(&mut self, import: &PendingImport) -> Result<(), Option<String>> {
+        let Some([left, right]) = self.sources.get(import.source).and_then(|s| s.split.clone()) else { return Err(None) };
+        let next = import.track + 1;
+        let free = next < TRACKS
+            && self.tracks[next].regions.is_empty()
+            && self.tracks[next].unresolved.is_none()
+            && !self.pending_imports.iter().any(|i| i.track == next);
+        if !free {
+            let reason = if next < TRACKS { format!("track {} is not free", next + 1) } else { "there is no track 9".into() };
+            return Err(Some(format!("stereo mixed to mono, {reason}")));
+        }
+        let group = import.group.unwrap_or_else(|| self.next_generation());
+        for (track, path, pan) in [(import.track, left, -1.0), (next, right, 1.0)] {
+            self.tracks[track].pan = pan;
+            let source = self.source_for(&path);
+            let side = PendingImport { source, track, start: import.start, group: Some(group) };
+            if self.source_is(source, SourceState::Ready) {
+                self.place_import(side);
+            } else {
+                self.pending_imports.push(side);
+            }
+        }
+        self.send_mix();
+        Ok(())
     }
 
     /// A track whose file has already loaded does not wait: its reference becomes a region now.

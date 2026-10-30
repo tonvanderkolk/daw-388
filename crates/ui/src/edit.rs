@@ -31,11 +31,29 @@ impl DawApp {
         if changed.is_empty() {
             return;
         }
+        // A track without a name takes the name of the track its audio came from.
+        let names: Vec<Option<String>> = changed.iter().map(|&t| self.name_for(t, &new[t])).collect();
         self.change(name, &changed, |app| {
-            for &t in &changed {
+            for (&t, name) in changed.iter().zip(names) {
                 app.tracks[t].regions.clone_from(&new[t]);
+                if let Some(name) = name {
+                    app.tracks[t].name = name;
+                }
             }
         });
+    }
+
+    /// The name for a nameless track that gets `regions`: that of another named track playing the
+    /// same source, else the name of the first region.
+    fn name_for(&self, track: usize, regions: &[Region]) -> Option<String> {
+        let first = regions.first().filter(|_| self.tracks[track].name.is_empty())?;
+        let named = self
+            .tracks
+            .iter()
+            .enumerate()
+            .find(|(t, other)| *t != track && !other.name.is_empty() && other.regions.iter().any(|r| r.source == first.source));
+        let name = named.map_or_else(|| first.name.clone(), |(_, other)| other.name.clone());
+        (!name.is_empty()).then_some(name)
     }
 
     /// Select these regions again after an edit (they are found by their values).
@@ -190,6 +208,33 @@ impl DawApp {
         self.set_regions("Move", tracks);
         let moved: Vec<(usize, Region)> = picked.into_iter().map(|(t, r)| (target(t), r.shifted(time_delta))).collect();
         self.select(&moved);
+    }
+
+    /// Alt and drag: a copy of the selection by whole tracks and by time; the copy is selected.
+    pub(crate) fn copy_selection(&mut self, track_delta: isize, time_delta: f64) {
+        if !self.may_edit() {
+            return;
+        }
+        let picked = self.selected_regions();
+        if picked.is_empty() {
+            return;
+        }
+        let lowest = picked.iter().map(|(t, _)| *t as isize).min().unwrap_or(0);
+        let highest = picked.iter().map(|(t, _)| *t as isize).max().unwrap_or(0);
+        let track_delta = track_delta.clamp(-lowest, TRACKS as isize - 1 - highest);
+        let earliest = picked.iter().map(|(_, r)| r.start).fold(f64::INFINITY, f64::min);
+        let time_delta = time_delta.max(-earliest);
+        let target = |t: usize| (t as isize + track_delta) as usize;
+        if !self.tracks_free(picked.iter().map(|(t, _)| target(*t))) {
+            return;
+        }
+        let copies: Vec<(usize, Region)> = picked.into_iter().map(|(t, r)| (target(t), r.shifted(time_delta))).collect();
+        let mut tracks = self.all_regions();
+        for (t, region) in &copies {
+            tracks[*t] = regions::place(&tracks[*t], region.clone());
+        }
+        self.set_regions("Copy", tracks);
+        self.select(&copies);
     }
 
     /// Pull one edge of a region to `at`, no further than its source; it stays selected.

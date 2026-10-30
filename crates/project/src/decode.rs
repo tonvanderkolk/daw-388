@@ -1,6 +1,6 @@
 //! AIFF, AIFF-C, FLAC and MP3 import through symphonia (WAV goes through hound).
 
-use crate::{ImportError, MonoClip, file_name, to_mono};
+use crate::{ImportError, Raw, file_name};
 use std::path::Path;
 use symphonia::core::codecs::audio::{AudioDecoderOptions, CODEC_ID_NULL_AUDIO};
 use symphonia::core::errors::Error;
@@ -47,7 +47,7 @@ impl Format {
     }
 }
 
-pub(crate) fn load(path: &Path, format: Format) -> Result<MonoClip, ImportError> {
+pub(crate) fn load(path: &Path, format: Format) -> Result<Raw, ImportError> {
     let err = |e: &dyn std::fmt::Display| ImportError::Decode(format.name(), e.to_string());
     let file = std::fs::File::open(path).map_err(ImportError::Io)?;
     let stream = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
@@ -96,7 +96,7 @@ pub(crate) fn load(path: &Path, format: Format) -> Result<MonoClip, ImportError>
     if interleaved.is_empty() {
         return Err(ImportError::Empty);
     }
-    Ok(MonoClip { name: file_name(path), sample_rate, samples: to_mono(&interleaved, channels) })
+    Ok(Raw { name: file_name(path), sample_rate, channels: channels.max(1), interleaved })
 }
 
 #[cfg(test)]

@@ -75,6 +75,37 @@ pub const AUDIO_EXTENSIONS: [&str; 7] = ["wav", "wave", "aif", "aiff", "aifc", "
 /// Read a WAV, AIFF, FLAC or MP3 file and average its channels to mono. The format is recognised by the
 /// file's first bytes, not its name.
 pub fn load_audio(path: &Path) -> Result<MonoClip, ImportError> {
+    load_raw(path).map(|raw| raw.mono())
+}
+
+/// A stereo file's left and right channel.
+pub type Sides = [Vec<f32>; 2];
+
+/// Like [`load_audio`], and for a stereo file also its left and right channel apart.
+pub fn load_audio_sides(path: &Path) -> Result<(MonoClip, Option<Sides>), ImportError> {
+    let raw = load_raw(path)?;
+    let sides = (raw.channels == 2).then(|| {
+        let side = |c: usize| raw.interleaved.iter().skip(c).step_by(2).copied().collect();
+        [side(0), side(1)]
+    });
+    Ok((raw.mono(), sides))
+}
+
+/// A decoded file with its channels still interleaved.
+pub(crate) struct Raw {
+    pub name: String,
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub interleaved: Vec<f32>,
+}
+
+impl Raw {
+    fn mono(&self) -> MonoClip {
+        MonoClip { name: self.name.clone(), sample_rate: self.sample_rate, samples: to_mono(&self.interleaved, self.channels) }
+    }
+}
+
+fn load_raw(path: &Path) -> Result<Raw, ImportError> {
     let mut magic = [0u8; 4];
     {
         use std::io::Read;
@@ -84,7 +115,7 @@ pub fn load_audio(path: &Path) -> Result<MonoClip, ImportError> {
     }
     match decode::Format::sniff(&magic) {
         Some(format) => decode::load(path, format),
-        None => load_wav(path),
+        None => hound::WavReader::open(path).map_err(ImportError::from).and_then(|r| decode(r, file_name(path))),
     }
 }
 
@@ -102,10 +133,10 @@ fn to_mono(interleaved: &[f32], channels: usize) -> Vec<f32> {
 /// Read a WAV file (8 to 32-bit integer or 32-bit float) and average its channels to mono.
 pub fn load_wav(path: &Path) -> Result<MonoClip, ImportError> {
     let reader = hound::WavReader::open(path)?;
-    decode(reader, file_name(path))
+    decode(reader, file_name(path)).map(|raw| raw.mono())
 }
 
-fn decode<R: std::io::Read>(reader: hound::WavReader<R>, name: String) -> Result<MonoClip, ImportError> {
+fn decode<R: std::io::Read>(reader: hound::WavReader<R>, name: String) -> Result<Raw, ImportError> {
     let spec = reader.spec();
     let channels = usize::from(spec.channels.max(1));
     let interleaved: Vec<f32> = match spec.sample_format {
@@ -118,7 +149,7 @@ fn decode<R: std::io::Read>(reader: hound::WavReader<R>, name: String) -> Result
     if interleaved.is_empty() {
         return Err(ImportError::Empty);
     }
-    Ok(MonoClip { name, sample_rate: spec.sample_rate, samples: to_mono(&interleaved, channels) })
+    Ok(Raw { name, sample_rate: spec.sample_rate, channels, interleaved })
 }
 
 /// Convert between sample rates with 4-point Hermite interpolation. Good enough for monitoring;
@@ -161,7 +192,7 @@ mod tests {
 
     fn read(bytes: Vec<u8>) -> MonoClip {
         let reader = hound::WavReader::new(Cursor::new(bytes)).unwrap_or_else(|e| panic!("{e}"));
-        decode(reader, "t".into()).unwrap_or_else(|e| panic!("{e}"))
+        decode(reader, "t".into()).map(|raw| raw.mono()).unwrap_or_else(|e| panic!("{e}"))
     }
 
     #[test]
@@ -176,6 +207,31 @@ mod tests {
         assert_eq!(clip.sample_rate, 44_100);
         assert_eq!(clip.samples.len(), 10);
         assert!((clip.samples[0] - 0.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn stereo_files_also_give_their_sides() {
+        let stereo = hound::WavSpec { channels: 2, sample_rate: 44_100, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let path = dir.path().join("pair.wav");
+        std::fs::write(
+            &path,
+            wav(stereo, |w| {
+                for _ in 0..4 {
+                    w.write_sample(16_384i16).unwrap_or_else(|e| panic!("{e}"));
+                    w.write_sample(-16_384i16).unwrap_or_else(|e| panic!("{e}"));
+                }
+            }),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let (clip, sides) = load_audio_sides(&path).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(clip.samples, vec![0.0; 4], "the mono mix as before");
+        let [left, right] = sides.unwrap_or_else(|| panic!("stereo has sides"));
+        assert_eq!((left, right), (vec![0.5; 4], vec![-0.5; 4]));
+
+        let mono = hound::WavSpec { channels: 1, ..stereo };
+        std::fs::write(&path, wav(mono, |w| w.write_sample(0i16).unwrap_or_else(|e| panic!("{e}")))).unwrap_or_else(|e| panic!("{e}"));
+        assert!(load_audio_sides(&path).unwrap_or_else(|e| panic!("{e}")).1.is_none(), "mono has no sides");
     }
 
     #[test]

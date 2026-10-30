@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.25.1
+Versie: 0.26.0
 Laatst bijgewerkt: 30-10-2026
 
 ## Doel
@@ -36,7 +36,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 - Sporenbuffers die de engine loslaat gaan via een tweede ringbuffer terug naar de UI-thread en worden daar vrijgegeven. Er wordt dus nooit geheugen vrijgegeven in de audiothread.
 - De engine kent geen audioapparaten. `app-desktop` roept `Engine::render` aan vanuit de cpal-callback; een latere browserversie doet hetzelfde vanuit WebAudio.
 - Bij het wisselen van apparaat bouwt de app een nieuwe engine op de samplerate van het apparaat en stuurt de sporen (opnieuw geconverteerd), mixinstellingen en positie opnieuw.
-- Sporen zijn mono, zoals op de 388. Stereobestanden worden bij het laden gemiddeld naar mono.
+- Sporen zijn mono, zoals op de 388. Een stereobestand importeren zet links op het spoor en rechts op het volgende (zie Laden); waar dat niet kan, wordt het gemiddeld naar mono.
 - Een spoor bestaat uit regio's: een stuk van een bron (een audiobestand) op een plek op de band, gesorteerd en zonder overlap. Wat op een plek komt, vervangt wat er lag; de bron blijft, dus een rand is terug te halen. De bewerkingen zijn pure functies in `regions.rs`, zodat undo de oude lijst kan bewaren.
 - De engine kent geen regio's. Na elke wijziging rekent de UI het spoor op de achtergrond uit tot één buffer (`render.rs`: stilte tussen regio's, een fade van 3 ms aan een vrije rand, een crossfade van 3 ms waar twee regio's elkaar raken, niets waar een regio zijn bron naadloos voortzet) en stuurt die met `SetTrack`. De bronnen staan in een gedeelde tabel (`crates/ui/src/sources.rs`), elk één keer gedecodeerd en één keer omgezet naar de samplerate van de engine.
 - De SPOREN-weergave (`crates/ui/src/drawer.rs`) tekent met de egui-painter en zet muis en toetsen om in bewerkingen (`edit.rs`), elk één undo-stap op basis van de pure functies in `regions.rs`. De tijd-as, het raster, vastklikken en wat onder de muis ligt staan los in `timeline.rs`.
@@ -140,7 +140,7 @@ Naar het blokschema en Features and Controls in de handleiding van de 388:
 - MONITOR: per spoor GAIN, PAN en mute. Met MON op PGM hoort de monitor de bus (of het DIRECT-signaal); op CUE volgt hij de tabel uit de handleiding: de ingang zolang het spoor zijn ingang hoort, anders de band als die speelt, anders niets.
 - De STEREO MASTER krijgt de L-R-kanalen, of de MONITOR-mix als geen kanaal op L-R staat. Daarna MONO.
 - Meeluisteren via de interface: live bronnen worden wel opgenomen maar nergens gehoord; de engine houdt per bus een opname- en een luistersom bij.
-- Zonder L-R hoor je de sporen via de MONITOR-sectie (de opnamestand van de 388). Een nieuw project begint in de eenvoudige stand; daar staat elk kanaal op L-R.
+- Zonder L-R hoor je de sporen via de MONITOR-sectie (de opnamestand van de 388). Een nieuw project begint in de eenvoudige stand; daar staat elk kanaal op L-R. REC op een spoor waarvan het kanaal niet op L-R staat terwijl andere dat wel doen, geeft een melding: je hoort het dan nergens.
 - Latencycompensatie geldt alleen als de opname een live bron bevat (bepaald bij de punch-in). Een bounce van band naar band ligt sample-precies onder de bron.
 - MIC gaat na TRIM door een nagebootste voorversterker: tot -6 dBFS schoon, daarboven een zachte tanh-knie naar een plafond onder 0 dBFS, licht asymmetrisch (even harmonischen). LINE en RMX zijn schoon.
 - EQ: drie RBJ-piekfilters met Q 0,9, elk ±15 dB. LOW 50 Hz tot 1 kHz (standaard 100 Hz), MID 500 Hz tot 5 kHz (1 kHz), HIGH 2,5 tot 15 kHz (8 kHz). De engine krijgt frequentie en gain, vloeit ze per sample over en rekent elke 32 samples de coëfficiënten opnieuw uit op zijn eigen samplerate. Een band die vlak staat wordt overgeslagen, dus een vlakke EQ laat het signaal bit voor bit door.
@@ -175,26 +175,27 @@ Er zijn twee routes: wat er op band komt (kanaal, bus, spoor) en wat je hoort (M
 - Per spoor in SPOREN een kleine fader voor het volume en een PAN-knop, dezelfde waarden als in de mixer.
 - Werkbalk: SPLITS (S), KNIP (Cmd+X), KOPIEER (Cmd+C), PLAK (Cmd+V), WIS (Delete), RASTER, zoom (−, PAST, +), rechts de stand van undo en het tempo. De sneltoetsen werken alleen in SPOREN en geen tekstveld de focus heeft.
 - Tijdlijnbalk: klikken zet de band daar, slepen selecteert een tijdvak over alle sporen. Met RASTER aan toont hij maten (maat 1 begint aan het begin van de band, zoals de klik), anders minuten en seconden; het nulpunt en het CUE-punt staan erin.
-- Regio's: klikken selecteert (Shift voegt toe of haalt weg), klikken op een leeg stuk haalt de selectie weg. Slepen verschuift de selectie, ook naar een ander spoor; een rand slepen kort in of trekt terug tot het einde van de opname. Wat op een plek komt, vervangt wat er lag.
+- Regio's: klikken selecteert (Shift voegt toe of haalt weg), klikken op een leeg stuk haalt de selectie weg. Slepen verschuift de selectie, ook naar een ander spoor; met Alt sleep je een kopie; een rand slepen kort in of trekt terug tot het einde van de opname. Wat op een plek komt, vervangt wat er lag. Een spoor zonder naam krijgt de naam van het spoor waar de audio vandaan komt, anders die van de regio.
 - SPLITS splitst de geselecteerde regio's op de afspeelpositie, zonder selectie alle sporen. KNIP, KOPIEER en WIS werken op het tijdvak als er een is, anders op de geselecteerde regio's. Knippen van een tijdvak is een splice (de rest schuift aan); een geplakt tijdvak wordt op de afspeelpositie ingevoegd. Geplakte regio's komen op de afspeelpositie, elk op zijn eigen spoor.
-- Vastklikken op tellen (met RASTER), randen van regio's, nulpunt, CUE-punt en afspeelpositie, binnen 8 pixels; Alt ingedrukt is vrij.
-- Zoomen met Cmd en scrollen rond de muis, scrollen schuift door de tijd. Tijdens het afspelen bladeren de sporen mee.
+- Vastklikken op tellen (met RASTER), randen van regio's, nulpunt, CUE-punt en afspeelpositie, binnen 8 pixels; Cmd ingedrukt is vrij.
+- Zoomen met Cmd en scrollen rond de muis, of met Cmd+Links en Cmd+Rechts, scrollen schuift door de tijd. Tijdens het afspelen bladeren de sporen mee.
 - Bestanden uit de Finder komen op het laatst aangeklikte spoor (en de sporen erna) vanaf de afspeelpositie, samen één undo-stap. Waar je loslaat kan niet: winit geeft bij het slepen van bestanden geen muispositie door.
 - Dubbelklik op de naam van een spoor wijzigt hem.
 - Een spoor dat nog geladen wordt of waarvan het bestand ontbreekt, neemt niets nieuws aan; bewerkingen over alle sporen wachten tot het geladen of gewist is. Tijdens een opname kan er niet bewerkt worden.
-- Undo-namen: Splitsen, Knippen, Splice, Plakken, Invoegen, Wissen, Verwijderen, Verschuiven, Inkorten, Naam, Importeren, Laden, Wis en Opname spoor N.
+- Undo-namen: Splitsen, Knippen, Splice, Plakken, Invoegen, Wissen, Verwijderen, Verschuiven, Kopiëren, Inkorten, Naam, Importeren, Laden, Wis en Opname spoor N.
 
 ## Laden
 
 Een bron (audiobestand) wordt op een achtergrondthread gedecodeerd en naar de samplerate van het apparaat omgezet (via `Platform::spawn`), één keer, hoeveel regio's hem ook gebruiken. Daarna wordt elk spoor dat hem gebruikt opnieuw uitgerekend. Bronnen en sporen hebben elk een volgnummer; een te laat resultaat wordt genegeerd. Bij een apparaatwissel worden de bronnen opnieuw omgezet en de sporen opnieuw uitgerekend.
 
 - Laad in de strook zet een bestand als regio op het spoor, vanaf de afspeelpositie op het moment van kiezen; het vervangt alleen dat stuk.
+- Een stereobestand (Laad of slepen) wordt bij het laden ook in twee mono-bestanden `naam L.wav` en `naam R.wav` (24 bit) in de tijdelijke map geschreven. Links komt op het spoor, rechts op het volgende, PAN helemaal links en rechts, samen één undo-stap; bij bewaren gaan ze naar `audio/`. Is het volgende spoor bezet (of er komt al iets op) of bestaat het niet, dan komt het mono op één spoor met een melding.
 - "8 audiobestanden laden..." en bestanden op de opdrachtregel vervangen de sporen 1 tot 8 (op naamvolgorde) door één regio vanaf 0:00, samen één undo-stap.
 
 ## Audio-uitvoer
 
 - De gekozen uitvoer (apparaat, samplerate, buffergrootte, en de uitgangen voor AUX en EFF) is een app-voorkeur, geen projectinstelling. Ze staat in `settings.json` in de configuratiemap van het systeem (macOS: `~/Library/Application Support/DAW 388/`, Windows: `%APPDATA%\DAW 388\`).
-- Openen gaat in deze volgorde: het gekozen apparaat, anders het standaardapparaat (met een melding), anders de stille klok. De stille klok laat de engine in echte tijd draaien zonder geluid, zodat transport, teller en meters blijven werken.
+- Openen gaat in deze volgorde: het gekozen apparaat, anders het standaardapparaat (met de melding "... is not connected: playing through ..."), anders de stille klok. De stille klok laat de engine in echte tijd draaien zonder geluid, zodat transport, teller en meters blijven werken.
 - Meldt cpal dat het apparaat weg is (`DeviceNotAvailable` of `StreamInvalidated`), dan opent de app meteen opnieuw volgens die volgorde, op dezelfde bandpositie. Zolang de uitvoer niet het gekozen apparaat is, kijkt de app elke 2 seconden of het terug is en schakelt dan terug.
 - Een samplerate die het apparaat niet biedt, of een buffergrootte buiten zijn bereik, valt terug op de standaard van het apparaat.
 

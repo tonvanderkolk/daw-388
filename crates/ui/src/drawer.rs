@@ -21,8 +21,9 @@ pub(crate) const LANES_MIN: f32 = 8.0 * 52.0 + RULER + 32.0;
 pub(crate) enum Drag {
     /// Dragging out a stretch over all tracks from `anchor` seconds.
     Range { anchor: f64 },
-    /// Moving the selection; `grab` is where it was taken (seconds and track).
-    Move { grab: f64, track: usize, time_delta: f64, track_delta: isize },
+    /// Moving the selection, or with `copy` (Alt) a copy of it; `grab` is where it was taken
+    /// (seconds and track).
+    Move { grab: f64, track: usize, time_delta: f64, track_delta: isize, copy: bool },
     /// Pulling an edge of one region to `at`.
     Trim { track: usize, index: usize, edge: Edge, at: f64 },
 }
@@ -131,18 +132,15 @@ impl DawApp {
                 if KeyCap::new("SNAP", keys::SMALL)
                     .lamp(snap, palette::LED_GREEN)
                     .show(ui)
-                    .on_hover_text("Snap to the beats of the metronome; Alt: free for now")
+                    .on_hover_text("Snap to the beats of the metronome; Cmd while dragging: free for now")
                     .clicked()
                 {
                     self.editor.settings.snap = !snap;
                     self.mark_dirty();
                 }
                 ui.add_space(8.0);
-                let current =
-                    self.editor.settings.zoom.unwrap_or(if self.editor.shown_zoom > 0.0 { self.editor.shown_zoom } else { 100.0 });
-                if KeyCap::new("−", keys::SMALL).show(ui).on_hover_text("Zoom out (or Cmd and scroll)").clicked() {
-                    self.editor.settings.zoom = Some((current * 0.5).clamp(timeline::ZOOM_MIN, timeline::ZOOM_MAX));
-                    self.mark_dirty();
+                if KeyCap::new("−", keys::SMALL).show(ui).on_hover_text("Zoom out (Cmd+Left, or Cmd and scroll)").clicked() {
+                    self.zoom_by(0.5);
                 }
                 if KeyCap::new("FIT", keys::SMALL)
                     .lamp(self.editor.settings.zoom.is_none(), palette::LED_GREEN)
@@ -154,9 +152,8 @@ impl DawApp {
                     self.editor.scroll = 0.0;
                     self.mark_dirty();
                 }
-                if KeyCap::new("+", keys::SMALL).show(ui).on_hover_text("Zoom in (or Cmd and scroll)").clicked() {
-                    self.editor.settings.zoom = Some((current * 2.0).clamp(timeline::ZOOM_MIN, timeline::ZOOM_MAX));
-                    self.mark_dirty();
+                if KeyCap::new("+", keys::SMALL).show(ui).on_hover_text("Zoom in (Cmd+Right, or Cmd and scroll)").clicked() {
+                    self.zoom_by(2.0);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let m = &self.metronome;
@@ -274,12 +271,13 @@ impl DawApp {
 
     /// The mouse in the ruler and the lanes.
     fn lanes_input(&mut self, ui: &Ui, response: &egui::Response, line: &Timeline, areas: &Areas) {
-        let (alt, shift) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift));
-        let reach = if alt { 0.0 } else { f64::from(timeline::SNAP_PIXELS) / line.zoom };
+        let (alt, free, shift) = ui.input(|i| (i.modifiers.alt, i.modifiers.command, i.modifiers.shift));
+        let reach = if free { 0.0 } else { f64::from(timeline::SNAP_PIXELS) / line.zoom };
         let to = line.seconds(areas.lanes.right());
 
         if let Some(pos) = response.hover_pos() {
             match (self.editor.drag, self.lane_hit(line, areas, pos)) {
+                (Some(Drag::Move { copy: true, .. }), _) => ui.ctx().set_cursor_icon(CursorIcon::Copy),
                 (Some(Drag::Move { .. }), _) => ui.ctx().set_cursor_icon(CursorIcon::Grabbing),
                 (Some(Drag::Trim { .. }), _) | (None, Some((_, Hit::Region { edge: Some(_), .. }))) => {
                     ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
@@ -335,7 +333,7 @@ impl DawApp {
                         if !self.editor.selection.contains(&(track, index)) {
                             self.select_region(track, index, shift);
                         }
-                        Drag::Move { grab: line.seconds(pos.x), track, time_delta: 0.0, track_delta: 0 }
+                        Drag::Move { grab: line.seconds(pos.x), track, time_delta: 0.0, track_delta: 0, copy: alt }
                     }
                 });
             }
@@ -360,7 +358,8 @@ impl DawApp {
                         .flat_map(|r| [r.start, r.end()])
                         .collect();
                     let time_delta = timeline::snap_shift(&edges, t - grab, &self.marks(line, to, &selection), reach);
-                    self.editor.drag = Some(Drag::Move { grab, track, time_delta, track_delta: lane as isize - track as isize });
+                    let track_delta = lane as isize - track as isize;
+                    self.editor.drag = Some(Drag::Move { grab, track, time_delta, track_delta, copy: alt });
                 }
                 Some(Drag::Trim { track, index, edge, .. }) => {
                     let at = timeline::snap(t, &self.marks(line, to, &[(track, index)]), reach);
@@ -372,8 +371,12 @@ impl DawApp {
 
         if response.drag_stopped() {
             match self.editor.drag.take() {
-                Some(Drag::Move { time_delta, track_delta, .. }) if time_delta != 0.0 || track_delta != 0 => {
-                    self.move_selection(track_delta, time_delta);
+                Some(Drag::Move { time_delta, track_delta, copy, .. }) if time_delta != 0.0 || track_delta != 0 => {
+                    if copy {
+                        self.copy_selection(track_delta, time_delta);
+                    } else {
+                        self.move_selection(track_delta, time_delta);
+                    }
                 }
                 Some(Drag::Trim { track, index, edge, at }) => self.trim(track, index, edge, at),
                 _ => {}
@@ -420,7 +423,7 @@ impl DawApp {
             for (index, region) in self.tracks[track].regions.iter().enumerate() {
                 let picked = self.editor.selection.contains(&(track, index));
                 let (shown, alpha) = match self.editor.drag {
-                    Some(Drag::Move { .. }) if picked => (region.clone(), 0x60),
+                    Some(Drag::Move { copy: false, .. }) if picked => (region.clone(), 0x60),
                     Some(Drag::Trim { track: t, index: i, edge, at }) if (t, i) == (track, index) => (trimmed(region, edge, at), 0xff),
                     _ => (region.clone(), 0xff),
                 };
@@ -562,12 +565,29 @@ impl DawApp {
         }
     }
 
-    /// S, Delete, Escape and cut, copy and paste while the drawer is open.
+    /// Zoom in (`factor` above 1) or out from what the drawer shows now.
+    fn zoom_by(&mut self, factor: f64) {
+        let current = self.editor.settings.zoom.unwrap_or(if self.editor.shown_zoom > 0.0 { self.editor.shown_zoom } else { 100.0 });
+        self.editor.settings.zoom = Some((current * factor).clamp(timeline::ZOOM_MIN, timeline::ZOOM_MAX));
+        self.mark_dirty();
+    }
+
+    /// S, Delete, Escape, Cmd+Left and Right (zoom) and cut, copy and paste while the drawer is open.
     pub(crate) fn handle_drawer_keys(&mut self, ui: &Ui) {
         if !self.editor.settings.open || ui.memory(|m| m.focused().is_some()) {
             return;
         }
         // egui-winit turns Cmd+X, Cmd+C and Cmd+V into these events, not into keys.
+        let (zoom_out, zoom_in) = ui.input(|i| {
+            let cmd = i.modifiers.command_only();
+            (cmd && i.key_pressed(Key::ArrowLeft), cmd && i.key_pressed(Key::ArrowRight))
+        });
+        if zoom_out {
+            self.zoom_by(0.5);
+        }
+        if zoom_in {
+            self.zoom_by(2.0);
+        }
         let (split, delete, escape, cut, copy, paste) = ui.input(|i| {
             let plain = i.modifiers.is_none();
             let has = |f: fn(&egui::Event) -> bool| i.events.iter().any(f);

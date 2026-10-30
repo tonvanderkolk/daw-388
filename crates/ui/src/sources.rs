@@ -25,6 +25,8 @@ pub(crate) struct Source {
     pub generation: u64,
     /// The waveform overview, for drawing.
     pub peaks: Option<Arc<Peaks>>,
+    /// A stereo file's left and right channel as mono files of their own, for an import.
+    pub split: Option<[PathBuf; 2]>,
 }
 
 #[derive(Default)]
@@ -43,7 +45,7 @@ impl Sources {
     pub fn add(&mut self, path: PathBuf, state: SourceState) -> SourceId {
         let id = self.next;
         self.next += 1;
-        self.map.insert(id, Source { path, state, clip: None, at_rate: None, generation: 0, peaks: None });
+        self.map.insert(id, Source { path, state, clip: None, at_rate: None, generation: 0, peaks: None, split: None });
         id
     }
 
