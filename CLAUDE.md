@@ -35,13 +35,13 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 
 - Fase 9 (browserversie) is uitgesteld
 
 ## Huidige status
-Versie 0.26.0: Help-menu (About en Quick guide), stereo-import over twee sporen, Alt-slepen kopieert, Cmd+pijlen zoomen en een melding bij REC op een spoor dat je niet hoort. Release v0.26.0 staat op GitHub met de DMG en de ZIP.
+Versie 0.27.0: exports in een eigen map naast het project (kiesbaar, met Show in Finder), een naamveld en de samplerate van het project bij export, en ingangen die zich aan de geluidskaart aanpassen. De laatste release op GitHub is v0.26.0.
 
 ## Actieve branch
 main
 
 ## Laatste sync
-30-10-2026 13:29
+30-10-2026 19:06
 
 ## Bekende issues / openstaande punten
 - De repository is privé; Ton maakt hem openbaar na verder testen

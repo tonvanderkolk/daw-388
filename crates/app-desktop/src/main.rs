@@ -9,7 +9,7 @@ use audio::{Output, SilentClock};
 use cpal::traits::HostTrait;
 use daw388_engine::EngineHandle;
 use daw388_ui::{DawApp, DeviceInfo, OutputInfo, OutputRequest, Platform};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 struct Desktop {
     host: cpal::Host,
@@ -77,6 +77,17 @@ impl Platform for Desktop {
         // The chosen name becomes the project package, `Name.daw388`; a typed extension is replaced.
         let path = rfd::FileDialog::new().set_title("Save project as").set_file_name(suggested_name).save_file()?;
         Some(daw388_project::session::package_path(&path))
+    }
+
+    fn pick_folder(&mut self, title: &str) -> Option<PathBuf> {
+        rfd::FileDialog::new().set_title(title).pick_folder()
+    }
+
+    fn reveal(&mut self, dir: &Path) {
+        let opener = if cfg!(target_os = "windows") { "explorer" } else { "open" };
+        if let Err(e) = std::process::Command::new(opener).arg(dir).spawn() {
+            log::warn!("cannot show {}: {e}", dir.display());
+        }
     }
 
     fn spawn(&mut self, job: Box<dyn FnOnce() + Send>) {

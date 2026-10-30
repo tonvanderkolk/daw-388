@@ -51,7 +51,14 @@ fn paper_style(ui: &mut Ui) {
 fn sheet(ui: &mut Ui, title: &str, note: &str, open: Option<&mut bool>, width: f32, add: impl FnOnce(&mut Ui)) {
     ui.set_width(width);
     ui.spacing_mut().item_spacing.y = 0.0;
-    let (bar, _) = ui.allocate_exact_size(vec2(width, BAR), Sense::hover());
+    let (top, _) = ui.allocate_exact_size(vec2(width, BAR), Sense::hover());
+    Frame::new().inner_margin(Margin::symmetric(20, 16)).show(ui, |ui| {
+        ui.set_width(width - 40.0);
+        paper_style(ui);
+        add(ui);
+    });
+    // The bar is drawn after the content, so it spans the sheet even when the content made it wider.
+    let bar = Rect::from_min_size(top.min, vec2(ui.min_rect().width().max(width), BAR));
     let painter = ui.painter();
     painter.rect_filled(bar, CornerRadius { nw: 4, ne: 4, sw: 0, se: 0 }, palette::PANEL_DARK);
     painter.text(bar.left_center() + vec2(18.0, 0.0), Align2::LEFT_CENTER, title, bold_font(15.0), palette::CREAM);
@@ -72,11 +79,6 @@ fn sheet(ui: &mut Ui, title: &str, note: &str, open: Option<&mut bool>, width: f
     if !note.is_empty() {
         ui.painter().text(pos2(right, bar.center().y), Align2::RIGHT_CENTER, note, FontId::proportional(11.0), palette::TEXT_DIM);
     }
-    Frame::new().inner_margin(Margin::symmetric(20, 16)).show(ui, |ui| {
-        ui.set_width(width - 40.0);
-        paper_style(ui);
-        add(ui);
-    });
 }
 
 /// The frame of a sheet: paper with a dark edge and no padding (the title bar fills the top).

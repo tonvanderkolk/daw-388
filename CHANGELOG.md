@@ -4,6 +4,17 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-10-30
+
+### Toegevoegd
+- Export: een veld Name voor het begin van de bestandsnamen (`Naam_mix`, `Naam_01_Kick`). Leeg is de projectnaam; bij een ander project begint het weer leeg.
+- Export: de samplerate staat standaard op die van de audio in het project (bijvoorbeeld "44.1 kHz (project)"): de rate waarmee het meeste is opgenomen of geïmporteerd, anders die van het apparaat. 44,1, 48 en 96 kHz blijven te kiezen.
+
+### Gewijzigd
+- Exports komen niet meer in het projectpakket (de Finder toont dat als één document, dus je zag ze niet) maar in een map naast het project: `Naam export` naast `Naam.daw388`. Met Choose folder... in het Export-venster kies je een andere map; die wordt met het project bewaard. Na een export toont Show in Finder (Windows: Show in Explorer) de map. Projectmappen van vóór 0.24.0 houden hun map `export/`.
+- Kanalen op een ingang die de geluidskaart niet heeft (bijvoorbeeld in 3 tot en met 8 op een kaart met twee ingangen) gaan automatisch naar een ingang die er wel is: kanaal 1, 2, 3 op in 1, 2, 1 enzovoort. Dat gebeurt bij een nieuw project, bij openen en bij een ander apparaat.
+- De titelbalk van een venster loopt altijd door tot de rechterkant, en lange spoornamen in het Export-venster worden ingekort (de volledige naam staat in de tooltip).
+
 ## [0.26.0] - 2026-10-30
 
 ### Toegevoegd

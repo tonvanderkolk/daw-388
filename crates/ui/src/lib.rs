@@ -145,6 +145,10 @@ pub trait Platform {
     fn pick_project_to_open(&mut self) -> Option<PathBuf>;
     /// Ask the user where to save a project. Returns the project folder to create or reuse.
     fn pick_project_location(&mut self, suggested_name: &str) -> Option<PathBuf>;
+    /// Ask the user for a folder (where exports go).
+    fn pick_folder(&mut self, title: &str) -> Option<PathBuf>;
+    /// Show a folder in the Finder or Explorer.
+    fn reveal(&mut self, dir: &Path);
     /// Run slow work (decoding and resampling audio) away from the UI thread.
     fn spawn(&mut self, job: Box<dyn FnOnce() + Send>);
     /// Run work that lasts as long as an engine (the recording writer) on its own thread.
@@ -350,6 +354,10 @@ pub struct DawApp {
     export: ExportChoices,
     show_export: bool,
     running_export: Option<RunningExport>,
+    /// Where exports go, when chosen for this project; else next to it.
+    export_dir: Option<PathBuf>,
+    /// The folder of the last export, for Show in Finder.
+    last_export_dir: Option<PathBuf>,
     /// The question before the 388 routing is reset for the simple mode.
     confirm_simple: bool,
     input_devices: Vec<DeviceInfo>,
@@ -375,6 +383,11 @@ const TIME_SIGNATURES: [(u8, u8); 9] = [(2, 4), (3, 4), (4, 4), (5, 4), (6, 4), 
 
 fn meter_of(metronome: &MetronomeSettings) -> Meter {
     Meter { bpm: metronome.bpm, beats: metronome.beats, unit: metronome.unit }
+}
+
+/// `text` cut to `max` characters with an ellipsis, so a long track name keeps a window narrow.
+fn shorten(text: &str, max: usize) -> String {
+    if text.chars().count() <= max { text.to_string() } else { format!("{}…", text.chars().take(max - 1).collect::<String>()) }
 }
 
 /// Channel `index` takes input `index + 1` until the user chooses otherwise.
@@ -466,7 +479,18 @@ struct ExportChoices {
     from_zero: bool,
     format: ExportFormat,
     depth: BitDepth,
-    rate: u32,
+    /// The sample rate; `None` follows the project's audio.
+    rate: Option<u32>,
+    /// The start of the file names; empty is the project's name.
+    name: String,
+}
+
+impl ExportChoices {
+    /// The start of the file names: the chosen name, else the project's.
+    fn base(&self, project: &str) -> String {
+        let name = self.name.trim();
+        if name.is_empty() { project.to_string() } else { name.to_string() }
+    }
 }
 
 impl Default for ExportChoices {
@@ -481,7 +505,8 @@ impl Default for ExportChoices {
             from_zero: true,
             format: ExportFormat::Wav,
             depth: BitDepth::Int24,
-            rate: 48_000,
+            rate: None,
+            name: String::new(),
         }
     }
 }
@@ -645,6 +670,8 @@ impl DawApp {
             export: ExportChoices::default(),
             show_export: false,
             running_export: None,
+            export_dir: None,
+            last_export_dir: None,
             confirm_simple: false,
             input_devices,
             insert: false,
@@ -720,6 +747,9 @@ impl DawApp {
             self.platform.spawn_service(Box::new(move || recording::run_writer(recorder, dir, rate, tx, ctx)));
         }
         self.engine = Some(engine);
+        if let Some(moved) = self.fit_inputs() {
+            self.status = format!("{}; {moved}", self.status);
+        }
         self.send_mix();
         self.send_transport();
         if was_playing {
@@ -811,6 +841,20 @@ impl DawApp {
         self.engine.as_ref().map_or(48_000, EngineHandle::sample_rate)
     }
 
+    /// The sample rate of the project's audio: the rate most of its sources were recorded or
+    /// imported at, else the device's.
+    pub(crate) fn project_rate(&self) -> u32 {
+        let mut counts: Vec<(u32, usize)> = Vec::new();
+        for region in self.tracks.iter().flat_map(|t| &t.regions) {
+            let Some(rate) = self.sources.get(region.source).and_then(|s| s.clip.as_ref()).map(|c| c.sample_rate) else { continue };
+            match counts.iter_mut().find(|(r, _)| *r == rate) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((rate, 1)),
+            }
+        }
+        counts.into_iter().max_by_key(|&(rate, n)| (n, rate)).map_or_else(|| self.engine_rate(), |(rate, _)| rate)
+    }
+
     /// Load up to eight files onto the tracks, starting at track 1.
     fn load_all(&mut self) {
         let paths = self.platform.pick_audio_files(true);
@@ -870,6 +914,12 @@ impl DawApp {
         self.auto_punch = false;
         self.metronome = MetronomeSettings::default();
         self.tape = new_tape();
+        self.export.name.clear();
+        self.export_dir = None;
+        self.last_export_dir = None;
+        self.export.rate = None;
+        // A new project quietly takes the inputs the interface has.
+        self.fit_inputs();
         self.history.clear();
         self.editor = EditorState::default();
         // Loads still running belong to sources that no longer exist, and are dropped.
@@ -967,6 +1017,8 @@ impl DawApp {
         editor.height = editor.height.clamp(160.0, 2000.0);
         editor.zoom = editor.zoom.map(|z| z.clamp(timeline::ZOOM_MIN, timeline::ZOOM_MAX));
         self.editor.settings = editor;
+        self.export_dir = opened.file.export_dir.clone();
+        let moved = self.fit_inputs();
         self.send_mix();
         self.send_transport();
         self.project_dir = Some(opened.dir);
@@ -980,6 +1032,26 @@ impl DawApp {
         if let Some(first) = opened.warnings.first() {
             self.status = format!("{}; {first}", self.status);
         }
+        if let Some(moved) = moved {
+            self.status = format!("{}; {moved}", self.status);
+        }
+    }
+
+    /// Channels on an input the interface does not have go to one it has, spread over them as
+    /// channel 1, 2, 3 ... takes input 1, 2, 1 ... on a two-input interface. Says which moved.
+    fn fit_inputs(&mut self) -> Option<String> {
+        let available = self.output.as_ref().and_then(|o| o.input.as_ref()).map_or(0, |i| i.channels);
+        if available == 0 {
+            return None;
+        }
+        let mut moved = Vec::new();
+        for (index, track) in self.tracks.iter_mut().enumerate() {
+            if track.input.is_some_and(|c| c > available) {
+                track.input = u16::try_from(index % usize::from(available) + 1).ok();
+                moved.push((index + 1).to_string());
+            }
+        }
+        (!moved.is_empty()).then(|| format!("channel {} moved to an input this interface has ({available})", moved.join(", ")))
     }
 
     /// The pitch control as a speed ratio (1.0 in FIX).
@@ -1084,6 +1156,7 @@ impl DawApp {
             mixer: self.mixer,
             tape: self.tape,
             editor: self.editor.settings,
+            export_dir: self.export_dir.clone(),
         };
         match session::save(&dir, &settings, &tracks, backup) {
             Ok(saved) => {
@@ -2156,7 +2229,7 @@ impl DawApp {
             return Err("Choose a stereo bounce or separate tracks".into());
         }
         Ok(ExportJob {
-            rate: choices.rate,
+            rate: choices.rate.unwrap_or_else(|| self.project_rate()),
             tracks,
             sources,
             channels: std::array::from_fn(|i| channel_params(&self.tracks[i])),
@@ -2169,8 +2242,8 @@ impl DawApp {
             stereo: choices.stereo.then_some(choices.stereo_tape),
             stems,
             from_zero: choices.from_zero,
-            dir: dir.join("export"),
-            project: self.project_name(),
+            dir: self.export_folder(dir),
+            project: choices.base(&self.project_name()),
             format: choices.format,
             depth: choices.depth,
         })
@@ -2195,13 +2268,20 @@ impl DawApp {
     }
 
     /// Pick up a finished export.
+    /// Where exports of the project in `dir` go: the chosen folder while it is there, else next
+    /// to the project.
+    fn export_folder(&self, dir: &Path) -> PathBuf {
+        self.export_dir.clone().filter(|d| d.is_dir()).unwrap_or_else(|| session::default_export_dir(dir))
+    }
+
     fn poll_export(&mut self) {
         let Some(running) = &self.running_export else { return };
         let Ok(result) = running.result.try_recv() else { return };
         self.running_export = None;
         self.status = match result {
             Ok(files) => {
-                let dir = files.first().and_then(|f| f.parent()).map(|d| d.display().to_string()).unwrap_or_default();
+                self.last_export_dir = files.first().and_then(|f| f.parent()).map(Path::to_path_buf);
+                let dir = self.last_export_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
                 format!("{} file(s) exported to {dir}", files.len())
             }
             Err(e) => e,
@@ -2219,7 +2299,10 @@ impl DawApp {
         let running = self.running_export.as_ref().map(|r| Arc::clone(&r.progress));
         let machine = self.tape.mode == TapeMode::Machine;
         let project = self.project_name();
-        let place = self.project_dir.as_ref().map_or("Save the project first".to_string(), |d| d.join("export").display().to_string());
+        let project_rate = self.project_rate();
+        let place = self.project_dir.as_ref().map_or("Save the project first".to_string(), |d| self.export_folder(d).display().to_string());
+        let (mut choose, mut reveal) = (false, false);
+        let last_export = self.last_export_dir.clone();
         paper::paper_window(ctx, "export-window", "Export", "", &mut open, 460.0, |ui| {
             ui.add_enabled_ui(running.is_none(), |ui| {
                 section_title(ui, "What");
@@ -2232,7 +2315,8 @@ impl DawApp {
                     egui::Grid::new("export-stems").num_columns(2).spacing([24.0, 4.0]).show(ui, |ui| {
                         for (index, name) in names.iter().enumerate() {
                             ui.add_enabled_ui(has[index], |ui| {
-                                check(ui, &mut choices.stem_tracks[index], &format!("{:02}  {name}", index + 1));
+                                let label = format!("{:02}  {}", index + 1, shorten(name, 24));
+                                check(ui, &mut choices.stem_tracks[index], &label).on_hover_text(name);
                             });
                             if index % 2 == 1 {
                                 ui.end_row();
@@ -2285,26 +2369,45 @@ impl DawApp {
                             }
                         });
                     columns[2].label(RichText::new("Sample rate").size(11.5).color(paper::INK_SOFT));
+                    let rate_choice = |rate: Option<u32>| rate.map_or_else(|| format!("{} (project)", rate_text(project_rate)), rate_text);
                     egui::ComboBox::from_id_salt("export-rate")
-                        .selected_text(rate_text(choices.rate))
+                        .selected_text(rate_choice(choices.rate))
                         .width(columns[2].available_width())
                         .show_ui(&mut columns[2], |ui| {
+                            ui.selectable_value(&mut choices.rate, None, rate_choice(None));
                             for rate in [44_100, 48_000, 96_000] {
-                                ui.selectable_value(&mut choices.rate, rate, rate_text(rate));
+                                ui.selectable_value(&mut choices.rate, Some(rate), rate_choice(Some(rate)));
                             }
                         });
                 });
                 ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Name:").size(11.5).color(paper::INK_SOFT));
+                    ui.add(egui::TextEdit::singleline(&mut choices.name).hint_text(&project).desired_width(240.0))
+                        .on_hover_text("The start of the file names; empty uses the project's name");
+                });
+                ui.add_space(4.0);
+                let base = choices.base(&project);
                 let example = if choices.stems {
-                    daw388_project::export::export_name(&project, Some(0), Some(&names[0]))
+                    daw388_project::export::export_name(&base, Some(0), Some(&names[0]))
                 } else {
-                    daw388_project::export::export_name(&project, None, None)
+                    daw388_project::export::export_name(&base, None, None)
                 };
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("File name:").size(11.5).color(paper::INK_SOFT));
                     ui.label(RichText::new(format!("{example}.{}", choices.format.extension())).monospace().size(12.0));
                 });
                 note(ui, &format!("Folder: {place}"));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(self.project_dir.is_some(), |ui| {
+                        choose = plain_button(ui, "Choose folder...").clicked();
+                    });
+                    if let Some(dir) = &last_export {
+                        let label = if cfg!(target_os = "windows") { "Show in Explorer" } else { "Show in Finder" };
+                        reveal = plain_button(ui, label).on_hover_text(dir.display().to_string()).clicked();
+                    }
+                });
             });
             ui.add_space(10.0);
             if let Some(progress) = &running {
@@ -2331,6 +2434,13 @@ impl DawApp {
         let open = open && self.show_export;
         self.show_export = open;
         self.export = choices;
+        if choose && let Some(dir) = self.platform.pick_folder("Export to") {
+            self.export_dir = Some(dir);
+            self.mark_dirty();
+        }
+        if reveal && let Some(dir) = self.last_export_dir.clone() {
+            self.platform.reveal(&dir);
+        }
         if start {
             self.start_export();
         }
@@ -3057,6 +3167,10 @@ mod tests {
         fn pick_project_location(&mut self, _: &str) -> Option<PathBuf> {
             self.save_location.clone()
         }
+        fn pick_folder(&mut self, _: &str) -> Option<PathBuf> {
+            None
+        }
+        fn reveal(&mut self, _: &Path) {}
         fn spawn(&mut self, job: Box<dyn FnOnce() + Send>) {
             // Run at once, so the tests only need to poll.
             job();
@@ -3340,6 +3454,35 @@ mod tests {
         assert!(app.status.contains("2 file(s)"), "{}", app.status);
         assert!(dir.join("export").join("Demo_mix.wav").exists());
         assert!(dir.join("export").join("Demo_01_01_Kick.wav").exists());
+
+        app.export.name = " Final take ".into();
+        app.start_export();
+        app.poll_export();
+        assert!(dir.join("export").join("Final take_mix.wav").exists(), "a name of its own");
+        assert!(dir.join("export").join("Final take_01_01_Kick.wav").exists());
+        assert_eq!(app.project_rate(), 44_100, "the rate of the project's audio, not the device's 48 kHz");
+        let job = app.export_job().unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(job.rate, 44_100);
+        app.export.rate = Some(96_000);
+        assert_eq!(app.export_job().map(|j| j.rate).unwrap_or_default(), 96_000, "a chosen rate wins");
+        let bounces = root.path().join("Bounces");
+        std::fs::create_dir_all(&bounces).unwrap_or_else(|e| panic!("{e}"));
+        app.export_dir = Some(bounces.clone());
+        app.start_export();
+        app.poll_export();
+        assert!(bounces.join("Final take_mix.wav").exists(), "a chosen folder");
+        assert_eq!(app.last_export_dir.as_ref(), Some(&bounces), "for Show in Finder");
+        assert_eq!(app.export_folder(&root.path().join("Song.daw388")), bounces);
+        app.export_dir = Some(root.path().join("gone"));
+        assert_eq!(
+            app.export_folder(&root.path().join("Song.daw388")),
+            root.path().join("Song export"),
+            "a missing folder: next to the package"
+        );
+        app.new_project();
+        assert!(app.export.name.is_empty(), "a new project starts from its own name");
+        assert!(app.export_dir.is_none() && app.last_export_dir.is_none());
+        assert_eq!(app.export.rate, None);
     }
 
     #[test]
@@ -3978,6 +4121,24 @@ mod tests {
         app.select_region(0, 0, false);
         app.undo();
         assert!(app.editor.selection.is_empty());
+    }
+
+    #[test]
+    fn inputs_the_interface_lacks_are_spread_over_the_ones_it_has() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        assert_eq!(app.tracks[7].input, Some(8), "no input device: nothing to fit");
+        if let Some(output) = &mut app.output {
+            output.input = Some(InputInfo { device: "Duo".into(), channels: 2 });
+        }
+        app.tracks[1].input = None;
+        let moved = app.fit_inputs();
+        let inputs: Vec<Option<u16>> = app.tracks.iter().map(|t| t.input).collect();
+        assert_eq!(inputs, vec![Some(1), None, Some(1), Some(2), Some(1), Some(2), Some(1), Some(2)]);
+        assert!(moved.is_some_and(|m| m.contains("3, 4, 5, 6, 7, 8")));
+        assert!(app.fit_inputs().is_none(), "nothing left to move");
+        app.new_project();
+        assert_eq!(app.tracks[2].input, Some(1), "a new project fits too");
     }
 
     #[test]

@@ -45,6 +45,9 @@ pub struct ProjectFile {
     pub tape: TapeSettings,
     #[serde(default)]
     pub editor: EditorSettings,
+    /// Where exports go when chosen; missing: [`default_export_dir`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export_dir: Option<PathBuf>,
     #[serde(default)]
     pub tracks: Vec<TrackEntry>,
 }
@@ -461,7 +464,7 @@ impl Default for MetronomeSettings {
 }
 
 /// Project-wide settings saved with the tracks.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProjectSettings {
     pub master_db: f32,
     pub meter_post: bool,
@@ -470,6 +473,8 @@ pub struct ProjectSettings {
     pub mixer: MixerEntry,
     pub tape: TapeSettings,
     pub editor: EditorSettings,
+    /// Where exports go, when chosen in the Export window.
+    pub export_dir: Option<PathBuf>,
 }
 
 /// What the UI hands over for one track when saving.
@@ -558,6 +563,15 @@ pub fn project_name(dir: &Path) -> String {
 pub const PROJECT_EXTENSION: &str = "daw388";
 
 /// Whether `dir` is a project package (ends in `.daw388`).
+/// Where exports go unless another folder was chosen: next to a package (inside it, the Finder
+/// would hide them in the document), in `export/` of an older project folder.
+pub fn default_export_dir(dir: &Path) -> PathBuf {
+    match dir.parent() {
+        Some(parent) if is_package(dir) => parent.join(format!("{} export", project_name(dir))),
+        _ => dir.join("export"),
+    }
+}
+
 pub fn is_package(dir: &Path) -> bool {
     dir.extension().is_some_and(|e| e.eq_ignore_ascii_case(PROJECT_EXTENSION))
 }
@@ -697,6 +711,7 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
         mixer: settings.mixer,
         tape: settings.tape,
         editor: settings.editor,
+        export_dir: settings.export_dir.clone(),
         tracks: entries,
     };
     let path = dir.join(PROJECT_FILE);
@@ -850,6 +865,13 @@ mod tests {
     }
 
     #[test]
+    fn exports_go_next_to_a_package_and_into_an_old_folder() {
+        let root = Path::new("/Music");
+        assert_eq!(default_export_dir(&root.join("Fume Fume.daw388")), root.join("Fume Fume export"));
+        assert_eq!(default_export_dir(&root.join("Old song")), root.join("Old song").join("export"));
+    }
+
+    #[test]
     fn a_channel_without_eq_opens_flat() {
         let channel: ChannelEntry = serde_json::from_str(r#"{"source":"line","trim_db":3.0}"#).unwrap_or_default();
         assert_eq!(channel.trim_db, 3.0);
@@ -882,6 +904,7 @@ mod tests {
                 },
                 metronome: MetronomeSettings { click: true, always: true, bpm: 96.5, beats: 6, unit: 8, volume_db: -12.0, count_in: 2 },
                 editor: EditorSettings { open: true, height: 400.0, zoom: Some(80.0), snap: false },
+                export_dir: Some(root.path().join("Bounces")),
                 tape: TapeSettings {
                     mode: TapeMode::Machine,
                     speed: SpeedEntry::Ips15,
@@ -989,6 +1012,7 @@ mod tests {
             }
         );
         assert_eq!(opened.file.editor, EditorSettings { open: true, height: 400.0, zoom: Some(80.0), snap: false });
+        assert_eq!(opened.file.export_dir, Some(root.path().join("Bounces")));
         assert_eq!(opened.file.version, FORMAT_VERSION, "a format 3 file is not upgraded again");
         assert!(crate::load_wav(&opened.region_path(&opened.file.tracks[0].regions[0])).is_ok());
         assert_eq!(project_name(&dir), "Mijn liedje");
