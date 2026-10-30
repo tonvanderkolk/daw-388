@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.27.0
+Versie: 0.28.0
 Laatst bijgewerkt: 30-10-2026
 
 ## Doel
@@ -129,6 +129,7 @@ Twee standen, per project, met de schakelaar Eenvoudig | 388 in de bovenbalk:
 
 - **Eenvoudig** (standaard voor een nieuw project): per spoor één strook met ingang (MIC of LINE), TRIM, EQ, PAN, REC, MUTE en fader. Elk kanaal staat op AUTO met DIRECT en L-R; de PGM-bussen, de MONITOR-sectie en MON zijn verborgen.
 - **388**: de volledige routering hieronder. Van Eenvoudig naar 388 verandert niets aan het geluid. Van 388 naar Eenvoudig vraagt de app eerst als de 388-routering daarbij verdwijnt; fader, PAN, MUTE, EQ, TRIM en ingang blijven, RMX wordt LINE.
+- **Compacte console** (View, Compact console): laat EQ en AUX in de strips weg, de effecten (EFFECT RTN, PLATE, ECHO), de AUX- en EFF-MASTER en de meterknoppen L-R en AUX-EFF. Ze blijven werken, je ziet ze alleen niet. Zo past de console op een laag scherm (1920 bij 1080) op een leesbare grootte. App-voorkeur `compact_console`; ontbreekt die, dan kiest de app bij het starten compact als de volle console kleiner dan 85% (`COMPACT_BELOW`) zou worden.
 - **SOLO** per spoor (een DAW-gewoonte, de 388 heeft hem niet): zolang er een spoor gesoloed is, hoor je alleen de gesoloode sporen, via hun L-R-kanaal en hun MONITOR-rij. Bussen en opnames merken er niets van. SOLO wordt niet in het project bewaard en vloeit kort over, zodat er geen tik is.
 - **AUTO** (een afwijking van de 388, zoals DIRECT): het kanaal speelt de band, en de ingang zodra zijn spoor de ingang hoort (op REC, met INSERT pas vanaf het inprikpunt). De ingang gaat door TRIM en de voorversterker, dan naar DIRECT, dan door de EQ; de band gaat alleen door de EQ. De opname krijgt dus geen EQ, en bij het afspelen zit hij er één keer op. Een AUTO-kanaal zonder ingang speelt de band en neemt stilte op.
 

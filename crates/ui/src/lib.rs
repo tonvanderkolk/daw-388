@@ -311,6 +311,10 @@ pub struct DawApp {
     fit_in: u8,
     /// The zoom to keep when the window is fitted after a switch (0: take it from the height).
     fit_zoom: f32,
+    /// The compact console: no EQ, sends and effects, so it fits a low screen at a readable size.
+    compact: bool,
+    /// Whether to choose the compact console from the screen once the console is measured.
+    compact_pending: bool,
     /// Where the blanking plate in the EFFECT RTN column starts (Simple), for the mixer view to draw.
     return_plate: Option<egui::Rect>,
     status: String,
@@ -619,6 +623,7 @@ impl DawApp {
         let (takes_tx, takes_rx) = channel();
         let (composed_tx, composed_rx) = channel();
         let input_devices = platform.input_devices();
+        let compact = preferences.compact_console;
         let mut app = Self {
             platform,
             engine: None,
@@ -638,6 +643,8 @@ impl DawApp {
             fitted_for: None,
             fit_in: 0,
             fit_zoom: 0.0,
+            compact: compact == Some(true),
+            compact_pending: compact.is_none(),
             return_plate: None,
             status: String::new(),
             project_dir: None,
@@ -1370,6 +1377,42 @@ impl DawApp {
         });
     }
 
+    fn view_menu(&mut self, ui: &mut Ui) {
+        ui.menu_button("View", |ui| {
+            let mut compact = self.compact;
+            let tip = "Leaves out EQ, AUX, the effects and the meter keys, so the console fits a low screen at a readable size. \
+                       They keep working.";
+            if ui.checkbox(&mut compact, "Compact console").on_hover_text(tip).clicked() {
+                self.set_compact(compact);
+                self.preferences.compact_console = Some(compact);
+                self.store_preferences();
+            }
+        });
+    }
+
+    /// Switch the compact console on or off; the window is fitted to it again.
+    fn set_compact(&mut self, on: bool) {
+        self.compact = on;
+        self.compact_pending = false;
+        self.fitted_for = None;
+    }
+
+    /// At startup, without a choice of the user: the compact console when the full one would
+    /// be smaller than [`COMPACT_BELOW`] on this screen.
+    fn choose_compact(&mut self, ctx: &egui::Context) {
+        if !self.compact_pending || self.editor.settings.open || self.needed.y <= 0.0 {
+            return;
+        }
+        self.compact_pending = false;
+        let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) else { return };
+        // At zoom 1, minus the menu and title bars (as in `fit_window`).
+        let screen = monitor * ctx.zoom_factor() - egui::vec2(0.0, 90.0);
+        if (screen.x / self.needed.x).min(screen.y / self.needed.y) < COMPACT_BELOW {
+            self.set_compact(true);
+            self.status = "Compact console: this screen is low. View, Compact console shows EQ and the effects again".to_string();
+        }
+    }
+
     fn file_menu(&mut self, ui: &mut Ui) {
         let command = |ui: &Ui, key| ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key));
         ui.menu_button("File", |ui| {
@@ -1795,6 +1838,7 @@ impl DawApp {
                 widgets.hovered.fg_stroke = Stroke::new(1.0, palette::CREAM);
                 self.file_menu(ui);
                 self.edit_menu(ui);
+                self.view_menu(ui);
                 self.help_menu(ui);
             });
             let name = format!("{}{}", self.project_name(), if self.dirty { " (modified)" } else { "" });
@@ -2704,6 +2748,8 @@ fn level_bar(ui: &mut Ui, db: f32) {
     painter.rect_filled(egui::Rect::from_min_size(rect.min, vec2(rect.width() * level, rect.height())), 1.0, colour);
 }
 
+/// Below this size the full console is too small to read: the compact console is chosen at startup.
+const COMPACT_BELOW: f32 = 0.85;
 /// Fader travel in points; long enough for fine work around 0 dB.
 const FADER_HEIGHT: f32 = 260.0;
 /// Room above and below the travel for the cap.
@@ -2859,6 +2905,7 @@ impl DawApp {
                 ctx.set_zoom_factor(zoom);
             }
         }
+        self.choose_compact(&ctx);
         self.fit_window(&ctx, window);
         self.watch_output();
         self.poll_loads();
@@ -2995,7 +3042,7 @@ impl DawApp {
                                 console = egui::ScrollArea::both()
                                     .show(ui, |ui| {
                                         let top = ui.cursor().min.y;
-                                        self.meter_bridge(ui);
+                                        let bridge = self.meter_bridge(ui);
                                         ui.add_space(12.0);
                                         // The bottom of what the sections hold: the separators reach down to the
                                         // bottom of the panel and would make the console look as tall as the window.
@@ -3010,8 +3057,11 @@ impl DawApp {
                                                 ui.separator();
                                             }
                                             // The master section in two columns, as on the 388.
-                                            bottom = bottom.max(ui.scope(|ui| self.return_monitor_column(ui)).response.rect.bottom());
-                                            ui.separator();
+                                            // Compact and SIMPLE, the column would hold nothing: it goes.
+                                            if !(self.compact && self.mixer.mode == Routing::Simple) {
+                                                bottom = bottom.max(ui.scope(|ui| self.return_monitor_column(ui)).response.rect.bottom());
+                                                ui.separator();
+                                            }
                                             bottom = bottom.max(ui.scope(|ui| self.master_column(ui)).response.rect.bottom());
                                             ui.separator();
                                             ui.add_space(16.0);
@@ -3042,7 +3092,9 @@ impl DawApp {
                                         });
                                         // The width of the strips and sections, not of the bridge: the bridge
                                         // takes its width from this, so it must not feed back into it.
-                                        egui::vec2(row.response.rect.width(), bottom - top)
+                                        // At least as wide as the bridge needs, so its name plate stays in view
+                                        // when the row is narrow (compact SIMPLE).
+                                        egui::vec2(row.response.rect.width().max(bridge), bottom - top)
                                     })
                                     .inner;
                             });

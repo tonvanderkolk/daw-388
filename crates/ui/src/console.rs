@@ -23,20 +23,39 @@ pub(crate) const BAND_MONITOR: f32 = 302.0;
 pub(crate) const BAND_ROUTING: f32 = 48.0;
 pub(crate) const BAND_MASTER: f32 = 66.0;
 pub(crate) const BAND_SWITCHES: f32 = 110.0;
+/// The compact MASTER column on the lines of the strips (SIMPLE): ROUTING beside the LOAD band,
+/// the switches without L-R and AUX-EFF beside INPUT, LISTEN beside PAN and the keys.
+pub(crate) const BAND_ROUTING_COMPACT: f32 = BAND_TRACK;
+pub(crate) const BAND_SWITCHES_COMPACT: f32 = BAND_INPUT;
+pub(crate) const BAND_LISTEN_COMPACT: f32 = BAND_PAN + BAND_KEYS;
 pub(crate) const BAND_LISTEN: f32 = 100.0;
 /// The height of a key with its label above it.
 const KEY_SMALL_H: f32 = 33.0;
 const KEY_NARROW_H: f32 = 27.0;
 
-/// Where the faders start below the top of the strips: the bands above them, ASSIGN only in the 388 routing.
-pub(crate) fn fader_top(classic: bool) -> f32 {
+/// Where the faders start below the top of the strips: the bands above them, ASSIGN only in the
+/// 388 routing, EQ and AUX only in the full console.
+pub(crate) fn fader_top(classic: bool, compact: bool) -> f32 {
     let assign = if classic { BAND_ASSIGN } else { 0.0 };
-    BAND_TRACK + BAND_INPUT + BAND_EQ + BAND_AUX + assign + BAND_PAN + BAND_KEYS
+    let full = if compact { 0.0 } else { BAND_EQ + BAND_AUX };
+    BAND_TRACK + BAND_INPUT + full + assign + BAND_PAN + BAND_KEYS
 }
 
-/// The bands of the EFFECT RTN column, which must fit above the faders.
-pub(crate) fn return_bands(classic: bool) -> f32 {
-    BAND_RTN + BAND_PLATE + BAND_ECHO + if classic { BAND_MONITOR } else { 0.0 }
+/// The bands of the EFFECT RTN column, which must fit above the faders: the compact console
+/// leaves out the effects, so only MONITOR is left (388).
+pub(crate) fn return_bands(classic: bool, compact: bool) -> f32 {
+    let effects = if compact { 0.0 } else { BAND_RTN + BAND_PLATE + BAND_ECHO };
+    effects + if classic { BAND_MONITOR } else { 0.0 }
+}
+
+/// The bands of the MASTER column above its fader: the compact console has no AUX and EFF
+/// masters and no meter keys.
+pub(crate) fn master_bands(compact: bool) -> f32 {
+    if compact {
+        BAND_ROUTING_COMPACT + BAND_SWITCHES_COMPACT + BAND_LISTEN_COMPACT
+    } else {
+        BAND_ROUTING + BAND_MASTER + BAND_SWITCHES + BAND_LISTEN
+    }
 }
 
 /// Lay out `add` in a box of `size` whose top centre is at (`x`, `top`): the grid of the console.
@@ -84,6 +103,7 @@ impl DawApp {
         let input_channels = self.output.as_ref().and_then(|o| o.input.as_ref()).map_or(0, |i| i.channels);
         // The simple mode shows one strip per track: input, EQ, PAN, REC and fader.
         let simple = self.mixer.mode == Routing::Simple;
+        let compact = self.compact;
         // Asked before `track` borrows the tracks.
         let (loading, missing) = (self.track_loading(index), self.track_missing(index));
         // Renaming under the fader shares the state with SPOREN: one name at a time.
@@ -163,55 +183,59 @@ impl DawApp {
                 });
                 changed |= trim.changed() || trim.double_clicked();
             });
-            // EQ: HIGH, MID and LOW top to bottom on the centre line, as on the 388.
-            section(ui, "EQ", BAND_EQ, |ui| {
-                let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
-                for (row, band) in [2, 1, 0].into_iter().enumerate() {
-                    let y = top + 19.0 + 38.0 * row as f32;
-                    let entry = match band {
-                        0 => &mut track.channel.eq.low,
-                        1 => &mut track.channel.eq.mid,
-                        _ => &mut track.channel.eq.high,
-                    };
-                    tag(ui, pos2(cx - 22.0, y), Align2::RIGHT_CENTER, EQ_NAMES[band]);
-                    let response =
-                        place(ui, cx, y - 17.0, vec2(34.0, 34.0), |ui| eq_knob(ui, entry, &EQ_RANGES[band], EQ_DEFAULTS[band].freq, 34.0));
-                    let tip = format!(
-                        "{} {} {:+.1} dB. Centre: gain, ring: frequency. Double-click resets.",
-                        EQ_NAMES[band],
-                        format_freq(entry.freq_hz),
-                        entry.gain_db
-                    );
-                    changed |= response.on_hover_text(tip).changed();
-                }
-            });
-            // The sends: AUX (PRE or POST) and EFF, in both modes.
-            section(ui, "AUX", BAND_AUX, |ui| {
-                let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
-                let channel = &mut track.channel;
-                let tip = "PRE: the AUX send does not depend on EQ, fader and MUTE (a headphone mix)";
-                let pre = place(ui, cx - 36.0, top, vec2(34.0, KEY_NARROW_H), |ui| {
-                    KeyCap::new("PRE", keys::NARROW).colour(KeyColour::Green).lamp(channel.aux_pre, palette::LED_GREEN).show(ui)
+            // The compact console leaves out EQ and the sends: they keep working, unseen.
+            if !compact {
+                // EQ: HIGH, MID and LOW top to bottom on the centre line, as on the 388.
+                section(ui, "EQ", BAND_EQ, |ui| {
+                    let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
+                    for (row, band) in [2, 1, 0].into_iter().enumerate() {
+                        let y = top + 19.0 + 38.0 * row as f32;
+                        let entry = match band {
+                            0 => &mut track.channel.eq.low,
+                            1 => &mut track.channel.eq.mid,
+                            _ => &mut track.channel.eq.high,
+                        };
+                        tag(ui, pos2(cx - 22.0, y), Align2::RIGHT_CENTER, EQ_NAMES[band]);
+                        let response = place(ui, cx, y - 17.0, vec2(34.0, 34.0), |ui| {
+                            eq_knob(ui, entry, &EQ_RANGES[band], EQ_DEFAULTS[band].freq, 34.0)
+                        });
+                        let tip = format!(
+                            "{} {} {:+.1} dB. Centre: gain, ring: frequency. Double-click resets.",
+                            EQ_NAMES[band],
+                            format_freq(entry.freq_hz),
+                            entry.gain_db
+                        );
+                        changed |= response.on_hover_text(tip).changed();
+                    }
                 });
-                if pre.on_hover_text(tip).clicked() {
-                    channel.aux_pre = !channel.aux_pre;
-                    changed = true;
-                }
-                let aux = place(ui, cx, top, vec2(30.0, 30.0), |ui| {
-                    knob(ui, &mut channel.aux_db, MIN_DB..=MAX_DB, MIN_DB, palette::GREEN, 30.0, true)
-                })
-                .on_hover_text(format!(
-                    "AUX {}: PRE before EQ and fader, POST after the fader (double-click: off)",
-                    format_db(channel.aux_db)
-                ));
-                changed |= aux.changed() || aux.double_clicked();
-                tag(ui, pos2(cx - 22.0, top + 51.0), Align2::RIGHT_CENTER, "EFF");
-                let eff = place(ui, cx, top + 36.0, vec2(30.0, 30.0), |ui| {
-                    knob(ui, &mut channel.eff_db, MIN_DB..=MAX_DB, MIN_DB, palette::BLUE, 30.0, true)
-                })
-                .on_hover_text(format!("EFF {}: after the fader, to the echo (double-click: off)", format_db(channel.eff_db)));
-                changed |= eff.changed() || eff.double_clicked();
-            });
+                // The sends: AUX (PRE or POST) and EFF, in both modes.
+                section(ui, "AUX", BAND_AUX, |ui| {
+                    let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
+                    let channel = &mut track.channel;
+                    let tip = "PRE: the AUX send does not depend on EQ, fader and MUTE (a headphone mix)";
+                    let pre = place(ui, cx - 36.0, top, vec2(34.0, KEY_NARROW_H), |ui| {
+                        KeyCap::new("PRE", keys::NARROW).colour(KeyColour::Green).lamp(channel.aux_pre, palette::LED_GREEN).show(ui)
+                    });
+                    if pre.on_hover_text(tip).clicked() {
+                        channel.aux_pre = !channel.aux_pre;
+                        changed = true;
+                    }
+                    let aux = place(ui, cx, top, vec2(30.0, 30.0), |ui| {
+                        knob(ui, &mut channel.aux_db, MIN_DB..=MAX_DB, MIN_DB, palette::GREEN, 30.0, true)
+                    })
+                    .on_hover_text(format!(
+                        "AUX {}: PRE before EQ and fader, POST after the fader (double-click: off)",
+                        format_db(channel.aux_db)
+                    ));
+                    changed |= aux.changed() || aux.double_clicked();
+                    tag(ui, pos2(cx - 22.0, top + 51.0), Align2::RIGHT_CENTER, "EFF");
+                    let eff = place(ui, cx, top + 36.0, vec2(30.0, 30.0), |ui| {
+                        knob(ui, &mut channel.eff_db, MIN_DB..=MAX_DB, MIN_DB, palette::BLUE, 30.0, true)
+                    })
+                    .on_hover_text(format!("EFF {}: after the fader, to the echo (double-click: off)", format_db(channel.eff_db)));
+                    changed |= eff.changed() || eff.double_clicked();
+                });
+            }
             // ASSIGN to the PGM buses and to L-R: the keys in one column, their numbers in front.
             if !simple {
                 section(ui, "ASSIGN", BAND_ASSIGN, |ui| {
@@ -377,105 +401,109 @@ impl DawApp {
     /// MONITOR section with the PGM MASTERS under it, the faders on the line of the channel faders.
     pub(crate) fn return_monitor_column(&mut self, ui: &mut Ui) {
         let classic = self.mixer.mode == Routing::Classic;
+        let compact = self.compact;
         let mut mixer_changed = false;
         let mut monitors = Vec::new();
         let quarter = 60.0 / self.metronome.bpm.clamp(20.0, 400.0) as f32;
         column(ui, 196.0, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            section(ui, "EFFECT RTN", BAND_RTN, |ui| {
-                let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
-                tag(ui, pos2(cx - 21.0, top - 8.0), Align2::CENTER_CENTER, "GAIN");
-                tag(ui, pos2(cx + 21.0, top - 8.0), Align2::CENTER_CENTER, "PAN");
-                for (index, name) in ["plate", "echo"].into_iter().enumerate() {
-                    let y = top + 16.0 + 34.0 * index as f32;
-                    tag(ui, pos2(cx - 56.0, y), Align2::CENTER_CENTER, &format!("{}", index + 1));
-                    let rtn = &mut self.mixer.effects.rtn[index];
-                    let tip = format!("RTN {} ({name}) {} (double-click: 0 dB)", index + 1, format_db(rtn.gain_db));
-                    let gain = place(ui, cx - 21.0, y - 15.0, vec2(30.0, 30.0), |ui| {
-                        knob(ui, &mut rtn.gain_db, MIN_DB..=MAX_DB, 0.0, palette::BLUE, 30.0, true)
-                    });
-                    let gain = gain.on_hover_text(tip);
-                    mixer_changed |= gain.changed() || gain.double_clicked();
-                    let tip = format!("PAN RTN {} {:+.2} (double-click: centre)", index + 1, rtn.pan);
-                    let pan = place(ui, cx + 21.0, y - 15.0, vec2(30.0, 30.0), |ui| {
-                        knob(ui, &mut rtn.pan, -1.0..=1.0, 0.0, palette::CREAM, 30.0, true)
-                    });
-                    let pan = pan.on_hover_text(tip);
-                    mixer_changed |= pan.changed() || pan.double_clicked();
-                }
-            });
-            // Three knobs side by side on the same three columns for the plate and the echo.
-            let turn = |ui: &mut Ui,
-                        x: f32,
-                        top: f32,
-                        value: &mut f32,
-                        range: std::ops::RangeInclusive<f32>,
-                        default: f32,
-                        colour,
-                        enabled,
-                        tip: String| {
-                let response =
-                    place(ui, x, top, vec2(30.0, 30.0), |ui| knob(ui, value, range, default, colour, 30.0, enabled)).on_hover_text(tip);
-                response.changed() || response.double_clicked()
-            };
-            let effects = &mut self.mixer.effects;
-            section(ui, "PLATE (AUX)", BAND_PLATE, |ui| {
-                let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
-                let plate = &mut effects.plate;
-                let tip = format!("DECAY {:.1} s: how long the reverb lasts (double-click: 2 s)", plate.decay_s);
-                mixer_changed |= turn(ui, cx - 48.0, top, &mut plate.decay_s, 0.5..=6.0, 2.0, palette::GREEN, true, tip);
-                let tip = format!("PRE-DELAY {:.0} ms: wait before the reverb starts (double-click: 20 ms)", plate.predelay_ms);
-                mixer_changed |= turn(ui, cx, top, &mut plate.predelay_ms, 0.0..=100.0, 20.0, palette::GREEN, true, tip);
-                let tip = format!("TONE {:.0}%: from dark to bright (double-click: centre)", plate.tone * 100.0);
-                mixer_changed |= turn(ui, cx + 48.0, top, &mut plate.tone, 0.0..=1.0, 0.5, palette::GREEN, true, tip);
-                for (x, name) in [(cx - 48.0, "DECAY"), (cx, "PRE"), (cx + 48.0, "TONE")] {
-                    tag(ui, pos2(x, top + 38.0), Align2::CENTER_CENTER, name);
-                }
-            });
-            section(ui, "ECHO (EFF)", BAND_ECHO, |ui| {
-                let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
-                let echo = &mut effects.echo;
-                let synced = echo.sync != EchoSyncEntry::Off;
-                let sync_ms = 1000.0
-                    * match echo.sync {
-                        EchoSyncEntry::Off => echo.time_ms / 1000.0,
-                        EchoSyncEntry::Quarter => quarter,
-                        EchoSyncEntry::Eighth => quarter / 2.0,
-                        EchoSyncEntry::DottedEighth => quarter * 0.75,
-                    };
-                let tip = if synced {
-                    format!("TIME {:.0} ms, follows the tempo (choose FREE to set it yourself)", sync_ms.min(2000.0))
-                } else {
-                    format!("TIME {:.0} ms (double-click: 300 ms)", echo.time_ms)
-                };
-                mixer_changed |= turn(ui, cx - 48.0, top, &mut echo.time_ms, 40.0..=800.0, 300.0, palette::BLUE, !synced, tip);
-                let tip = format!("FEEDBACK {:.0}%: how many repeats (double-click: 35%)", echo.feedback * 100.0);
-                mixer_changed |= turn(ui, cx, top, &mut echo.feedback, 0.0..=0.9, 0.35, palette::BLUE, true, tip);
-                let tip = format!("TONE {:.0}%: how dark the repeats get (double-click: centre)", echo.tone * 100.0);
-                mixer_changed |= turn(ui, cx + 48.0, top, &mut echo.tone, 0.0..=1.0, 0.5, palette::BLUE, true, tip);
-                for (x, name) in [(cx - 48.0, "TIME"), (cx, "FEEDB."), (cx + 48.0, "TONE")] {
-                    tag(ui, pos2(x, top + 38.0), Align2::CENTER_CENTER, name);
-                }
-                for (column, (sync, label, tip)) in [
-                    (EchoSyncEntry::Off, "FREE", "TIME in milliseconds"),
-                    (EchoSyncEntry::Quarter, "1/4", "A quarter note of the metronome tempo"),
-                    (EchoSyncEntry::Eighth, "1/8", "An eighth note of the metronome tempo"),
-                    (EchoSyncEntry::DottedEighth, "1/8.", "A dotted eighth of the metronome tempo"),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let on = echo.sync == sync;
-                    let x = cx - 63.0 + 42.0 * column as f32;
-                    let key = place(ui, x, top + 48.0, vec2(34.0, KEY_NARROW_H), |ui| {
-                        KeyCap::new(label, keys::NARROW).lamp(on, palette::LED_GREEN).show(ui)
-                    });
-                    if key.on_hover_text(tip).clicked() && !on {
-                        echo.sync = sync;
-                        mixer_changed = true;
+            // The compact console leaves out the effects: RTN, the plate and the echo.
+            if !compact {
+                section(ui, "EFFECT RTN", BAND_RTN, |ui| {
+                    let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
+                    tag(ui, pos2(cx - 21.0, top - 8.0), Align2::CENTER_CENTER, "GAIN");
+                    tag(ui, pos2(cx + 21.0, top - 8.0), Align2::CENTER_CENTER, "PAN");
+                    for (index, name) in ["plate", "echo"].into_iter().enumerate() {
+                        let y = top + 16.0 + 34.0 * index as f32;
+                        tag(ui, pos2(cx - 56.0, y), Align2::CENTER_CENTER, &format!("{}", index + 1));
+                        let rtn = &mut self.mixer.effects.rtn[index];
+                        let tip = format!("RTN {} ({name}) {} (double-click: 0 dB)", index + 1, format_db(rtn.gain_db));
+                        let gain = place(ui, cx - 21.0, y - 15.0, vec2(30.0, 30.0), |ui| {
+                            knob(ui, &mut rtn.gain_db, MIN_DB..=MAX_DB, 0.0, palette::BLUE, 30.0, true)
+                        });
+                        let gain = gain.on_hover_text(tip);
+                        mixer_changed |= gain.changed() || gain.double_clicked();
+                        let tip = format!("PAN RTN {} {:+.2} (double-click: centre)", index + 1, rtn.pan);
+                        let pan = place(ui, cx + 21.0, y - 15.0, vec2(30.0, 30.0), |ui| {
+                            knob(ui, &mut rtn.pan, -1.0..=1.0, 0.0, palette::CREAM, 30.0, true)
+                        });
+                        let pan = pan.on_hover_text(tip);
+                        mixer_changed |= pan.changed() || pan.double_clicked();
                     }
-                }
-            });
+                });
+                // Three knobs side by side on the same three columns for the plate and the echo.
+                let turn = |ui: &mut Ui,
+                            x: f32,
+                            top: f32,
+                            value: &mut f32,
+                            range: std::ops::RangeInclusive<f32>,
+                            default: f32,
+                            colour,
+                            enabled,
+                            tip: String| {
+                    let response =
+                        place(ui, x, top, vec2(30.0, 30.0), |ui| knob(ui, value, range, default, colour, 30.0, enabled)).on_hover_text(tip);
+                    response.changed() || response.double_clicked()
+                };
+                let effects = &mut self.mixer.effects;
+                section(ui, "PLATE (AUX)", BAND_PLATE, |ui| {
+                    let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
+                    let plate = &mut effects.plate;
+                    let tip = format!("DECAY {:.1} s: how long the reverb lasts (double-click: 2 s)", plate.decay_s);
+                    mixer_changed |= turn(ui, cx - 48.0, top, &mut plate.decay_s, 0.5..=6.0, 2.0, palette::GREEN, true, tip);
+                    let tip = format!("PRE-DELAY {:.0} ms: wait before the reverb starts (double-click: 20 ms)", plate.predelay_ms);
+                    mixer_changed |= turn(ui, cx, top, &mut plate.predelay_ms, 0.0..=100.0, 20.0, palette::GREEN, true, tip);
+                    let tip = format!("TONE {:.0}%: from dark to bright (double-click: centre)", plate.tone * 100.0);
+                    mixer_changed |= turn(ui, cx + 48.0, top, &mut plate.tone, 0.0..=1.0, 0.5, palette::GREEN, true, tip);
+                    for (x, name) in [(cx - 48.0, "DECAY"), (cx, "PRE"), (cx + 48.0, "TONE")] {
+                        tag(ui, pos2(x, top + 38.0), Align2::CENTER_CENTER, name);
+                    }
+                });
+                section(ui, "ECHO (EFF)", BAND_ECHO, |ui| {
+                    let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
+                    let echo = &mut effects.echo;
+                    let synced = echo.sync != EchoSyncEntry::Off;
+                    let sync_ms = 1000.0
+                        * match echo.sync {
+                            EchoSyncEntry::Off => echo.time_ms / 1000.0,
+                            EchoSyncEntry::Quarter => quarter,
+                            EchoSyncEntry::Eighth => quarter / 2.0,
+                            EchoSyncEntry::DottedEighth => quarter * 0.75,
+                        };
+                    let tip = if synced {
+                        format!("TIME {:.0} ms, follows the tempo (choose FREE to set it yourself)", sync_ms.min(2000.0))
+                    } else {
+                        format!("TIME {:.0} ms (double-click: 300 ms)", echo.time_ms)
+                    };
+                    mixer_changed |= turn(ui, cx - 48.0, top, &mut echo.time_ms, 40.0..=800.0, 300.0, palette::BLUE, !synced, tip);
+                    let tip = format!("FEEDBACK {:.0}%: how many repeats (double-click: 35%)", echo.feedback * 100.0);
+                    mixer_changed |= turn(ui, cx, top, &mut echo.feedback, 0.0..=0.9, 0.35, palette::BLUE, true, tip);
+                    let tip = format!("TONE {:.0}%: how dark the repeats get (double-click: centre)", echo.tone * 100.0);
+                    mixer_changed |= turn(ui, cx + 48.0, top, &mut echo.tone, 0.0..=1.0, 0.5, palette::BLUE, true, tip);
+                    for (x, name) in [(cx - 48.0, "TIME"), (cx, "FEEDB."), (cx + 48.0, "TONE")] {
+                        tag(ui, pos2(x, top + 38.0), Align2::CENTER_CENTER, name);
+                    }
+                    for (column, (sync, label, tip)) in [
+                        (EchoSyncEntry::Off, "FREE", "TIME in milliseconds"),
+                        (EchoSyncEntry::Quarter, "1/4", "A quarter note of the metronome tempo"),
+                        (EchoSyncEntry::Eighth, "1/8", "An eighth note of the metronome tempo"),
+                        (EchoSyncEntry::DottedEighth, "1/8.", "A dotted eighth of the metronome tempo"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let on = echo.sync == sync;
+                        let x = cx - 63.0 + 42.0 * column as f32;
+                        let key = place(ui, x, top + 48.0, vec2(34.0, KEY_NARROW_H), |ui| {
+                            KeyCap::new(label, keys::NARROW).lamp(on, palette::LED_GREEN).show(ui)
+                        });
+                        if key.on_hover_text(tip).clicked() && !on {
+                            echo.sync = sync;
+                            mixer_changed = true;
+                        }
+                    }
+                });
+            }
             if classic {
                 section(ui, "MONITOR", BAND_MONITOR, |ui| {
                     let (rows, mon) = self.monitor_rows(ui);
@@ -483,9 +511,9 @@ impl DawApp {
                     mixer_changed |= mon;
                 });
             }
-            let space = fader_top(classic) - return_bands(classic) + FADER_GAP;
+            let space = fader_top(classic, compact) - return_bands(classic, compact) + FADER_GAP;
             if !classic {
-                // Without MONITOR and PGM MASTERS this column is empty below ECHO: a blanking
+                // Without MONITOR and PGM MASTERS this column is empty below ECHO (or entirely, compact): a blanking
                 // plate makes that look meant rather than missing.
                 // Drawn by the mixer view, which knows where the strips end: both plates end on one line.
                 self.return_plate = Some(Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), 0.0)));
@@ -573,12 +601,13 @@ impl DawApp {
     /// output plays with its level, and the STEREO MASTER.
     pub(crate) fn master_column(&mut self, ui: &mut Ui) {
         let classic = self.mixer.mode == Routing::Classic;
+        let compact = self.compact;
         let mut mixer_changed = false;
         let mut routing = None;
         column(ui, 124.0, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             // SIMPLE or the 388's routing, the switch that was in the header.
-            section(ui, "ROUTING", BAND_ROUTING, |ui| {
+            section(ui, "ROUTING", if compact { BAND_ROUTING_COMPACT } else { BAND_ROUTING }, |ui| {
                 let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
                 let mut chosen = usize::from(classic);
                 let switch = place(ui, cx, top, vec2(80.0, 23.0), |ui| keys::slide_switch(ui, &["SIMPLE", "388"], &mut chosen, 80.0)).on_hover_text(
@@ -589,33 +618,42 @@ impl DawApp {
                 }
             });
             // AUX MASTER and EFF MASTER, to their own interface outputs (Instellingen, Audio).
-            section(ui, "MASTER", BAND_MASTER, |ui| {
-                let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
-                let aux = place(ui, cx - 24.0, top, vec2(30.0, 30.0), |ui| {
-                    knob(ui, &mut self.mixer.aux_master_db, MIN_DB..=MAX_DB, 0.0, palette::GREEN, 30.0, true)
-                })
-                .on_hover_text(format!(
-                    "AUX MASTER {} (double-click: 0 dB). Choose its output in Settings, Audio",
-                    format_db(self.mixer.aux_master_db)
-                ));
-                mixer_changed |= aux.changed() || aux.double_clicked();
-                let eff = place(ui, cx + 24.0, top, vec2(30.0, 30.0), |ui| {
-                    knob(ui, &mut self.mixer.eff_master_db, MIN_DB..=MAX_DB, 0.0, palette::BLUE, 30.0, true)
-                })
-                .on_hover_text(format!(
-                    "EFF MASTER {} (double-click: 0 dB). Choose its output in Settings, Audio",
-                    format_db(self.mixer.eff_master_db)
-                ));
-                mixer_changed |= eff.changed() || eff.double_clicked();
-                tag(ui, pos2(cx - 24.0, top + 38.0), Align2::CENTER_CENTER, "AUX");
-                tag(ui, pos2(cx + 24.0, top + 38.0), Align2::CENTER_CENTER, "EFF");
-            });
-            section(ui, "", BAND_SWITCHES, |ui| {
-                let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
+            if !compact {
+                section(ui, "MASTER", BAND_MASTER, |ui| {
+                    let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
+                    let aux = place(ui, cx - 24.0, top, vec2(30.0, 30.0), |ui| {
+                        knob(ui, &mut self.mixer.aux_master_db, MIN_DB..=MAX_DB, 0.0, palette::GREEN, 30.0, true)
+                    })
+                    .on_hover_text(format!(
+                        "AUX MASTER {} (double-click: 0 dB). Choose its output in Settings, Audio",
+                        format_db(self.mixer.aux_master_db)
+                    ));
+                    mixer_changed |= aux.changed() || aux.double_clicked();
+                    let eff = place(ui, cx + 24.0, top, vec2(30.0, 30.0), |ui| {
+                        knob(ui, &mut self.mixer.eff_master_db, MIN_DB..=MAX_DB, 0.0, palette::BLUE, 30.0, true)
+                    })
+                    .on_hover_text(format!(
+                        "EFF MASTER {} (double-click: 0 dB). Choose its output in Settings, Audio",
+                        format_db(self.mixer.eff_master_db)
+                    ));
+                    mixer_changed |= eff.changed() || eff.double_clicked();
+                    tag(ui, pos2(cx - 24.0, top + 38.0), Align2::CENTER_CENTER, "AUX");
+                    tag(ui, pos2(cx + 24.0, top + 38.0), Align2::CENTER_CENTER, "EFF");
+                });
+            }
+            // The compact console leaves out the meter keys: the rows below move up one.
+            section(ui, "", if compact { BAND_SWITCHES_COMPACT } else { BAND_SWITCHES }, |ui| {
+                let (cx, mut top) = (ui.max_rect().center().x, ui.max_rect().top());
+                if compact {
+                    top -= 35.0;
+                }
                 for (meter, label, tip, x) in [
                     (MeterSwitch::Lr, "L-R", "The stereo meters show left and right", cx - 24.0),
                     (MeterSwitch::AuxEff, "AUX-EFF", "The stereo meters show AUX and EFF after their master", cx + 24.0),
                 ] {
+                    if compact {
+                        break;
+                    }
                     let on = self.mixer.meter == meter;
                     let key = place(ui, x, top, vec2(48.0, KEY_SMALL_H), |ui| {
                         KeyCap::new(label, keys::SMALL).lamp(on, palette::LED_GREEN).show(ui)
@@ -653,7 +691,7 @@ impl DawApp {
                     mixer_changed = true;
                 }
             });
-            section(ui, "LISTEN", BAND_LISTEN, |ui| {
+            section(ui, "LISTEN", if compact { BAND_LISTEN_COMPACT } else { BAND_LISTEN }, |ui| {
                 let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
                 for (listen, label, tip, x) in [
                     (ListenSwitch::Stereo, "STEREO", "The main output gets the STEREO MASTER", cx - 40.0),
@@ -679,7 +717,7 @@ impl DawApp {
                 ));
                 mixer_changed |= phones.changed() || phones.double_clicked();
             });
-            ui.add_space(fader_top(classic) - BAND_ROUTING - BAND_MASTER - BAND_SWITCHES - BAND_LISTEN + FADER_GAP);
+            ui.add_space(fader_top(classic, compact) - master_bands(compact) + FADER_GAP);
             let response = fader(ui, &mut self.master_db, palette::RED);
             if response.changed() || response.double_clicked() {
                 let gain = db_to_gain(self.master_db);
@@ -705,10 +743,18 @@ mod tests {
 
     #[test]
     fn the_faders_start_below_all_bands() {
-        assert_eq!(fader_top(true), 552.0);
-        assert_eq!(fader_top(false), 552.0 - BAND_ASSIGN, "no ASSIGN in the simple mode");
-        assert!(return_bands(true) <= fader_top(true), "EFFECT RTN, PLATE, ECHO and MONITOR fit above the faders");
-        assert!(return_bands(false) <= fader_top(false));
-        assert!(BAND_ROUTING + BAND_MASTER + BAND_SWITCHES + BAND_LISTEN <= fader_top(false), "the MASTER column fits");
+        assert_eq!(fader_top(true, false), 552.0);
+        assert_eq!(fader_top(false, false), 552.0 - BAND_ASSIGN, "no ASSIGN in the simple mode");
+        assert_eq!(fader_top(false, true), 232.0, "no EQ and AUX in the compact console");
+        for compact in [false, true] {
+            for classic in [false, true] {
+                let top = fader_top(classic, compact);
+                assert!(return_bands(classic, compact) <= top, "EFFECT RTN, PLATE, ECHO and MONITOR fit above the faders");
+                assert!(master_bands(compact) <= top, "the MASTER column fits");
+                if compact && !classic {
+                    assert_eq!(master_bands(compact), top, "on the lines of the strips");
+                }
+            }
+        }
     }
 }

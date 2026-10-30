@@ -9,13 +9,15 @@ use egui::{Frame, Margin, RichText, Ui};
 const PLATE_WIDTH: f32 = 140.0;
 
 impl DawApp {
-    /// TRK 1-8, the two big meters and the name plate, along the top of the console.
-    pub(crate) fn meter_bridge(&mut self, ui: &mut Ui) {
+    /// TRK 1-8, the two big meters and the name plate, along the top of the console. Returns
+    /// the width the bridge needs for all of it, whatever the width of the console.
+    pub(crate) fn meter_bridge(&mut self, ui: &mut Ui) -> f32 {
         let now = self.now;
         let classic = self.mixer.mode == crate::Routing::Classic;
         // In the MIXER the bridge spans the console it stands on (as wide as last frame's
         // console), with the name plate at its right end.
         let span = if self.editor.settings.open { 0.0 } else { (self.needed.x - 100.0 - 24.0).max(0.0) };
+        let mut needs = 0.0;
         Frame::new().fill(palette::PANEL_DARK).inner_margin(Margin::symmetric(12, 10)).corner_radius(3).show(ui, |ui| {
             ui.set_min_width(span);
             let right = ui.max_rect().left() + span;
@@ -62,6 +64,8 @@ impl DawApp {
                     });
                 }
                 ui.add_space(16.0);
+                // The meters and the plate side by side, plus the frame's margins.
+                needs = ui.cursor().min.x - ui.max_rect().left() + PLATE_WIDTH + 24.0;
                 // The name plate in a box of fixed width against the right end of the bridge.
                 let gap = right - PLATE_WIDTH - ui.cursor().min.x;
                 if gap > 0.0 {
@@ -70,6 +74,7 @@ impl DawApp {
                 self.name_plate(ui);
             });
         });
+        needs
     }
 
     /// "DAW 388 / STUDIO 8": an own name plate, no maker's logo.

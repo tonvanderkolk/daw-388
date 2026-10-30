@@ -27,7 +27,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 
 - Een release maak je met een label `v*`; dat bouwt de DMG en de ZIP en zet ze in een GitHub Release
 
 ## Belangrijke beslissingen
-- Twee weergaven, MIXER en TRACKS (Tab wisselt): de mixer staat altijd in zijn geheel in beeld
+- Twee weergaven, MIXER en TRACKS (Tab wisselt): de mixer staat altijd in zijn geheel in beeld. Voor lage schermen is er de compacte console (View), zonder EQ, AUX en effecten
 - De console staat op een vast raster met banden, zoals de echte 388
 - Opnemen op VARI mag; de snelheid ligt vast per opname
 - Een project is een pakket `Naam.daw388`; oudere mappen blijven werken
@@ -35,13 +35,13 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 
 - Fase 9 (browserversie) is uitgesteld
 
 ## Huidige status
-Versie 0.27.0: exports in een eigen map naast het project (kiesbaar, met Show in Finder), een naamveld en de samplerate van het project bij export, en ingangen die zich aan de geluidskaart aanpassen. De laatste release op GitHub is v0.26.0.
+Versie 0.28.0: een compacte console (View, Compact console) zonder EQ, AUX en effecten voor lage schermen, die bij een laag scherm vanzelf aangaat. Sinds 0.27.0 gaan exports naar een map naast het project, met een naamveld en de samplerate van het project. Release v0.28.0 staat op GitHub met de DMG en de ZIP.
 
 ## Actieve branch
 main
 
 ## Laatste sync
-30-10-2026 19:06
+30-10-2026 20:58
 
 ## Bekende issues / openstaande punten
 - De repository is privé; Ton maakt hem openbaar na verder testen

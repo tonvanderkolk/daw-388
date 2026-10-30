@@ -67,6 +67,7 @@
 - [x] macOS-app-bundel met icoon, en het projectpakket `.daw388` aangemeld in de Info.plist (`LSTypeIsPackage`), zodat de Finder een project als één document toont (0.25.0)
 - [x] Releases via GitHub: universal DMG voor macOS, ZIP voor Windows, met icoon (0.25.0)
 - [x] Help-menu met About en een korte gids in de app (0.26.0)
+- [x] Compacte console voor lage schermen zoals laptops van 1920 bij 1080 (0.28.0)
 - [ ] Signing en notarization (macOS): bewust niet, zonder Apple Developer-account; gebruikers openen de app de eerste keer via Privacy en beveiliging. Eventueel later een jaar lidmaatschap voor een stabiele versie: ondertekende versies blijven daarna werken
 - [ ] Windows: ASIO-ondersteuning voor lage vertraging met audio-interfaces (cpal-feature `asio`, vraagt de ASIO SDK bij het bouwen)
 - [ ] Windows op ARM: een eigen `aarch64-pc-windows-msvc`-build (nu via x64-emulatie, niet getest)

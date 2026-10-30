@@ -4,6 +4,14 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-30
+
+### Toegevoegd
+- Compacte console (View, Compact console): de kanaalstrips zonder EQ en AUX, zonder de effecten (EFFECT RTN, PLATE, ECHO) en zonder de MASTER-knoppen voor AUX en EFF en de meterknoppen L-R en AUX-EFF. Wat verborgen is blijft gewoon werken. De console wordt zo'n 860 punten hoog in plaats van 1075 (SIMPLE) en 965 in plaats van 1180 (388), zodat hij op een laptop van 1920 bij 1080 leesbaar blijft. Zonder eigen keuze start de app compact als de volle console op het scherm kleiner dan 85% zou worden; de keuze in het menu wordt als voorkeur bewaard (`compact_console`). In SIMPLE vervalt de lege kolom van de effecten en staan de lijnen van de MASTER-kolom op die van de strips.
+
+### Gewijzigd
+- De console is minstens zo breed als de meterbrug nodig heeft, zodat het naambord niet wegvalt als de strips smaller zijn.
+
 ## [0.27.0] - 2026-10-30
 
 ### Toegevoegd

@@ -18,6 +18,7 @@ const GUIDE: [(&str, &[&str]); 5] = [
             "File > New starts an empty project with 8 tracks. Save it first: recordings go into the project.",
             "Tab switches between the MIXER and the TRACKS view.",
             "Settings (Cmd+,) chooses the audio output, the input and the buffer.",
+            "View > Compact console leaves out EQ, AUX and the effects, for a low screen. They keep working.",
         ],
     ),
     (

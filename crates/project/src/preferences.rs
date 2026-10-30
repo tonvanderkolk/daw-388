@@ -35,6 +35,9 @@ pub struct Preferences {
     /// Projects opened or saved lately, newest first (File, Open Recent).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent: Vec<std::path::PathBuf>,
+    /// The compact console (View, Compact console); `None`: chosen at startup from the screen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_console: Option<bool>,
 }
 
 /// How many projects File, Open Recent lists.
@@ -65,6 +68,7 @@ impl Default for Preferences {
             aux_output: None,
             eff_output: None,
             recent: Vec::new(),
+            compact_console: None,
         }
     }
 }
@@ -104,6 +108,7 @@ mod tests {
             aux_output: Some(3),
             eff_output: Some(4),
             recent: vec!["/music/Song.daw388".into()],
+            compact_console: Some(true),
         };
         save(&path, &preferences).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(load(&path), preferences);
@@ -113,6 +118,7 @@ mod tests {
         fs::write(&path, r#"{"output_device":"X"}"#).unwrap_or_else(|e| panic!("{e}"));
         assert!(load(&path).software_monitoring);
         assert_eq!((load(&path).aux_output, load(&path).eff_output), (None, None), "no AUX or EFF output yet");
+        assert_eq!(load(&path).compact_console, None, "the screen chooses the console");
     }
 
     #[test]
