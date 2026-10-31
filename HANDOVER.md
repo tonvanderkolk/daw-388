@@ -21,7 +21,7 @@ DAW 388 is een super eenvoudige standalone 8-sporen DAW, qua opzet en specs geba
 - **Realtime-communicatie:** lock-free ringbuffer (bijvoorbeeld `rtrb`) tussen UI en audiothread
 - **Platforms:** macOS en Windows (desktop) als hoofdproduct; browser via WebAssembly in een latere fase
 - **Builds:** GitHub Actions voor macOS en Windows (ook Windows bouwen vanaf de Mac)
-- **Versiebeheer:** GitHub, private repo `tonvanderkolk/daw-388`
+- **Versiebeheer:** GitHub, repo `tonvanderkolk/daw-388` (eerst privé, sinds 31-10-2026 openbaar)
 - **Licentie:** MIT OR Apache-2.0
 - **Projectopslag:** projectmap met `project.json` plus een submap `audio/` met WAV-bestanden (werkt gelijk op desktop en web; geen SQLite nodig)
 

@@ -16,7 +16,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 
 - `packaging/`: het icoon, de macOS-bundel (`macos/bundle.sh`, `Info.plist`), het Windows-icoon en `manual.sh` (de handleiding als PDF)
 - `docs/manual/`: de gebruikershandleiding (Engels, HTML); bij elke nieuwe functie bijwerken
 - `docs/superpowers/`: specs en plannen per versie
-- `design/ref/`: handleiding en foto's van de 388, niet in de repo
+- `design/ref/` en de oude mockups in `design/`: handleiding, foto's en ontwerpen, niet in de repo (alleen het routeringsschema staat erin)
 - `logs/`: synclogs
 
 ## Conventies en afspraken
@@ -25,6 +25,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 
 - Voor elke commit: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`
 - Ton test zelf in de app; committen en pushen alleen na zijn "commit en push"
 - Elke versie: CHANGELOG, ROADMAP, PROJECT.md en de versie in Cargo.toml bijwerken
+- De repository is openbaar: geen persoonlijke gegevens in bestanden of logs, commits met het noreply-adres van GitHub
 - Een release maak je met een label `v*`; dat bouwt de DMG en de ZIP en zet ze in een GitHub Release
 
 ## Belangrijke beslissingen
@@ -46,7 +47,6 @@ main
 31-10-2026 13:14
 
 ## Bekende issues / openstaande punten
-- De repository is privé; Ton maakt hem openbaar na verder testen
 - Nog niet getest op een andere Mac en op Windows
 - Een project openen met een dubbelklik in de Finder werkt nog niet (winit geeft het open-event niet door)
 - Windows: geen ASIO, geen eigen ARM-build

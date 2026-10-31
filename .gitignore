@@ -2,5 +2,8 @@
 .DS_Store
 # Privé referentiemateriaal (handleiding, foto's): niet in de repo
 /design/ref/
+# Oude mockups: niet in de openbare repo (alleen het routeringsschema staat erin)
+/design/*.html
+/design/A2*
 CREDENTIALS.md
 .superpowers/

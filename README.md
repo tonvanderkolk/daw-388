@@ -28,6 +28,10 @@ The **user manual** (PDF) comes with every release, inside the DMG and the ZIP, 
 
 Or build it yourself with `cargo run --release` (a recent stable Rust toolchain via [rustup](https://rustup.rs)).
 
+### About this repository
+
+DAW 388 was built with Claude Code. Besides the source in `crates/`, the repository keeps the working notes of that process, in Dutch: `CLAUDE.md` (the project memory for Claude), `HANDOVER.md` (the original scope and decisions), `PROJECT.md` (the technical description), `docs/superpowers/` (the design and plan for each version) and `logs/` (a short report of every work session). The user manual is `docs/manual/manual.html`.
+
 ---
 
 Een super eenvoudige 8-sporen DAW voor macOS en Windows, qua opzet gebaseerd op de Tascam 388 (Studio 8): een 8:8:2-mixer gecombineerd met een 8-sporen bandrecorder met tape-karakter.

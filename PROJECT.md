@@ -214,6 +214,7 @@ Een bron (audiobestand) wordt op een achtergrondthread gedecodeerd en naar de sa
 
 ## Versiebeheer
 
-- GitHub: privé repo `tonvanderkolk/daw-388`, met een Engelse beschrijving. `.github/FUNDING.yml` wijst naar Buy Me a Coffee (`tvdk71`); in de app opent Help, Support DAW 388... die pagina (`Platform::open_url`). Ton maakt hem pas openbaar na verder testen; tot die tijd kan alleen hij de release downloaden.
-- `design/ref/` (handleiding en foto's) staat in `.gitignore` en hoort niet in de repo.
+- GitHub: openbare repo `tonvanderkolk/daw-388` (openbaar sinds 31-10-2026), met een Engelse beschrijving. `.github/FUNDING.yml` wijst naar Buy Me a Coffee (`tvdk71`); in de app opent Help, Support DAW 388... die pagina (`Platform::open_url`).
+- `design/ref/` (handleiding en foto's van de 388) en de oude mockups in `design/` staan in `.gitignore` en horen niet in de repo; alleen het routeringsschema `design/daw388_routering_0_8_0.png` staat erin.
+- Commits gaan met het noreply-adres van GitHub, niet met een persoonlijk e-mailadres.
 - Wachtwoorden en tokens horen in `CREDENTIALS.md` (staat in `.gitignore`).
