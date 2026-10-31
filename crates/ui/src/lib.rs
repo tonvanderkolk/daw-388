@@ -12,6 +12,7 @@ mod recording;
 mod skin;
 mod sources;
 mod timeline;
+mod update;
 
 use daw388_engine::{
     ChannelParams, Command, EQ_DEFAULTS, EchoParams, EchoSync, EngineHandle, EqBand, Listen, Meter, MixerParams, MonitorMode,
@@ -122,6 +123,9 @@ const DEVICE_CHECK_EVERY: f64 = 2.0;
 /// Sample rate of the silent clock when no rate was chosen.
 const SILENT_RATE: u32 = 48_000;
 
+/// Fetches a web address and gives its text, or why it could not.
+pub type Fetch = Box<dyn FnOnce(&str) -> Result<String, String> + Send>;
+
 /// What the UI needs from the platform it runs on.
 pub trait Platform {
     /// The available audio output devices.
@@ -153,6 +157,9 @@ pub trait Platform {
     fn manual(&self) -> Option<PathBuf>;
     /// Open a web page in the default browser.
     fn open_url(&mut self, url: &str);
+    /// Something that fetches a web address and gives its text, to run on a background thread;
+    /// `None` where the platform cannot (the update check then does nothing).
+    fn fetcher(&self) -> Option<Fetch>;
     /// Move files to the Trash (Recycle Bin on Windows), so they can still be brought back.
     fn trash(&mut self, paths: &[PathBuf]) -> Result<(), String>;
     /// Run slow work (decoding and resampling audio) away from the UI thread.
@@ -321,6 +328,10 @@ pub struct DawApp {
     compact: bool,
     /// Whether to choose the compact console from the screen once the console is measured.
     compact_pending: bool,
+    /// A check for updates under way, whether it was asked for (Help), and a newer version found.
+    update_rx: Option<Receiver<Result<String, String>>>,
+    update_manual: bool,
+    update_available: Option<String>,
     /// Where the blanking plate in the EFFECT RTN column starts (Simple), for the mixer view to draw.
     return_plate: Option<egui::Rect>,
     status: String,
@@ -651,6 +662,9 @@ impl DawApp {
             fit_zoom: 0.0,
             compact: compact == Some(true),
             compact_pending: compact.is_none(),
+            update_rx: None,
+            update_manual: false,
+            update_available: None,
             return_plate: None,
             status: String::new(),
             project_dir: None,
@@ -706,6 +720,7 @@ impl DawApp {
             track.channel = ChannelEntry::simple(ChannelSource::Line);
         }
         app.open_output();
+        app.startup_update_check();
         app
     }
 
@@ -2584,6 +2599,8 @@ impl DawApp {
             ui.add_space(8.0);
             self.metronome_settings(ui);
             ui.add_space(8.0);
+            self.update_settings(ui);
+            ui.add_space(8.0);
             skin::paper::section_title(ui, "REPEAT, RTZ and STC");
             let mut mode = self.repeat_mode;
             if skin::paper::radio(ui, mode == RepeatMode::Tape, "388: the tape rewinds to the zero point in real time").clicked() {
@@ -2942,6 +2959,7 @@ impl DawApp {
         self.poll_composed();
         self.poll_renders();
         self.poll_export();
+        self.poll_update();
         self.sync_transport();
         self.update_meters(dt);
         self.handle_file_shortcuts(ui);
@@ -3174,6 +3192,8 @@ mod tests {
         devices: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
         lost: std::rc::Rc<std::cell::Cell<bool>>,
         opened: std::rc::Rc<std::cell::RefCell<Vec<OutputRequest>>>,
+        /// What GitHub answers to the update check; `None`: the platform cannot check.
+        release: std::rc::Rc<std::cell::RefCell<Option<Result<String, String>>>>,
     }
 
     impl FakePlatform {
@@ -3184,6 +3204,7 @@ mod tests {
                 devices: std::rc::Rc::new(std::cell::RefCell::new(vec!["Built-in".into()])),
                 lost: std::rc::Rc::default(),
                 opened: std::rc::Rc::default(),
+                release: std::rc::Rc::default(),
             }
         }
     }
@@ -3256,6 +3277,10 @@ mod tests {
             None
         }
         fn open_url(&mut self, _: &str) {}
+        fn fetcher(&self) -> Option<Fetch> {
+            let answer = self.release.borrow().clone()?;
+            Some(Box::new(move |_| answer))
+        }
         fn trash(&mut self, paths: &[PathBuf]) -> Result<(), String> {
             // The tests' projects are temporary: gone is as good as the Trash.
             paths.iter().try_for_each(std::fs::remove_file).map_err(|e| e.to_string())
@@ -4284,6 +4309,41 @@ mod tests {
         assert_eq!(app.metronome, MetronomeSettings::default());
         app.open_project(&dir);
         assert_eq!(app.metronome, metronome);
+    }
+
+    #[test]
+    fn a_newer_release_is_announced_and_a_check_can_be_asked_for() {
+        let ctx = egui::Context::default();
+        let platform = FakePlatform::new(None);
+        let release = platform.release.clone();
+        *release.borrow_mut() = Some(Ok(r#"{"tag_name": "v99.0.0"}"#.into()));
+        let mut app = DawApp::new(&ctx, Box::new(platform));
+        app.poll_update();
+        assert_eq!(app.update_available.as_deref(), Some("99.0.0"), "checked at startup");
+        assert!(app.status.contains("99.0.0 is available"), "{}", app.status);
+        assert_eq!(app.preferences.latest_version.as_deref(), Some("99.0.0"));
+        assert!(app.preferences.update_checked_at.is_some());
+
+        *release.borrow_mut() = Some(Ok(format!(r#"{{"tag_name": "v{}"}}"#, env!("CARGO_PKG_VERSION"))));
+        app.check_for_updates(true);
+        app.poll_update();
+        assert!(app.update_available.is_none());
+        assert!(app.status.contains("is the latest version"), "{}", app.status);
+
+        *release.borrow_mut() = Some(Err("offline".into()));
+        app.check_for_updates(true);
+        app.poll_update();
+        assert!(app.status.contains("Cannot check for updates: offline"), "{}", app.status);
+
+        // Switched off: no check at startup.
+        let platform = FakePlatform::new(None);
+        *platform.release.borrow_mut() = Some(Ok(r#"{"tag_name": "v99.0.0"}"#.into()));
+        let mut app = DawApp::new(&ctx, Box::new(platform));
+        app.preferences.check_updates = false;
+        app.update_available = None;
+        app.update_rx = None;
+        app.startup_update_check();
+        assert!(app.update_rx.is_none() && app.update_available.is_none());
     }
 
     #[test]

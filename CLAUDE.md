@@ -38,13 +38,13 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 
 - Fase 9 (browserversie) is uitgesteld
 
 ## Huidige status
-Versie 0.30.0: M, S en R per spoor in TRACKS, ongebruikte opnames gaan bij het verlaten van een project naar de prullenbak, een donatielink (Help, Support DAW 388...) en het naambord DAW 388 / 8-TRACK in plaats van STUDIO 8. Sinds 0.29.0 is er een gebruikershandleiding als PDF. Release v0.30.0 staat op GitHub met de DMG, de ZIP en de handleiding.
+Versie 0.31.0: de app controleert bij het starten (hooguit één keer per dag, uit te zetten in Settings) of er een nieuwere release op GitHub staat en meldt die; Help, Check for Updates... doet het met de hand. Sinds 0.30.0: M, S en R in TRACKS, ongebruikte opnames naar de prullenbak en een donatielink. De laatste release op GitHub is v0.30.0.
 
 ## Actieve branch
 main
 
 ## Laatste sync
-31-10-2026 13:14
+31-10-2026 16:40
 
 ## Bekende issues / openstaande punten
 - Nog niet getest op een andere Mac en op Windows

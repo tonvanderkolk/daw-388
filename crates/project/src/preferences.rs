@@ -38,6 +38,14 @@ pub struct Preferences {
     /// The compact console (View, Compact console); `None`: chosen at startup from the screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_console: Option<bool>,
+    /// Ask GitHub for a newer version at startup, at most once a day.
+    #[serde(default = "yes")]
+    pub check_updates: bool,
+    /// When the last check was (seconds since 1970) and the latest version it found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_checked_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
 }
 
 /// How many projects File, Open Recent lists.
@@ -69,6 +77,9 @@ impl Default for Preferences {
             eff_output: None,
             recent: Vec::new(),
             compact_console: None,
+            check_updates: true,
+            update_checked_at: None,
+            latest_version: None,
         }
     }
 }
@@ -109,6 +120,9 @@ mod tests {
             eff_output: Some(4),
             recent: vec!["/music/Song.daw388".into()],
             compact_console: Some(true),
+            check_updates: false,
+            update_checked_at: Some(1_790_000_000),
+            latest_version: Some("0.31.0".into()),
         };
         save(&path, &preferences).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(load(&path), preferences);
@@ -119,6 +133,7 @@ mod tests {
         assert!(load(&path).software_monitoring);
         assert_eq!((load(&path).aux_output, load(&path).eff_output), (None, None), "no AUX or EFF output yet");
         assert_eq!(load(&path).compact_console, None, "the screen chooses the console");
+        assert!(load(&path).check_updates, "checking for updates is on unless switched off");
     }
 
     #[test]

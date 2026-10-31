@@ -4,6 +4,11 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-31
+
+### Toegevoegd
+- Controleren op updates: bij het starten, hooguit één keer per dag, vraagt de app GitHub welke versie de nieuwste is (`releases/latest`). Is er een nieuwere, dan meldt de statusregel dat en toont Help het item Download DAW 388 ..., dat de releasepagina opent. Help, Check for Updates... controleert meteen en meldt ook "is the latest version" of een fout. Uit te zetten in Settings, Updates. Er wordt niets geïnstalleerd; de app is niet ondertekend. Nieuwe app-voorkeuren `check_updates`, `update_checked_at` en `latest_version`; de desktop-app gebruikt `ureq`.
+
 ## [0.30.0] - 2026-10-31
 
 ### Toegevoegd

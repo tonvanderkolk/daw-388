@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.30.0
+Versie: 0.31.0
 Laatst bijgewerkt: 31-10-2026
 
 ## Doel
@@ -217,4 +217,5 @@ Een bron (audiobestand) wordt op een achtergrondthread gedecodeerd en naar de sa
 - GitHub: openbare repo `tonvanderkolk/daw-388` (openbaar sinds 31-10-2026), met een Engelse beschrijving. `.github/FUNDING.yml` wijst naar Buy Me a Coffee (`tvdk71`); in de app opent Help, Support DAW 388... die pagina (`Platform::open_url`).
 - `design/ref/` (handleiding en foto's van de 388) en de oude mockups in `design/` staan in `.gitignore` en horen niet in de repo; alleen het routeringsschema `design/daw388_routering_0_8_0.png` staat erin.
 - Commits gaan met het noreply-adres van GitHub, niet met een persoonlijk e-mailadres.
+- Controleren op updates (`crates/ui/src/update.rs`): bij het starten, als `check_updates` aan staat en de vorige controle (`update_checked_at`) een dag oud is, haalt een achtergrondthread `api.github.com/repos/tonvanderkolk/daw-388/releases/latest` op via `Platform::fetcher` (in de desktop-app `ureq`, 10 seconden time-out) en vergelijkt `tag_name` met de eigen versie (als getallen). De laatst gevonden versie wordt bewaard (`latest_version`), zodat de melding ook zonder nieuwe controle blijft. Een nieuwere versie geeft een melding en Help, Download DAW 388 ...; Help, Check for Updates... doet het met de hand. Fouten blijven stil, behalve bij de handmatige controle.
 - Wachtwoorden en tokens horen in `CREDENTIALS.md` (staat in `.gitignore`).

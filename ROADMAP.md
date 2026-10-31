@@ -74,4 +74,5 @@
 - [ ] Windows: ASIO-ondersteuning voor lage vertraging met audio-interfaces (cpal-feature `asio`, vraagt de ASIO SDK bij het bouwen)
 - [ ] Windows op ARM: een eigen `aarch64-pc-windows-msvc`-build (nu via x64-emulatie, niet getest)
 - [x] Repository openbaar gemaakt (31-10-2026)
+- [x] Controleren op updates (0.31.0): bij het starten op de achtergrond (hooguit één keer per dag, uit te zetten in Settings) de laatste release opvragen bij de GitHub-API (`releases/latest`) en vergelijken met de eigen versie. Is er een nieuwere, dan een melding in de statusregel en een item in Help dat de releasepagina opent; daarnaast Help, Check for Updates.... Geen automatische installatie (de app is niet ondertekend). Vraagt een kleine HTTP-bibliotheek (`ureq`); ook in de handleiding vermelden
 - [ ] Een project openen door erop te dubbelklikken in de Finder (vraagt het open-event van macOS, dat winit nog niet doorgeeft)

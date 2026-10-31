@@ -21,7 +21,7 @@ const GUIDE: [(&str, &[&str]); 5] = [
             "File > New starts an empty project with 8 tracks. Save it first: recordings go into the project.",
             "Tab switches between the MIXER and the TRACKS view.",
             "Settings (Cmd+,) chooses the audio output, the input and the buffer.",
-            "Everything in detail: Help > User manual (PDF).",
+            "Everything in detail: Help > User manual (PDF). Help > Check for Updates... looks for a new version.",
             "View > Compact console leaves out EQ, AUX and the effects, for a low screen. They keep working.",
         ],
     ),
@@ -73,6 +73,8 @@ impl DawApp {
                     None => self.status = "The manual comes with the downloaded app: DAW 388 Manual.pdf".to_string(),
                 }
             }
+            ui.separator();
+            self.update_menu_items(ui);
             ui.separator();
             if ui.button("Support DAW 388...").on_hover_text(SUPPORT_URL).clicked() {
                 self.platform.open_url(SUPPORT_URL);

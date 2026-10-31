@@ -8,7 +8,7 @@ mod audio;
 use audio::{Output, SilentClock};
 use cpal::traits::HostTrait;
 use daw388_engine::EngineHandle;
-use daw388_ui::{DawApp, DeviceInfo, OutputInfo, OutputRequest, Platform};
+use daw388_ui::{DawApp, DeviceInfo, Fetch, OutputInfo, OutputRequest, Platform};
 use std::path::{Path, PathBuf};
 
 /// The PDF manual that comes with the app.
@@ -114,6 +114,21 @@ impl Platform for Desktop {
         #[cfg(not(target_os = "macos"))]
         let context = trash::TrashContext::default();
         context.delete_all(paths).map_err(|e| e.to_string())
+    }
+
+    fn fetcher(&self) -> Option<Fetch> {
+        Some(Box::new(|url| {
+            let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(10))).build().into();
+            agent
+                .get(url)
+                .header("User-Agent", concat!("DAW388/", env!("CARGO_PKG_VERSION")))
+                .header("Accept", "application/vnd.github+json")
+                .call()
+                .map_err(|e| e.to_string())?
+                .body_mut()
+                .read_to_string()
+                .map_err(|e| e.to_string())
+        }))
     }
 
     fn manual(&self) -> Option<PathBuf> {
