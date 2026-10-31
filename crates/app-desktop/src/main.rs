@@ -93,6 +93,29 @@ impl Platform for Desktop {
         }
     }
 
+    fn open_url(&mut self, url: &str) {
+        // `explorer` hands a URL to the default browser on Windows, as `open` does on macOS.
+        let opener = if cfg!(target_os = "windows") { "explorer" } else { "open" };
+        if let Err(e) = std::process::Command::new(opener).arg(url).spawn() {
+            log::warn!("cannot open {url}: {e}");
+        }
+    }
+
+    fn trash(&mut self, paths: &[PathBuf]) -> Result<(), String> {
+        // On macOS through its own file manager: the Finder way asks the user to let DAW 388
+        // control the Finder.
+        #[cfg(target_os = "macos")]
+        let context = {
+            use trash::macos::{DeleteMethod, TrashContextExtMacos};
+            let mut context = trash::TrashContext::default();
+            context.set_delete_method(DeleteMethod::NsFileManager);
+            context
+        };
+        #[cfg(not(target_os = "macos"))]
+        let context = trash::TrashContext::default();
+        context.delete_all(paths).map_err(|e| e.to_string())
+    }
+
     fn manual(&self) -> Option<PathBuf> {
         // In the app's Resources on macOS, next to the program on Windows (see build.yml).
         let exe = std::env::current_exe().ok()?;

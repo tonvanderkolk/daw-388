@@ -43,10 +43,11 @@
 
 <section class="cover">
   <h1>DAW 388</h1>
-  <div class="sub">STUDIO 8 · User Manual</div>
+  <div class="sub">8-TRACK · User Manual</div>
   <p>An 8-track recorder and 8:8:2 mixer for macOS and Windows, modelled on the TASCAM 388 Studio 8.</p>
   <p>Version @VERSION@</p>
-  <p class="small">A hobby project by Ton van der Kolk. Free to use and to share, not for sale. Not made by or connected with TASCAM.</p>
+  <p class="small">A hobby project by Ton van der Kolk. Free and open source. Not made by or connected with TASCAM.</p>
+  <p class="small">Like DAW 388? You can support it with a coffee: <a href="https://buymeacoffee.com/tvdk71">buymeacoffee.com/tvdk71</a>, or Help, Support DAW 388... in the app.</p>
 </section>
 
 <section class="toc">
@@ -161,6 +162,7 @@
     <li><b>File, Close project</b> (<kbd>Cmd+W</kbd>) and <b>Quit DAW 388</b> (<kbd>Cmd+Q</kbd>) ask first when there are unsaved changes.</li>
   </ul>
   <p>Once a project has been saved, DAW 388 saves it by itself 30 seconds after every change. A backup is made at every save you do yourself and at most every five minutes otherwise.</p>
+  <p>When you close a project, open another or quit, recordings that the saved song no longer uses (takes you undid or recorded over, or recordings you did not save) go to the Trash, on Windows the Recycle Bin. The status line says how many. That keeps projects from growing with files nobody plays. Changed your mind? Put them back from the Trash into the project's audio folder before you empty it. An older backup that used such a take will miss it.</p>
   <p>Everything that belongs to the song is saved with it: the mix, the tape settings, the metronome, the view, the zero and CUE points and the export folder. Your audio device and the other Settings belong to the app.</p>
 </section>
 
@@ -297,7 +299,7 @@
 
 <section id="tracks">
   <h2>13. The TRACKS view</h2>
-  <p>Press <kbd>Tab</kbd> for the tracks on a timeline. Each track has a small fader and PAN knob (the same as in the mixer) and its regions: pieces of recordings or loaded files.</p>
+  <p>Press <kbd>Tab</kbd> for the tracks on a timeline. Each track has a small fader and PAN knob (the same as in the mixer) and its regions: pieces of recordings or loaded files. Beside the name are three small keys: <b class="k">M</b> (MUTE), <b class="k">S</b> (SOLO) and <b class="k">R</b> (REC FUNCTION, blinking when the track is ready to record), the same keys as on the channel strip.</p>
   <h3>Moving around</h3>
   <ul>
     <li>Click in the time bar at the top to put the tape there; drag in it to select a time range over all tracks.</li>
@@ -448,7 +450,7 @@
     <li><b>The app settings</b>: settings.json in <b>~/Library/Application Support/DAW 388</b> (Mac) or <b>%APPDATA%\DAW 388</b> (Windows). Delete it to start with the default settings.</li>
   </ul>
   <p>Audio files that DAW 388 reads: WAV, AIFF, FLAC and MP3, mono or stereo, at any sample rate. MP3 files start and end with a little silence; that is how MP3 works.</p>
-  <p class="small">DAW 388 is free software under the MIT or Apache-2.0 licence. The typeface IBM Plex is under the SIL Open Font License. TASCAM and Studio 8 are names of TASCAM; DAW 388 is not made by or connected with TASCAM.</p>
+  <p class="small">DAW 388 is free and open source, under the MIT or Apache-2.0 licence. Support it with a coffee at buymeacoffee.com/tvdk71. The typeface IBM Plex is under the SIL Open Font License. TASCAM and Studio 8 are names of TASCAM; DAW 388 is not made by or connected with TASCAM.</p>
 </section>
 
 </body>

@@ -608,6 +608,27 @@ pub fn open(path: &Path) -> Result<OpenedProject, ProjectError> {
     Ok(OpenedProject { dir, file: project, warnings })
 }
 
+/// The files in the project's `audio/` that the saved project does not use: takes that were
+/// undone or recorded over, and recordings of a session that was not saved. Empty when the
+/// project cannot be read or a region had to be left out, so nothing is ever wrongly called unused.
+pub fn unused_audio(dir: &Path) -> Vec<PathBuf> {
+    let Ok(opened) = open(dir) else { return Vec::new() };
+    if !opened.warnings.is_empty() {
+        return Vec::new();
+    }
+    let used: std::collections::HashSet<PathBuf> =
+        opened.file.tracks.iter().flat_map(|t| &t.regions).filter_map(|r| fs::canonicalize(opened.region_path(r)).ok()).collect();
+    let Ok(entries) = fs::read_dir(dir.join(AUDIO_DIR)) else { return Vec::new() };
+    let mut unused: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
+        .filter(|p| fs::canonicalize(p).is_ok_and(|c| !used.contains(&c)))
+        .collect();
+    unused.sort();
+    unused
+}
+
 /// Format 2 had one file per track: it becomes one region from 0:00 whose length is known once
 /// the file has loaded.
 fn upgrade_v2(project: &mut ProjectFile) {
@@ -1045,6 +1066,25 @@ mod tests {
             assert_eq!(again.sources.get(&inside), Some(&inside), "a file in audio/ stays where it is");
         }
         assert_eq!(fs::read_dir(dir.join(AUDIO_DIR)).map(Iterator::count).unwrap_or(0), 2);
+    }
+
+    #[test]
+    fn audio_the_saved_project_does_not_use_is_unused() {
+        let outside = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let take = outside.path().join("take.wav");
+        write_wav(&take);
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("p");
+        save(&dir, &ProjectSettings::default(), &tracks([Some(take), None]), Backup::Always).unwrap_or_else(|e| panic!("{e}"));
+        assert!(unused_audio(&dir).is_empty(), "the one file is used");
+        let left = dir.join(AUDIO_DIR).join("01_Track_take1.wav");
+        write_wav(&left);
+        fs::write(dir.join(AUDIO_DIR).join(".DS_Store"), "").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(unused_audio(&dir), vec![left.clone()], "a take nothing uses; hidden files stay out of it");
+        // A project that cannot be read calls nothing unused.
+        fs::write(dir.join(PROJECT_FILE), "{ kapot").unwrap_or_else(|e| panic!("{e}"));
+        assert!(unused_audio(&dir).is_empty());
+        assert!(unused_audio(&root.path().join("nothing")).is_empty());
     }
 
     #[test]

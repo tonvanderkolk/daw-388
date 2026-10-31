@@ -151,6 +151,10 @@ pub trait Platform {
     fn reveal(&mut self, dir: &Path);
     /// The PDF manual that comes with the app, when it is there (not in a development build).
     fn manual(&self) -> Option<PathBuf>;
+    /// Open a web page in the default browser.
+    fn open_url(&mut self, url: &str);
+    /// Move files to the Trash (Recycle Bin on Windows), so they can still be brought back.
+    fn trash(&mut self, paths: &[PathBuf]) -> Result<(), String>;
     /// Run slow work (decoding and resampling audio) away from the UI thread.
     fn spawn(&mut self, job: Box<dyn FnOnce() + Send>);
     /// Run work that lasts as long as an engine (the recording writer) on its own thread.
@@ -1203,6 +1207,7 @@ impl DawApp {
     }
 
     fn perform(&mut self, action: Pending) {
+        let cleared = self.clear_unused_audio();
         match action {
             Pending::New => self.new_project(),
             Pending::Close => {
@@ -1217,6 +1222,28 @@ impl DawApp {
             }
             Pending::Quit => self.may_close = true,
         }
+        if let Some(note) = cleared {
+            self.status = if self.status.is_empty() { note } else { format!("{}; {note}", self.status) };
+        }
+    }
+
+    /// When leaving a project: the recordings its saved version does not use (undone, recorded
+    /// over, or from a session that was not saved) go to the Trash, so the project does not
+    /// keep growing. Returns what was moved, for the status line.
+    fn clear_unused_audio(&mut self) -> Option<String> {
+        let dir = self.project_dir.clone()?;
+        let unused = session::unused_audio(&dir);
+        if unused.is_empty() {
+            return None;
+        }
+        let bytes: u64 = unused.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+        if let Err(e) = self.platform.trash(&unused) {
+            log::warn!("cannot move unused audio to the trash: {e}");
+            return None;
+        }
+        let bin = if cfg!(target_os = "windows") { "Recycle Bin" } else { "Trash" };
+        let files = if unused.len() == 1 { "file" } else { "files" };
+        Some(format!("{} unused audio {files} ({:.1} MB) moved to the {bin}", unused.len(), bytes as f64 / 1e6))
     }
 
     /// Whether the mix is already as the simple mode sets it, so switching loses nothing.
@@ -2500,7 +2527,7 @@ impl DawApp {
         paper::paper_window(ctx, "tape-window", "Tape settings", "per project", &mut open, 380.0, |ui| {
             section_title(ui, "Machine");
             let mut machine = 0;
-            choice_cards(ui, &[(0, "388 Studio 8", Some("2 heads · 1/4 inch · 8 tracks"))], &mut machine);
+            choice_cards(ui, &[(0, "388", Some("2 heads · 1/4 inch · 8 tracks"))], &mut machine);
             section_title(ui, "Character");
             switch_pair(ui, [(TapeMode::Clean, "Clean"), (TapeMode::Machine, "388")], &mut tape.mode, 200.0);
             note(ui, "The character of the tape on playback. Recordings through the input stay clean.");
@@ -3227,6 +3254,11 @@ mod tests {
         fn reveal(&mut self, _: &Path) {}
         fn manual(&self) -> Option<PathBuf> {
             None
+        }
+        fn open_url(&mut self, _: &str) {}
+        fn trash(&mut self, paths: &[PathBuf]) -> Result<(), String> {
+            // The tests' projects are temporary: gone is as good as the Trash.
+            paths.iter().try_for_each(std::fs::remove_file).map_err(|e| e.to_string())
         }
         fn spawn(&mut self, job: Box<dyn FnOnce() + Send>) {
             // Run at once, so the tests only need to poll.
@@ -4280,10 +4312,16 @@ mod tests {
         assert!(!app.may_close);
         app.pending = None;
         assert!(app.save(Backup::Always));
+        // A take that was undone: the saved project does not use it.
+        let undone = root.path().join("Demo").join("audio").join("01_kick_take1.wav");
+        write_wav(&undone);
         app.request(Pending::Close);
         assert!(app.tracks[0].regions.is_empty());
         assert_eq!(app.project_name(), "Untitled");
         assert!(app.status.contains("Demo closed"), "{}", app.status);
+        assert!(app.status.contains("1 unused audio file"), "{}", app.status);
+        assert!(!undone.exists(), "to the trash");
+        assert!(root.path().join("Demo").join("audio").join("kick.wav").exists(), "what the project uses stays");
         app.request(Pending::Quit);
         assert!(app.may_close, "nothing unsaved: quit straight away");
     }

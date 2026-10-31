@@ -77,7 +77,7 @@ impl DawApp {
         needs
     }
 
-    /// "DAW 388 / STUDIO 8": an own name plate, no maker's logo.
+    /// "DAW 388 / 8-TRACK": an own name plate, no maker's logo or product name.
     fn name_plate(&self, ui: &mut Ui) {
         let layout = egui::Layout::top_down(egui::Align::Max);
         ui.allocate_ui_with_layout(egui::vec2(PLATE_WIDTH, 0.0), layout, |ui| {
@@ -85,8 +85,8 @@ impl DawApp {
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.add_space(8.0);
             ui.label(bold("DAW 388").italics().size(30.0).color(palette::RED));
-            ui.label(bold("STUDIO 8").italics().size(15.0).color(palette::CREAM));
-            ui.label(RichText::new("tape emulation · 8 tracks").size(11.0).color(palette::TEXT_DIM));
+            ui.label(bold("8-TRACK").italics().size(15.0).color(palette::CREAM));
+            ui.label(RichText::new("tape emulation · 8:8:2 mixer").size(11.0).color(palette::TEXT_DIM));
         });
     }
 

@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.29.0
+Versie: 0.30.0
 Laatst bijgewerkt: 31-10-2026
 
 ## Doel
@@ -61,6 +61,7 @@ Mijn liedje/
 - Autosave volgt 30 seconden na een wijziging, alleen als het project al een map heeft.
 - Backups: bij elke handmatige opslag en hooguit elke 5 minuten bij autosave.
 - Een project uit een nieuwere formaatversie wordt geweigerd met een melding.
+- Bij het verlaten van een project (Close, New, Open of Quit, na de opslaan-vraag) gaan de bestanden in `audio/` die het opgeslagen `project.json` niet gebruikt naar de prullenbak (`session::unused_audio`, `Platform::trash` met de crate `trash`; op macOS via NSFileManager, zodat er geen toestemming voor de Finder nodig is). Verborgen bestanden blijven staan. Kan het project niet gelezen worden of laat `open` een regio weg, dan gaat er niets weg. Een oudere backup die zo'n take gebruikte, mist hem daarna.
 
 ## SoundCraft
 
@@ -181,7 +182,7 @@ Er zijn twee routes: wat er op band komt (kanaal, bus, spoor) en wat je hoort (M
 - Vastklikken op tellen (met RASTER), randen van regio's, nulpunt, CUE-punt en afspeelpositie, binnen 8 pixels; Cmd ingedrukt is vrij.
 - Zoomen met Cmd en scrollen rond de muis, of met Cmd+Links en Cmd+Rechts, scrollen schuift door de tijd. Tijdens het afspelen bladeren de sporen mee.
 - Bestanden uit de Finder komen op het laatst aangeklikte spoor (en de sporen erna) vanaf de afspeelpositie, samen één undo-stap. Waar je loslaat kan niet: winit geeft bij het slepen van bestanden geen muispositie door.
-- Dubbelklik op de naam van een spoor wijzigt hem.
+- Dubbelklik op de naam van een spoor wijzigt hem. Naast de naam staan M, S en R: MUTE, SOLO en REC FUNCTION, dezelfde waarden als op de strip.
 - Een spoor dat nog geladen wordt of waarvan het bestand ontbreekt, neemt niets nieuws aan; bewerkingen over alle sporen wachten tot het geladen of gewist is. Tijdens een opname kan er niet bewerkt worden.
 - Undo-namen: Splitsen, Knippen, Splice, Plakken, Invoegen, Wissen, Verwijderen, Verschuiven, Kopiëren, Inkorten, Naam, Importeren, Laden, Wis en Opname spoor N.
 
@@ -213,6 +214,6 @@ Een bron (audiobestand) wordt op een achtergrondthread gedecodeerd en naar de sa
 
 ## Versiebeheer
 
-- GitHub: privé repo `tonvanderkolk/daw-388`, met een Engelse beschrijving. Ton maakt hem pas openbaar na verder testen; tot die tijd kan alleen hij de release downloaden.
+- GitHub: privé repo `tonvanderkolk/daw-388`, met een Engelse beschrijving. `.github/FUNDING.yml` wijst naar Buy Me a Coffee (`tvdk71`); in de app opent Help, Support DAW 388... die pagina (`Platform::open_url`). Ton maakt hem pas openbaar na verder testen; tot die tijd kan alleen hij de release downloaden.
 - `design/ref/` (handleiding en foto's) staat in `.gitignore` en hoort niet in de repo.
 - Wachtwoorden en tokens horen in `CREDENTIALS.md` (staat in `.gitignore`).

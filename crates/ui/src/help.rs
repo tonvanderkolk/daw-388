@@ -3,6 +3,9 @@
 use super::*;
 use skin::paper::{self, note, section_title};
 
+/// Where Support DAW 388... goes: a page to buy the maker a coffee.
+pub(crate) const SUPPORT_URL: &str = "https://buymeacoffee.com/tvdk71";
+
 /// Which help sheet is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Help {
@@ -46,6 +49,7 @@ const GUIDE: [(&str, &[&str]); 5] = [
             "Drag a region to move it; Alt and drag copies it. Cmd while dragging ignores SNAP.",
             "S splits at the playhead, Delete removes, Cmd+X, Cmd+C and Cmd+V cut, copy and paste.",
             "Cmd+Left and Cmd+Right zoom out and in; Cmd and scroll zooms around the mouse.",
+            "M, S and R beside a track's name mute it, solo it and make it ready to record.",
         ],
     ),
     (
@@ -70,6 +74,9 @@ impl DawApp {
                 }
             }
             ui.separator();
+            if ui.button("Support DAW 388...").on_hover_text(SUPPORT_URL).clicked() {
+                self.platform.open_url(SUPPORT_URL);
+            }
             if ui.button("About DAW 388").clicked() {
                 self.help = Some(Help::About);
             }
@@ -79,14 +86,20 @@ impl DawApp {
     pub(crate) fn help_window(&mut self, ctx: &egui::Context) {
         let Some(help) = self.help else { return };
         let mut open = true;
+        let mut support = false;
         match help {
             Help::About => paper::paper_window(ctx, "about-window", "About DAW 388", "", &mut open, 360.0, |ui| {
                 ui.label(RichText::new("DAW 388").size(22.0).strong());
-                ui.label(format!("Studio 8 tape emulation · version {}", env!("CARGO_PKG_VERSION")));
+                ui.label(format!("8-track tape emulation · version {}", env!("CARGO_PKG_VERSION")));
                 ui.add_space(12.0);
                 ui.label("Made by Ton van der Kolk.");
                 ui.add_space(4.0);
-                ui.label("Free to use and to share, not for sale. MIT or Apache-2.0 licence.");
+                ui.label("Free and open source, under the MIT or Apache-2.0 licence.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label("Like DAW 388?");
+                    support = ui.link("You can support it with a coffee.").on_hover_text(SUPPORT_URL).clicked();
+                });
                 ui.add_space(12.0);
                 note(ui, "After the TASCAM 388 Studio 8. Not made by or connected with TASCAM.");
             }),
@@ -102,6 +115,9 @@ impl DawApp {
                     }
                 });
             }),
+        }
+        if support {
+            self.platform.open_url(SUPPORT_URL);
         }
         if !open {
             self.help = None;

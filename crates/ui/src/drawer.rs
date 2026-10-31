@@ -5,7 +5,7 @@
 use super::*;
 use crate::sources::SourceState;
 use crate::timeline::{self, Edge, Hit, Timeline};
-use egui::{Align2, CursorIcon, FontId, Pos2, Rect, pos2};
+use egui::{Align2, CursorIcon, FontId, Pos2, Rect, Vec2, pos2};
 
 /// Height of the armrest (the switch between the views).
 pub(crate) const ARMREST: f32 = 18.0;
@@ -13,6 +13,9 @@ const RULER: f32 = 24.0;
 const HEAD: f32 = 190.0;
 /// A lane needs this height for its volume and pan under the name.
 const CONTROLS_MIN: f32 = 44.0;
+/// The M, S and R keys at the right of a track's name: their size and the room they take.
+const KEY: Vec2 = Vec2::new(18.0, 14.0);
+const KEYS_W: f32 = 3.0 * (KEY.x + 3.0) + 6.0;
 /// The lowest the eight lanes can go in the SPOREN view; the zoom keeps at least this.
 pub(crate) const LANES_MIN: f32 = 8.0 * 52.0 + RULER + 32.0;
 
@@ -207,6 +210,7 @@ impl DawApp {
         }
         self.paint(ui, rect, &areas, &line);
         self.track_controls(ui, &areas);
+        self.track_keys(ui, &areas);
         if !recording {
             self.rename_field(ui, &areas);
             let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
@@ -235,6 +239,45 @@ impl DawApp {
             if volume.changed() || turned.changed() || turned.double_clicked() {
                 self.send_channel(index);
                 self.mark_dirty();
+            }
+        }
+    }
+
+    /// MUTE, SOLO and REC FUNCTION per track beside its name: the same keys as on the strip.
+    fn track_keys(&mut self, ui: &mut Ui, areas: &Areas) {
+        let blink = (self.now * 2.0).fract() < 0.5;
+        for index in 0..TRACKS {
+            let head = areas.lane(index, true);
+            let up = if areas.lane_h >= CONTROLS_MIN { -areas.lane_h * 0.18 } else { 0.0 };
+            let y = head.center().y + up;
+            let recording = self.engine.as_ref().is_some_and(|e| e.is_recording(index));
+            let track = &self.tracks[index];
+            let keys = [
+                ("M", track.mute, palette::LED_ORANGE, "MUTE"),
+                ("S", track.solo, palette::LED_GREEN, "SOLO: hear only the soloed tracks"),
+                ("R", recording || (track.armed && blink), palette::LED, "REC FUNCTION: track ready to record"),
+            ];
+            let mut clicked = None;
+            for (i, (label, lit, colour, tip)) in keys.into_iter().enumerate() {
+                let x = head.right() - 6.0 - KEY.x / 2.0 - (2 - i) as f32 * (KEY.x + 3.0);
+                let rect = Rect::from_center_size(pos2(x, y), KEY);
+                if small_key(ui, rect, label, lit, colour).on_hover_text(tip).clicked() {
+                    clicked = Some(i);
+                }
+            }
+            match clicked {
+                Some(0) => {
+                    self.tracks[index].mute = !self.tracks[index].mute;
+                    self.send_channel(index);
+                    self.mark_dirty();
+                }
+                Some(1) => {
+                    let on = !self.tracks[index].solo;
+                    self.tracks[index].solo = on;
+                    self.engine_send(Command::SetSolo(index, on));
+                }
+                Some(_) => self.toggle_arm(index),
+                None => {}
             }
         }
     }
@@ -407,7 +450,8 @@ impl DawApp {
                 palette::CREAM,
             );
             let name = &self.tracks[track].name;
-            painter.with_clip_rect(name_rect.shrink(2.0)).text(
+            let name_clip = Rect::from_min_max(name_rect.min, pos2(name_rect.right() - KEYS_W, name_rect.bottom()));
+            painter.with_clip_rect(name_clip.shrink(2.0)).text(
                 name_rect.left_center() + vec2(28.0, up),
                 Align2::LEFT_CENTER,
                 if name.is_empty() { "empty" } else { name },
@@ -658,5 +702,23 @@ fn mini_fader(ui: &mut Ui, db: &mut f32) -> egui::Response {
     let cap = Rect::from_center_size(pos2(x, rect.center().y), vec2(10.0, rect.height()));
     painter.rect_filled(cap, 2.0, palette::CREAM);
     painter.line_segment([pos2(x, cap.top() + 2.0), pos2(x, cap.bottom() - 2.0)], Stroke::new(1.0, palette::EDGE));
+    response
+}
+
+/// A small key with its letter, filled with its lamp colour while on.
+fn small_key(ui: &mut Ui, rect: Rect, label: &str, lit: bool, colour: Color32) -> egui::Response {
+    let response = ui.allocate_rect(rect, Sense::click());
+    let painter = ui.painter();
+    let fill = if lit {
+        colour
+    } else if response.hovered() {
+        palette::PANEL_DARK.gamma_multiply(1.6)
+    } else {
+        palette::PANEL_DARK
+    };
+    painter.rect_filled(rect, 2.0, fill);
+    painter.rect_stroke(rect, 2.0, Stroke::new(1.0, palette::TEXT_DIM.gamma_multiply(0.5)), egui::StrokeKind::Inside);
+    let text = if lit { palette::PANEL_DARK } else { palette::TEXT };
+    painter.text(rect.center(), Align2::CENTER_CENTER, label, FontId::proportional(10.0), text);
     response
 }

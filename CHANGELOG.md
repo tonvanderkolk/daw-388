@@ -4,6 +4,17 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-31
+
+### Toegevoegd
+- TRACKS: naast de naam van elk spoor de toetsjes M (MUTE), S (SOLO) en R (REC FUNCTION, knippert als het spoor klaarstaat), dezelfde als op de kanaalstrip.
+- Bij het sluiten van een project, het openen van een ander of afsluiten gaan opnames die het opgeslagen project niet gebruikt (ongedaan gemaakt, overschreven of niet bewaard) naar de prullenbak (Windows: Prullenbak), met een melding hoeveel. Zo groeit een project niet met ongebruikte bestanden. Kan het project niet gelezen worden of moest er een regio worden weggelaten, dan blijft alles staan.
+- Een donatielink naar Buy Me a Coffee: Help, Support DAW 388..., een regel in About, in de README, in de handleiding en `.github/FUNDING.yml` (de knop Sponsor op GitHub).
+
+### Gewijzigd
+- "Free to share, not for sale" wordt "Free and open source" (README, About en de handleiding).
+- Het naambord heet DAW 388 / 8-TRACK in plaats van STUDIO 8, een productnaam van TASCAM; ook in About, de tape-instellingen en de handleiding. De verwijzing naar de TASCAM 388 met "Not made by or connected with TASCAM" blijft.
+
 ## [0.29.0] - 2026-10-31
 
 ### Toegevoegd

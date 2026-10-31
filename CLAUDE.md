@@ -3,7 +3,7 @@
 > Het projectgeheugen voor Claude. Lees het aan het begin van elke sessie, samen met PROJECT.md.
 
 ## Projectbeschrijving
-Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 8): opnemen, mixen op een 8:8:2-mixer met tape-karakter en exporteren. Een hobbyproject van Ton van der Kolk, gratis te delen, niet te verkopen. De scope staat in HANDOVER.md, de techniek in PROJECT.md.
+Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 8): opnemen, mixen op een 8:8:2-mixer met tape-karakter en exporteren. Een hobbyproject van Ton van der Kolk, gratis en open source, met een donatielink naar Buy Me a Coffee (`tvdk71`). De scope staat in HANDOVER.md, de techniek in PROJECT.md.
 
 ## Technische stack
 - Rust (stable, edition 2024), Cargo workspace: `engine`, `tape`, `fx`, `project`, `ui`, `app-desktop`
@@ -31,18 +31,19 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 
 - Twee weergaven, MIXER en TRACKS (Tab wisselt): de mixer staat altijd in zijn geheel in beeld. Voor lage schermen is er de compacte console (View), zonder EQ, AUX en effecten
 - De console staat op een vast raster met banden, zoals de echte 388
 - Opnemen op VARI mag; de snelheid ligt vast per opname
-- Een project is een pakket `Naam.daw388`; oudere mappen blijven werken
+- Een project is een pakket `Naam.daw388`; oudere mappen blijven werken. Ongebruikte opnames gaan bij het verlaten naar de prullenbak, nooit direct weg
+- Geen productnamen van TASCAM als eigen naam (dus 8-TRACK, niet STUDIO 8); de 388 noemen als voorbeeld mag, met de disclaimer
 - Niet ondertekend: geen Apple Developer-account. De installatie-uitleg vangt dat op
 - Fase 9 (browserversie) is uitgesteld
 
 ## Huidige status
-Versie 0.29.0: een Engelse gebruikershandleiding (`docs/manual/manual.html`, als PDF via `packaging/manual.sh`) die met elke release in de app, de DMG en de ZIP komt en via Help, User manual opent. Sinds 0.28.0 is er een compacte console voor lage schermen. De laatste release op GitHub is v0.28.0.
+Versie 0.30.0: M, S en R per spoor in TRACKS, ongebruikte opnames gaan bij het verlaten van een project naar de prullenbak, een donatielink (Help, Support DAW 388...) en het naambord DAW 388 / 8-TRACK in plaats van STUDIO 8. Sinds 0.29.0 is er een gebruikershandleiding als PDF. Release v0.30.0 staat op GitHub met de DMG, de ZIP en de handleiding.
 
 ## Actieve branch
 main
 
 ## Laatste sync
-31-10-2026 01:12
+31-10-2026 13:14
 
 ## Bekende issues / openstaande punten
 - De repository is privé; Ton maakt hem openbaar na verder testen
