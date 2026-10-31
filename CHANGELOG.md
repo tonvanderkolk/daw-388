@@ -4,6 +4,12 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-10-31
+
+### Toegevoegd
+- Een gebruikershandleiding in het Engels (`docs/manual/manual.html`): installeren, de eerste opname, elke knop van de strips, de master-sectie en het transport, opnemen, de 388-routering met recepten, TRACKS, tape, metronoom, export, instellingen, sneltoetsen en wat te doen als iets niet werkt. `packaging/manual.sh` drukt hem met Chrome af als PDF; de release-workflow zet de PDF in de app, in de DMG, in de ZIP en los bij de release.
+- Help, User manual (PDF) opent de handleiding die bij de app hoort. De Quick guide verwijst ernaar.
+
 ## [0.28.0] - 2026-10-30
 
 ### Toegevoegd

@@ -4,6 +4,7 @@
 #   packaging/macos/bundle.sh <version> <out-dir> <binary> [<binary> ...]
 #
 # Several binaries (Apple Silicon and Intel) are joined into one universal binary with lipo.
+# With MANUAL set to a PDF, the manual goes into the app (Help, User manual) and into the DMG.
 # The app is signed ad hoc (no Apple Developer account): it runs, but on first opening macOS
 # asks the user to allow it in System Settings, Privacy & Security.
 set -eu
@@ -21,6 +22,9 @@ else
 fi
 sed "s/@VERSION@/$version/g" "$here/Info.plist" >"$app/Contents/Info.plist"
 cp "$here/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+if [ -n "${MANUAL:-}" ]; then
+    cp "$MANUAL" "$app/Contents/Resources/DAW 388 Manual.pdf"
+fi
 printf 'APPL????' >"$app/Contents/PkgInfo"
 codesign --force --deep --sign - "$app"
 
@@ -28,6 +32,9 @@ codesign --force --deep --sign - "$app"
 staging=$(mktemp -d)
 cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
+if [ -n "${MANUAL:-}" ]; then
+    cp "$MANUAL" "$staging/DAW 388 Manual.pdf"
+fi
 dmg="$out/DAW-388-$version-macos.dmg"
 rm -f "$dmg"
 hdiutil create -volname "DAW 388" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null

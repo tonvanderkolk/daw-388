@@ -18,6 +18,7 @@ const GUIDE: [(&str, &[&str]); 5] = [
             "File > New starts an empty project with 8 tracks. Save it first: recordings go into the project.",
             "Tab switches between the MIXER and the TRACKS view.",
             "Settings (Cmd+,) chooses the audio output, the input and the buffer.",
+            "Everything in detail: Help > User manual (PDF).",
             "View > Compact console leaves out EQ, AUX and the effects, for a low screen. They keep working.",
         ],
     ),
@@ -61,6 +62,12 @@ impl DawApp {
         ui.menu_button("Help", |ui| {
             if ui.button("Quick guide").clicked() {
                 self.help = Some(Help::Guide);
+            }
+            if ui.button("User manual (PDF)").clicked() {
+                match self.platform.manual() {
+                    Some(path) => self.platform.reveal(&path),
+                    None => self.status = "The manual comes with the downloaded app: DAW 388 Manual.pdf".to_string(),
+                }
             }
             ui.separator();
             if ui.button("About DAW 388").clicked() {

@@ -55,17 +55,20 @@ jobs:
         run: |
           cargo build --release -p daw388 --target aarch64-apple-darwin
           cargo build --release -p daw388 --target x86_64-apple-darwin
-      - name: App en DMG
+      - name: App en DMG, met de handleiding
         run: |
           version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           mkdir -p dist
-          packaging/macos/bundle.sh "$version" dist \
+          packaging/manual.sh "$version" "dist/DAW-388-$version-manual.pdf"
+          MANUAL="dist/DAW-388-$version-manual.pdf" packaging/macos/bundle.sh "$version" dist \
             target/aarch64-apple-darwin/release/daw388 \
             target/x86_64-apple-darwin/release/daw388
       - uses: actions/upload-artifact@v7
         with:
           name: daw388-macos
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.pdf
 
   windows:
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
@@ -84,12 +87,13 @@ jobs:
         run: cargo test --workspace --release
       - name: Release-build
         run: cargo build --release -p daw388
-      - name: ZIP
+      - name: ZIP, met de handleiding
         shell: bash
         run: |
           version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           mkdir -p "dist/DAW 388"
           cp target/release/daw388.exe "dist/DAW 388/DAW 388.exe"
+          packaging/manual.sh "$version" "dist/DAW 388/DAW 388 Manual.pdf"
           cp LICENSE-MIT LICENSE-APACHE "dist/DAW 388/"
           cd dist && 7z a "DAW-388-$version-windows.zip" "DAW 388" >/dev/null
       - uses: actions/upload-artifact@v7
@@ -126,3 +130,5 @@ jobs:
             ```
 
             **Windows** (64-bit): unzip and start `DAW 388.exe`. Windows SmartScreen may warn about an unknown publisher: choose "More info", then "Run anyway".
+
+            **Manual**: the PDF below, also in the DMG and the ZIP, and in the app under Help, User manual.

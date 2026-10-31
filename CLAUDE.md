@@ -13,7 +13,8 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 
 
 ## Mappenstructuur
 - `crates/`: de workspace (de UI met de skin in `crates/ui/src/skin/`)
-- `packaging/`: het icoon, de macOS-bundel (`macos/bundle.sh`, `Info.plist`) en het Windows-icoon
+- `packaging/`: het icoon, de macOS-bundel (`macos/bundle.sh`, `Info.plist`), het Windows-icoon en `manual.sh` (de handleiding als PDF)
+- `docs/manual/`: de gebruikershandleiding (Engels, HTML); bij elke nieuwe functie bijwerken
 - `docs/superpowers/`: specs en plannen per versie
 - `design/ref/`: handleiding en foto's van de 388, niet in de repo
 - `logs/`: synclogs
@@ -35,13 +36,13 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 
 - Fase 9 (browserversie) is uitgesteld
 
 ## Huidige status
-Versie 0.28.0: een compacte console (View, Compact console) zonder EQ, AUX en effecten voor lage schermen, die bij een laag scherm vanzelf aangaat. Sinds 0.27.0 gaan exports naar een map naast het project, met een naamveld en de samplerate van het project. Release v0.28.0 staat op GitHub met de DMG en de ZIP.
+Versie 0.29.0: een Engelse gebruikershandleiding (`docs/manual/manual.html`, als PDF via `packaging/manual.sh`) die met elke release in de app, de DMG en de ZIP komt en via Help, User manual opent. Sinds 0.28.0 is er een compacte console voor lage schermen. De laatste release op GitHub is v0.28.0.
 
 ## Actieve branch
 main
 
 ## Laatste sync
-30-10-2026 20:58
+31-10-2026 01:12
 
 ## Bekende issues / openstaande punten
 - De repository is privé; Ton maakt hem openbaar na verder testen

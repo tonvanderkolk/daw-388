@@ -147,8 +147,10 @@ pub trait Platform {
     fn pick_project_location(&mut self, suggested_name: &str) -> Option<PathBuf>;
     /// Ask the user for a folder (where exports go).
     fn pick_folder(&mut self, title: &str) -> Option<PathBuf>;
-    /// Show a folder in the Finder or Explorer.
+    /// Show a folder in the Finder or Explorer, or open a document in its app.
     fn reveal(&mut self, dir: &Path);
+    /// The PDF manual that comes with the app, when it is there (not in a development build).
+    fn manual(&self) -> Option<PathBuf>;
     /// Run slow work (decoding and resampling audio) away from the UI thread.
     fn spawn(&mut self, job: Box<dyn FnOnce() + Send>);
     /// Run work that lasts as long as an engine (the recording writer) on its own thread.
@@ -3223,6 +3225,9 @@ mod tests {
             None
         }
         fn reveal(&mut self, _: &Path) {}
+        fn manual(&self) -> Option<PathBuf> {
+            None
+        }
         fn spawn(&mut self, job: Box<dyn FnOnce() + Send>) {
             // Run at once, so the tests only need to poll.
             job();

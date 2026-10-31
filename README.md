@@ -22,6 +22,8 @@ Get the latest version from [Releases](https://github.com/tonvanderkolk/daw-388/
 
 - **Windows** (64-bit): unzip and start `DAW 388.exe`. If SmartScreen warns about an unknown publisher, choose "More info", then "Run anyway".
 
+The **user manual** (PDF) comes with every release, inside the DMG and the ZIP, and opens from Help, User manual in the app.
+
 Or build it yourself with `cargo run --release` (a recent stable Rust toolchain via [rustup](https://rustup.rs)).
 
 ---
@@ -36,7 +38,7 @@ De nieuwste versie staat bij [Releases](https://github.com/tonvanderkolk/daw-388
 
 ## Status
 
-Versie 0.28.0. Sinds 0.16.0 kwamen er de vintage console naar de 388 (VU-meters, bandrecorder, toetsen, vensters), de weergaven MIXER en SPOREN, opnemen op VARI, projectpakketten `.daw388`, downloadbare apps, een Help-menu met een korte gids, het importeren van stereobestanden over twee sporen en een compacte console voor lage schermen bij. Daarvoor al: 8 sporen laden (WAV, AIFF, FLAC en MP3) en afspelen, transport naar het voorbeeld van de 388, opnemen met REC FUNCTION, punch-in en AUTO PUNCH, een metronoom, een mixer met EQ, AUX- en EFF-sends, een plate reverb, een tape echo en het tape-karakter van de 388 met dbx bij afspelen in een eenvoudige stand (één strook per spoor) of met de volledige 388-routering (ASSIGN naar de PGM-bussen, DIRECT en een MONITOR-sectie), export van een stereo bounce en losse sporen als WAV of AIFF, projecten met autosave en backups, en keuze van audio-interface, samplerate en buffer. Hoe de routing werkt staat in [PROJECT.md](PROJECT.md#routing-in-de-praktijk). Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
+Versie 0.29.0. Sinds 0.16.0 kwamen er de vintage console naar de 388 (VU-meters, bandrecorder, toetsen, vensters), de weergaven MIXER en SPOREN, opnemen op VARI, projectpakketten `.daw388`, downloadbare apps, een Help-menu met een korte gids, het importeren van stereobestanden over twee sporen en een compacte console voor lage schermen en een gebruikershandleiding als PDF bij. Daarvoor al: 8 sporen laden (WAV, AIFF, FLAC en MP3) en afspelen, transport naar het voorbeeld van de 388, opnemen met REC FUNCTION, punch-in en AUTO PUNCH, een metronoom, een mixer met EQ, AUX- en EFF-sends, een plate reverb, een tape echo en het tape-karakter van de 388 met dbx bij afspelen in een eenvoudige stand (één strook per spoor) of met de volledige 388-routering (ASSIGN naar de PGM-bussen, DIRECT en een MONITOR-sectie), export van een stereo bounce en losse sporen als WAV of AIFF, projecten met autosave en backups, en keuze van audio-interface, samplerate en buffer. Hoe de routing werkt staat in [PROJECT.md](PROJECT.md#routing-in-de-praktijk). Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
 
 ## Bouwen en starten
 

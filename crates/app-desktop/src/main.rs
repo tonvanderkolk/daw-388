@@ -11,6 +11,9 @@ use daw388_engine::EngineHandle;
 use daw388_ui::{DawApp, DeviceInfo, OutputInfo, OutputRequest, Platform};
 use std::path::{Path, PathBuf};
 
+/// The PDF manual that comes with the app.
+const MANUAL: &str = "DAW 388 Manual.pdf";
+
 struct Desktop {
     host: cpal::Host,
     /// Kept alive while the output plays; dropping it closes the stream.
@@ -88,6 +91,14 @@ impl Platform for Desktop {
         if let Err(e) = std::process::Command::new(opener).arg(dir).spawn() {
             log::warn!("cannot show {}: {e}", dir.display());
         }
+    }
+
+    fn manual(&self) -> Option<PathBuf> {
+        // In the app's Resources on macOS, next to the program on Windows (see build.yml).
+        let exe = std::env::current_exe().ok()?;
+        let dir = exe.parent()?;
+        let path = if cfg!(target_os = "macos") { dir.join("../Resources").join(MANUAL) } else { dir.join(MANUAL) };
+        path.is_file().then_some(path)
     }
 
     fn spawn(&mut self, job: Box<dyn FnOnce() + Send>) {

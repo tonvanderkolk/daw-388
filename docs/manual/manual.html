@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DAW 388 User Manual</title>
+<!-- The source of the PDF manual: packaging/manual.sh prints it with Chrome and fills in @VERSION@. -->
+<style>
+  @page { size: A4; margin: 18mm 18mm 20mm 18mm; }
+  :root { --ink: #23201c; --soft: #5d564c; --red: #b8322a; --line: #d8d0c2; --paper: #f7f2e8; }
+  * { box-sizing: border-box; }
+  body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 10.5pt; line-height: 1.5; color: var(--ink); margin: 0; }
+  h1, h2, h3 { font-weight: 700; line-height: 1.2; }
+  h2 { font-size: 17pt; color: var(--red); margin: 0 0 10pt; padding-bottom: 4pt; border-bottom: 1.5pt solid var(--red); break-after: avoid; }
+  section + section h2 { margin-top: 24pt; }
+  #about h2, .toc h2 { break-before: page; }
+  h3 { font-size: 12pt; margin: 16pt 0 4pt; break-after: avoid; }
+  p { margin: 0 0 7pt; }
+  ul, ol { margin: 0 0 8pt; padding-left: 18pt; }
+  li { margin-bottom: 3pt; }
+  b.k, .k { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-weight: 700; font-size: 9pt; letter-spacing: 0.3pt;
+            background: var(--paper); border: 0.75pt solid var(--line); border-radius: 2pt; padding: 0 3pt; white-space: nowrap; }
+  kbd { font-family: Menlo, Consolas, monospace; font-size: 9pt; background: #eee9df; border: 0.75pt solid var(--line); border-radius: 2pt; padding: 0 3pt; white-space: nowrap; }
+  table { width: 100%; border-collapse: collapse; margin: 4pt 0 10pt; break-inside: auto; }
+  th, td { text-align: left; vertical-align: top; padding: 3pt 6pt; border-bottom: 0.75pt solid var(--line); }
+  th { font-size: 9pt; text-transform: uppercase; letter-spacing: 0.5pt; color: var(--soft); }
+  td:first-child { width: 30%; }
+  tr { break-inside: avoid; }
+  .tip { background: var(--paper); border-left: 3pt solid var(--red); padding: 6pt 9pt; margin: 8pt 0 10pt; break-inside: avoid; }
+  .tip p:last-child { margin-bottom: 0; }
+  .cover { height: 245mm; display: flex; flex-direction: column; justify-content: center; }
+  .cover h1 { font-size: 44pt; font-style: italic; color: var(--red); margin: 0; }
+  .cover .sub { font-size: 18pt; font-style: italic; font-weight: 700; margin: 2pt 0 18pt; }
+  .cover p { color: var(--soft); max-width: 120mm; }
+  .toc { break-before: page; }
+  .toc h2 { break-before: avoid; }
+  .toc ol { column-count: 2; column-gap: 12mm; padding-left: 16pt; }
+  .toc a { color: var(--ink); text-decoration: none; }
+  a { color: var(--red); }
+  .small { font-size: 9pt; color: var(--soft); }
+</style>
+</head>
+<body>
+
+<section class="cover">
+  <h1>DAW 388</h1>
+  <div class="sub">STUDIO 8 · User Manual</div>
+  <p>An 8-track recorder and 8:8:2 mixer for macOS and Windows, modelled on the TASCAM 388 Studio 8.</p>
+  <p>Version @VERSION@</p>
+  <p class="small">A hobby project by Ton van der Kolk. Free to use and to share, not for sale. Not made by or connected with TASCAM.</p>
+</section>
+
+<section class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#about">What DAW 388 is</a></li>
+    <li><a href="#install">Installing</a></li>
+    <li><a href="#first">The first start</a></li>
+    <li><a href="#screen">The screen</a></li>
+    <li><a href="#quick">Your first recording</a></li>
+    <li><a href="#projects">Projects</a></li>
+    <li><a href="#strip">The channel strip</a></li>
+    <li><a href="#master">The master section</a></li>
+    <li><a href="#effects">Reverb and echo</a></li>
+    <li><a href="#transport">The tape deck and transport</a></li>
+    <li><a href="#recording">Recording in detail</a></li>
+    <li><a href="#classic">The 388 routing</a></li>
+    <li><a href="#tracks">The TRACKS view</a></li>
+    <li><a href="#tape">Tape settings</a></li>
+    <li><a href="#metronome">Metronome</a></li>
+    <li><a href="#export">Export</a></li>
+    <li><a href="#settings">Settings</a></li>
+    <li><a href="#keys">Keyboard shortcuts</a></li>
+    <li><a href="#trouble">When something does not work</a></li>
+    <li><a href="#files">Files and folders</a></li>
+  </ol>
+</section>
+
+<section id="about">
+  <h2>1. What DAW 388 is</h2>
+  <p>The TASCAM 388 Studio 8 (1985) put an eight-track tape recorder and an 8:8:2 mixing console in one cabinet. DAW 388 does the same on your computer: eight mono tracks on a virtual tape, a console with eight channel strips, eight buses and a stereo master, a plate reverb and a tape echo, and the sound of the tape when it plays back.</p>
+  <p>It is meant to be simple. There are no plug-ins, no endless tracks and no piano roll: you record, you mix, you export. The keys and knobs carry the names of the 388 (TRK, PGM, AUX, REC, RTZ, CUE), so the manual of the real machine helps too. Where DAW 388 differs from the machine, this manual says so.</p>
+  <p>The console works in two modes:</p>
+  <ul>
+    <li><b class="k">SIMPLE</b>: one strip per track, as in most recording programs. Choose an input, press REC, play. This is where every new project starts.</li>
+    <li><b class="k">388</b>: the full routing of the machine, with the program buses, ASSIGN, DIRECT and the MONITOR section. For ping-pong recording and for working the way the 388 does.</li>
+  </ul>
+  <p>Switching from SIMPLE to 388 does not change the sound. You can learn the program in SIMPLE and switch when you want more.</p>
+</section>
+
+<section id="install">
+  <h2>2. Installing</h2>
+  <h3>macOS</h3>
+  <p>macOS 11 or later, on Apple Silicon and Intel.</p>
+  <ol>
+    <li>Open the DMG and drag <b>DAW 388</b> onto <b>Applications</b>.</li>
+    <li>Start DAW 388. The app is not signed with an Apple Developer ID, so macOS says it could not verify it. Click <b>Done</b>, not "Move to Trash".</li>
+    <li>Open System Settings, Privacy &amp; Security, scroll down and click <b>Open Anyway</b> next to DAW 388. Confirm with your password.</li>
+    <li>From then on DAW 388 opens normally.</li>
+  </ol>
+  <p>Comfortable with Terminal? This command does the same and skips the warning:</p>
+  <p><kbd>xattr -dr com.apple.quarantine "/Applications/DAW 388.app"</kbd></p>
+  <p>The first time you choose an input, macOS asks whether DAW 388 may use the microphone. Allow it, or nothing will be recorded. You can change it later in System Settings, Privacy &amp; Security, Microphone.</p>
+  <h3>Windows</h3>
+  <p>Windows 10 or 11, 64-bit. Unzip the ZIP somewhere you like (for example in your Documents) and start <b>DAW 388.exe</b>. If SmartScreen warns about an unknown publisher, choose "More info", then "Run anyway".</p>
+  <p>DAW 388 uses WASAPI, the standard audio system of Windows. ASIO is not supported yet, so the delay while recording can be a little longer than in programs that use ASIO.</p>
+</section>
+
+<section id="first">
+  <h2>3. The first start</h2>
+  <p>DAW 388 opens with an empty project of eight tracks, in SIMPLE mode, and plays through the default audio device of your computer. Before you record, open <b>Settings</b> (<kbd>Cmd+,</kbd>, on Windows <kbd>Ctrl+,</kbd>, or File, Settings...) and check three things:</p>
+  <ol>
+    <li><b>Output</b>: where you listen, for example your audio interface or headphones.</li>
+    <li><b>Input</b>: the device you record from. As long as this is "None", nothing can be recorded and no microphone permission is asked.</li>
+    <li><b>Buffer</b>: smaller is less delay, larger is safer for a slow computer. 128 or 256 samples is a good start.</li>
+  </ol>
+  <p>These are settings of the app, not of a project: they stay the same whichever song you open. All settings are described in <a href="#settings">chapter 17</a>.</p>
+  <div class="tip"><p>If the device you chose is not connected, DAW 388 plays through the default device and says so at the top right. As soon as your device returns, it switches back by itself.</p></div>
+</section>
+
+<section id="screen">
+  <h2>4. The screen</h2>
+  <h3>The menu bar</h3>
+  <p>At the top: the menus <b>File</b>, <b>Edit</b>, <b>View</b> and <b>Help</b>, the name of the project in the middle (with "(modified)" when there are unsaved changes), and on the right the status line, the time of the last save and the full-screen button. The status line is where DAW 388 tells you what happened or what is missing. Read it when something does not do what you expect.</p>
+  <h3>MIXER and TRACKS</h3>
+  <p>There are two views. <b>MIXER</b> shows the whole console: the meter bridge, eight channel strips, the master section and the tape deck. <b>TRACKS</b> shows the tracks on a timeline for editing, with the meter bridge, the counter and the transport keys above it. Press <kbd>Tab</kbd> or click the leather armrest at the bottom of the window to switch.</p>
+  <h3>The size of the console</h3>
+  <p>The console always fits in the window: make the window larger and everything grows, smaller and everything shrinks. Full screen (the button at the top right, or File, Full screen) gives the most room.</p>
+  <p>On a low screen, such as a laptop with 1920 by 1080 pixels, the full console becomes small to read. Choose <b>View, Compact console</b>: the strips then leave out EQ and the AUX and EFF sends, and the master section leaves out the effects and their masters. Everything that is hidden keeps working, you just do not see it. If you have never made a choice, DAW 388 starts with the compact console by itself when the screen is too low for the full one.</p>
+  <h3>Knobs, faders and keys</h3>
+  <ul>
+    <li>Drag a knob or fader up or down. Hold <kbd>Shift</kbd> for fine adjustment.</li>
+    <li>Double-click a knob or fader to set it back: faders to 0 dB, PAN to the centre, sends to off.</li>
+    <li>Click a key to switch it. A lamp beside or above the key shows whether it is on.</li>
+    <li>Hover the mouse over anything to see what it does and its exact value.</li>
+  </ul>
+</section>
+
+<section id="quick">
+  <h2>5. Your first recording</h2>
+  <p>A guitar or a voice on track 1, in SIMPLE mode.</p>
+  <ol>
+    <li><b>Save the project</b> with File, Save (<kbd>Cmd+S</kbd>). Recordings are stored in the project, so DAW 388 asks for a name and a place first. If you forget, it asks when you press REC.</li>
+    <li>On <b>channel 1</b>, choose the input in the red menu at the top of the strip, for example <b>in 1</b>.</li>
+    <li>Set the <b>INPUT</b> switch to <b class="k">MIC</b> for a microphone or <b class="k">LINE</b> for a keyboard, a guitar through a pedal or another line signal.</li>
+    <li>Press <b class="k">REC</b> on the channel. Its lamp blinks: the track is ready to record. You now hear the input.</li>
+    <li>Play and turn <b class="k">TRIM</b> until the <b>OL</b> lamp only flashes on the loudest notes. The <b>TRK 1</b> meter above the strip shows the level.</li>
+    <li>Press <b class="k">RTZ</b> (<kbd>Home</kbd>) to go to the start, then <b class="k">REC</b> in the transport (<kbd>R</kbd>). The tape starts and records. Press <b class="k">STOP</b> (<kbd>Space</kbd>) when you are done.</li>
+    <li>Press REC on the channel again to disarm it, RTZ, and <b class="k">PLAY</b> (<kbd>Space</kbd>) to listen.</li>
+  </ol>
+  <p>Not happy? <kbd>Cmd+Z</kbd> takes the recording away again. For the next part, arm another track and record over what you hear.</p>
+  <div class="tip"><p>Want a click? Press <b class="k">CLICK</b> (<kbd>K</kbd>) and set the tempo under the transport keys. A count-in is set in Settings, Metronome.</p></div>
+</section>
+
+<section id="projects">
+  <h2>6. Projects</h2>
+  <p>A project is one song. On a Mac it is a package <b>Song name.daw388</b> that the Finder shows as a single document; on Windows it is a folder with that name. Inside are the recordings (in <b>audio</b>), the settings of the song and the last ten backups.</p>
+  <ul>
+    <li><b>File, New</b> (<kbd>Cmd+N</kbd>): an empty project with eight tracks in SIMPLE mode.</li>
+    <li><b>File, Open...</b> (<kbd>Cmd+O</kbd>) or <b>Open Recent</b>: open a project. Double-clicking a project in the Finder does not open it yet; use the menu.</li>
+    <li><b>File, Save</b> (<kbd>Cmd+S</kbd>) and <b>Save as...</b> (<kbd>Shift+Cmd+S</kbd>). Audio you loaded from elsewhere is copied into the project when you save, so the project is complete on its own. The originals stay where they were.</li>
+    <li><b>File, Close project</b> (<kbd>Cmd+W</kbd>) and <b>Quit DAW 388</b> (<kbd>Cmd+Q</kbd>) ask first when there are unsaved changes.</li>
+  </ul>
+  <p>Once a project has been saved, DAW 388 saves it by itself 30 seconds after every change. A backup is made at every save you do yourself and at most every five minutes otherwise.</p>
+  <p>Everything that belongs to the song is saved with it: the mix, the tape settings, the metronome, the view, the zero and CUE points and the export folder. Your audio device and the other Settings belong to the app.</p>
+</section>
+
+<section id="strip">
+  <h2>7. The channel strip</h2>
+  <p>Each of the eight strips belongs to the track with the same number. From top to bottom:</p>
+  <table>
+    <tr><th>Control</th><th>What it does</th></tr>
+    <tr><td><b class="k">LOAD</b></td><td>Put an audio file (WAV, AIFF, FLAC or MP3) on this track, starting at the play position. A stereo file goes on two tracks: left on this one, right on the next, with PAN fully left and right.</td></tr>
+    <tr><td><b class="k">CLEAR</b></td><td>Remove everything from this track. <kbd>Cmd+Z</kbd> brings it back.</td></tr>
+    <tr><td>Input menu (red)</td><td>Which input of your audio device this channel records: <b>in 1</b>, <b>in 2</b> and so on, or <b>no input</b>. Also in Settings.</td></tr>
+    <tr><td><b>INPUT</b> switch</td><td><b class="k">MIC</b> goes through an emulated preamp that saturates softly when you drive it; <b class="k">LINE</b> is clean. In 388 mode there is a third position, <b class="k">RMX</b>: the playback of the track (see <a href="#classic">chapter 12</a>).</td></tr>
+    <tr><td><b class="k">TRIM</b> and <b>OL</b></td><td>The input level. OL lights when the channel comes near the top; let it only flash on the loudest notes.</td></tr>
+    <tr><td><b>EQ</b>: HIGH, MID, LOW</td><td>Three bands of ±15 dB. Each is a double knob: drag the centre for the gain, drag the outer ring for the frequency (LOW 50 Hz to 1 kHz, MID 500 Hz to 5 kHz, HIGH 2.5 to 15 kHz). Double-click a part to reset it. A flat EQ does nothing to the sound.</td></tr>
+    <tr><td><b>AUX</b> and <b class="k">PRE</b></td><td>The send to the AUX bus and the plate reverb. With PRE on, the send comes before EQ, fader and MUTE (for a headphone mix); off, after the fader.</td></tr>
+    <tr><td><b>EFF</b></td><td>The send to the EFF bus and the tape echo, after the fader.</td></tr>
+    <tr><td><b>ASSIGN</b> (388 only)</td><td>The buses 1-2, 3-4, 5-6, 7-8 and L-R, with <b class="k">DIRECT</b> and <b class="k">AUTO</b>. See <a href="#classic">chapter 12</a>.</td></tr>
+    <tr><td><b>PAN</b></td><td>Left and right in the stereo mix (in 388 mode also between the odd and even bus of an ASSIGN pair).</td></tr>
+    <tr><td><b class="k">REC</b></td><td>REC FUNCTION: the track is ready to record (blinking) or recording (lit).</td></tr>
+    <tr><td><b class="k">MUTE</b></td><td>Silences the channel in the mix.</td></tr>
+    <tr><td><b class="k">SOLO</b></td><td>Hear only the soloed tracks. Recordings, buses and the AUX and EFF outputs are not affected. Not on the real 388 and not saved.</td></tr>
+    <tr><td>Fader</td><td>The level of the channel, from off to +6 dB. The value is shown underneath.</td></tr>
+    <tr><td>Number and name</td><td>Double-click the name to rename the track. A track without a name takes the name of the file or the track its audio came from.</td></tr>
+  </table>
+  <h3>The meter bridge</h3>
+  <p>Above each strip is the <b>TRK</b> meter of its track; on the right the two large meters of the stereo mix. A red lamp in a meter (PEAK) lights near full scale. In SIMPLE mode the TRK meters show the channel, before the fader (PRE) or after it (POST), chosen in the master section. In 388 mode they show what the track's MONITOR row hears, as on the machine: the bus going to the track while recording, otherwise the tape.</p>
+</section>
+
+<section id="master">
+  <h2>8. The master section</h2>
+  <p>To the right of the strips. In SIMPLE mode it is one column; in 388 mode a second column holds the MONITOR section and the PGM masters.</p>
+  <table>
+    <tr><th>Control</th><th>What it does</th></tr>
+    <tr><td><b>ROUTING</b> SIMPLE | 388</td><td>The mode of the console (<a href="#about">chapter 1</a>). Going back from 388 to SIMPLE asks first when you would lose 388 routing.</td></tr>
+    <tr><td><b>MASTER</b> AUX and EFF</td><td>The level of the AUX and EFF buses, to the effects and to their own outputs of your interface (Settings).</td></tr>
+    <tr><td><b class="k">L-R</b> and <b class="k">AUX-EFF</b></td><td>What the large meters show: the stereo mix, or the AUX and EFF buses.</td></tr>
+    <tr><td><b class="k">PRE</b> and <b class="k">POST</b> (SIMPLE)</td><td>Whether the TRK meters show the channels before or after the fader.</td></tr>
+    <tr><td><b class="k">MONO</b></td><td>Left and right together, to check the mix in mono.</td></tr>
+    <tr><td><b>LISTEN</b> STEREO, AUX, EFF</td><td>What the main output plays: the stereo mix, or the AUX or EFF bus (to hear a headphone mix, for instance).</td></tr>
+    <tr><td><b>PHONES</b></td><td>The volume of the main output. The click has its own volume.</td></tr>
+    <tr><td><b>STEREO MASTER</b></td><td>The level of the stereo mix, before PHONES. This is what you export.</td></tr>
+  </table>
+</section>
+
+<section id="effects">
+  <h2>9. Reverb and echo</h2>
+  <p>As on the 388, the AUX bus feeds a reverb and the EFF bus an echo. Turn up AUX or EFF on a channel to send it there. The returns come back into the stereo mix through <b>EFFECT RTN</b>: RTN 1 is the plate (GAIN and a balance PAN), RTN 2 the echo (GAIN and PAN). Effects are never recorded on a track.</p>
+  <h3>PLATE (AUX)</h3>
+  <ul>
+    <li><b>DECAY</b>: how long the reverb lasts, 0.5 to 6 seconds.</li>
+    <li><b>PRE</b>: a short wait before the reverb starts, 0 to 100 ms. It keeps the voice clear of its own reverb.</li>
+    <li><b>TONE</b>: from dark to bright.</li>
+  </ul>
+  <h3>ECHO (EFF)</h3>
+  <ul>
+    <li><b>TIME</b>: 40 to 800 ms with <b class="k">FREE</b>, or with <b class="k">1/4</b>, <b class="k">1/8</b> or <b class="k">1/8.</b> (dotted) in time with the metronome tempo.</li>
+    <li><b>FEEDB.</b>: how many repeats.</li>
+    <li><b>TONE</b>: how dark the repeats get. Like a tape echo, every repeat is a little darker and wobbles a little.</li>
+  </ul>
+  <div class="tip"><p>Use AUX for a headphone mix (with PRE)? Then turn RTN 1 down, or the reverb comes along. You can also use your own effect: send AUX or EFF to an output of your interface (Settings) and bring it back on a channel set to LINE.</p></div>
+</section>
+
+<section id="transport">
+  <h2>10. The tape deck and transport</h2>
+  <p>The reels turn while the tape moves. Above them you read the tape speed, type and dbx. The LED counter shows the time from the zero point, the CUE point and the bar and beat of the metronome.</p>
+  <table>
+    <tr><th>Key</th><th>What it does</th></tr>
+    <tr><td><b class="k">RESET</b></td><td>Sets the counter to 00:00 here: this is the zero point.</td></tr>
+    <tr><td><b class="k">CUE</b></td><td>Remembers this spot as the CUE point.</td></tr>
+    <tr><td><b class="k">STC</b></td><td>Search To Cue: winds to the CUE point (without one: to the start).</td></tr>
+    <tr><td><b class="k">REPEAT</b> (<kbd>C</kbd>)</td><td>Plays from the zero point to the CUE point over and over. How it goes back is set in Settings: like the 388 (the tape rewinds in real time) or Cycle (it jumps back at once).</td></tr>
+    <tr><td><b class="k">RTZ</b> (<kbd>Home</kbd>)</td><td>Return To Zero: back to the zero point. Press PLAY while it winds and it plays on arrival.</td></tr>
+    <tr><td><b class="k">INSERT</b></td><td>Armed tracks play the tape until you punch in, then switch to the input. For repairing a part of a recording.</td></tr>
+    <tr><td><b class="k">PUNCH</b></td><td>AUTO PUNCH: after REC, record only between the zero point and the CUE point; with REPEAT on, at every pass.</td></tr>
+    <tr><td><b class="k">CLICK</b> (<kbd>K</kbd>)</td><td>The metronome on or off. The lamp ticks along.</td></tr>
+    <tr><td><b class="k">TAP</b></td><td>Tap a few times in tempo to set the tempo.</td></tr>
+    <tr><td><b class="k">REW</b> (<kbd>,</kbd>) and <b class="k">F FWD</b> (<kbd>.</kbd>)</td><td>Wind back or forward, silently, until STOP, the start or the end of the longest track.</td></tr>
+    <tr><td><b class="k">STOP</b>, <b class="k">PLAY</b> (<kbd>Space</kbd>)</td><td>Stop and play. PLAY while recording punches out and keeps playing.</td></tr>
+    <tr><td><b class="k">REC</b> (<kbd>R</kbd>)</td><td>Record on the armed tracks; while playing it punches in. See <a href="#recording">chapter 11</a>.</td></tr>
+    <tr><td><b>PITCH</b>, <b class="k">VARI</b>, <b class="k">FIX</b></td><td>On VARI the PITCH knob changes speed and pitch by up to 15% either way; FIX is normal speed.</td></tr>
+    <tr><td><b class="k">TAPE</b></td><td>Opens the tape settings (<a href="#tape">chapter 14</a>). The lamp is on when the tape character is on.</td></tr>
+    <tr><td><b class="k">EXPORT</b></td><td>Opens the export window (<a href="#export">chapter 16</a>).</td></tr>
+    <tr><td><b>TEMPO</b>, <b>METER</b></td><td>The metronome tempo in quarter notes per minute (drag, or click and type) and the time signature.</td></tr>
+  </table>
+</section>
+
+<section id="recording">
+  <h2>11. Recording in detail</h2>
+  <h3>Arming and starting</h3>
+  <p>REC on a channel strip arms its track (REC FUNCTION): the lamp blinks. REC in the transport starts recording on all armed tracks, from stop together with PLAY. Arm several tracks to record several inputs at once.</p>
+  <p>Without armed tracks, transport REC makes the machine record-ready (REC blinks); pressing REC on a strip then starts recording on that track, and pressing it again punches out.</p>
+  <h3>Punching in and out</h3>
+  <p>To repair a part: play the song, and press REC at the spot where the new take should start (punch-in). Stop recording with PLAY (keeps playing), STOP, or any wind key. With <b class="k">INSERT</b> on you hear the tape until the punch-in, and then your input.</p>
+  <p>With <b class="k">PUNCH</b> (AUTO PUNCH) DAW 388 punches in and out by itself: set the zero point (RESET) before the part and the CUE point after it, start a little earlier, and press REC. Only the part between the two points is recorded. With REPEAT on, you can try again and again; the last take stays.</p>
+  <h3>Count-in</h3>
+  <p>With a count-in (Settings, Metronome) REC from stop first counts one or two bars while the tape waits, then starts on the beat.</p>
+  <h3>Recording on VARI</h3>
+  <p>As on tape, you can record with PITCH on VARI, for example a fast part slowed down. While recording the speed is fixed. Played back at normal speed, what you played at +10% sounds slower and lower.</p>
+  <h3>Where the recordings go</h3>
+  <p>Every take becomes a 24-bit WAV file in the project's audio folder and a region on its track. A new take replaces what was under it, like on tape, but the old recording is not lost: <kbd>Cmd+Z</kbd> brings it back, and in the TRACKS view you can drag its edges out again.</p>
+  <h3>Delay (latency)</h3>
+  <p>Your computer and interface need a moment to get the sound in. DAW 388 measures this and places every recording that much earlier, so it lines up with the tape. If your recordings still sit slightly late or early, adjust Latency in Settings by a few milliseconds.</p>
+  <h3>Hearing yourself</h3>
+  <p>Normally you hear your input through DAW 388, with EQ and effects. If your interface has direct monitoring and you prefer that (no delay at all), switch off Monitoring in Settings; DAW 388 then plays nothing of the input.</p>
+</section>
+
+<section id="classic">
+  <h2>12. The 388 routing</h2>
+  <p>Switch ROUTING to <b class="k">388</b>. There are now two separate paths, as on the machine: what goes onto the tape, and what you hear.</p>
+  <h3>What goes onto the tape</h3>
+  <ul>
+    <li><b>Channel source</b>: <b class="k">MIC</b>, <b class="k">LINE</b> or <b class="k">RMX</b>. RMX (remix) is the playback of the track with the same number, for mixing and ping-pong.</li>
+    <li><b>ASSIGN</b> sends the channel to a pair of program buses: <b class="k">1-2</b>, <b class="k">3-4</b>, <b class="k">5-6</b> or <b class="k">7-8</b>. PAN divides it between the odd (left) and even (right) bus of the pair. The PGM MASTERS <b>ODD</b> and <b>EVEN</b> set the level of buses 1, 3, 5, 7 and 2, 4, 6, 8.</li>
+    <li>Track N records bus N, or with <b class="k">DIRECT</b> channel N straight away, after TRIM and EQ and before the fader. DIRECT is not on the real 388: it is a quick way to record one input on one track.</li>
+    <li><b class="k">AUTO</b> (also not on the 388): the channel plays the tape, and switches to the input while its track records. This is how SIMPLE mode works.</li>
+  </ul>
+  <h3>What you hear</h3>
+  <ul>
+    <li><b class="k">L-R</b> on a channel sends it to the stereo mix, with its fader, PAN, MUTE and EQ.</li>
+    <li>The <b>MONITOR</b> section has a row per track with its own GAIN, PAN and mute (M), and a TRK meter. With <b class="k">MON</b> on <b class="k">PGM</b> each row hears its bus; on <b class="k">CUE</b> an armed track hears its input and the other tracks hear the tape.</li>
+    <li>The STEREO MASTER gets the channels on L-R. <b>Only when no channel at all is on L-R</b> does it get the MONITOR mix instead. That is the recording setup of the 388: channels to the buses, listening through MONITOR.</li>
+  </ul>
+  <div class="tip"><p>Recording a track and hearing nothing? Then its channel is not on L-R while other channels are. DAW 388 warns about this when you press REC on the strip. Either switch L-R on for that channel, or switch it off on all channels and listen through the MONITOR section.</p></div>
+  <h3>Recipes</h3>
+  <ul>
+    <li><b>One input on one track</b> (guitar on 3): channel 3 on LINE or MIC with its input, DIRECT on. Arm track 3 and record. Set how loud you hear it in MONITOR row 3.</li>
+    <li><b>A stereo source</b> (on 5 and 6): channel 5 on the left input, channel 6 on the right, both DIRECT. In MONITOR, pan 5 left and 6 right.</li>
+    <li><b>Ping-pong to mono</b> (tracks 1 to 3 onto 4): channels 1 to 3 on RMX, ASSIGN 3-4 on, PAN fully right (bus 4). The faders set the balance. Arm track 4 and record.</li>
+    <li><b>Ping-pong to stereo</b> (tracks 3 to 5 onto 7 and 8): channels 3 to 5 on RMX, ASSIGN 7-8 on; PAN is now the place between bus 7 (left) and 8 (right). Arm both tracks. In MONITOR pan 7 left and 8 right, and switch M on for 3 to 5 if you do not want to hear them twice.</li>
+    <li><b>Mixdown</b>: all channels on RMX with L-R on. The faders and PAN are the mix.</li>
+  </ul>
+  <p>Ping-pong records the tape as it plays back, so it takes the tape character with it, as on a real machine.</p>
+</section>
+
+<section id="tracks">
+  <h2>13. The TRACKS view</h2>
+  <p>Press <kbd>Tab</kbd> for the tracks on a timeline. Each track has a small fader and PAN knob (the same as in the mixer) and its regions: pieces of recordings or loaded files.</p>
+  <h3>Moving around</h3>
+  <ul>
+    <li>Click in the time bar at the top to put the tape there; drag in it to select a time range over all tracks.</li>
+    <li>Scroll to move through time. <kbd>Cmd</kbd> and scroll zooms around the mouse; <kbd>Cmd+Left</kbd> and <kbd>Cmd+Right</kbd> or the − and + keys zoom out and in; <b class="k">FIT</b> shows the whole song.</li>
+    <li>While playing, the view pages along with the tape.</li>
+  </ul>
+  <h3>Editing regions</h3>
+  <ul>
+    <li>Click a region to select it; <kbd>Shift</kbd>-click adds or removes; click an empty spot to deselect.</li>
+    <li>Drag to move the selection, also to another track. <kbd>Alt</kbd> and drag moves a copy.</li>
+    <li>Drag the edge of a region to shorten it, or to bring back what was cut off, up to the end of the recording.</li>
+    <li>What lands somewhere replaces what was there, like on tape.</li>
+    <li><b class="k">SNAP</b> makes regions snap to the beats, to other regions, the zero and CUE points and the play position. Hold <kbd>Cmd</kbd> while dragging to move freely.</li>
+  </ul>
+  <h3>The toolbar</h3>
+  <table>
+    <tr><th>Key</th><th>What it does</th></tr>
+    <tr><td><b class="k">SPLIT</b> (<kbd>S</kbd>)</td><td>Splits the selected regions at the play position; without a selection, all tracks.</td></tr>
+    <tr><td><b class="k">CUT</b> (<kbd>Cmd+X</kbd>)</td><td>Cuts the selection. A time range is a splice: what comes after it moves up.</td></tr>
+    <tr><td><b class="k">COPY</b> (<kbd>Cmd+C</kbd>)</td><td>Copies the selected regions or the time range.</td></tr>
+    <tr><td><b class="k">PASTE</b> (<kbd>Cmd+V</kbd>)</td><td>Pastes at the play position, each region on its own track. A time range is inserted.</td></tr>
+    <tr><td><b class="k">DELETE</b> (<kbd>Delete</kbd>)</td><td>Removes the selection or the time range, without moving anything up.</td></tr>
+  </table>
+  <p>Drop audio files from the Finder or Explorer onto the window: they go on the track you clicked last (and the ones after it), from the play position. "File, Load 8 audio files..." puts up to eight files on tracks 1 to 8 from the start.</p>
+  <p>Undo (<kbd>Cmd+Z</kbd>) and redo (<kbd>Shift+Cmd+Z</kbd>) go back up to ten steps for everything that changes the tracks: recordings, loading, clearing and editing. Not during a recording.</p>
+</section>
+
+<section id="tape">
+  <h2>14. Tape settings</h2>
+  <p>Press <b class="k">TAPE</b> or choose File, Tape settings... The tape character works on playback only: recordings stay clean, so you can change or switch off the sound of the tape at any time. The settings belong to the project.</p>
+  <ul>
+    <li><b>Character</b>: <b>Clean</b> (the tape passes untouched) or <b>388</b> (the sound of the machine).</li>
+    <li><b>Tape speed</b>: 3¾, 7½ (the speed of the 388) or 15 IPS. Slower is warmer, with more wow and less high end.</li>
+    <li><b>Tape type</b>: 456 style (plenty of headroom), 250 style (warm, less headroom), 911 style (a little brighter).</li>
+    <li><b>Amounts</b>: Saturation, Wow &amp; flutter, Noise (hiss) and Crosstalk, from 0 to 200%. 100% is the machine as it is.</li>
+    <li><b>dbx</b> for tracks 1-4 and 5-8: noise reduction. The hiss drops away in silences and breathes along with the music, as on the real machine.</li>
+  </ul>
+  <p>A new project starts on 388, 7½ IPS, 456 with dbx on.</p>
+</section>
+
+<section id="metronome">
+  <h2>15. Metronome</h2>
+  <ul>
+    <li><b class="k">CLICK</b> (<kbd>K</kbd>) switches it on and off. <b>TEMPO</b> and <b>METER</b> under the transport keys set the tempo and time signature; <b class="k">TAP</b> sets the tempo by tapping.</li>
+    <li>Bar 1 starts at the beginning of the tape, so moving the zero point does not shift the rhythm.</li>
+    <li>In Settings, Metronome: the volume, a count-in of one or two bars, and whether the click also sounds during normal playback (otherwise only while recording).</li>
+    <li>The click is only heard: it is never recorded and never exported.</li>
+  </ul>
+</section>
+
+<section id="export">
+  <h2>16. Export</h2>
+  <p>Press <b class="k">EXPORT</b> or choose File, Export... Save the project first.</p>
+  <h3>What</h3>
+  <ul>
+    <li><b>Stereo bounce</b>: the mix as you hear it, optionally with the tape character.</li>
+    <li><b>Separate tracks</b>: one file per track you tick, with a choice of processing: with mixer (EQ, PAN, fader) and tape character, in stereo with its own reverb and echo; tape character only, mono; or completely dry, mono, the recording itself.</li>
+  </ul>
+  <h3>Range</h3>
+  <p>The whole song, or only from the zero point to the CUE point. Every file starts at 0:00, or with silence before it so that it lines up with the song (handy for importing into another program).</p>
+  <h3>Format</h3>
+  <p>WAV or AIFF, 16 bit (with dither), 24 bit or 32 bit float, 44.1, 48 or 96 kHz. The sample rate starts on the rate of the audio in the project.</p>
+  <h3>Name and folder</h3>
+  <p>The files are called <b>Name_mix</b> and <b>Name_01_Trackname</b>. Name is the project name, unless you type another in the Name field. They go into a folder <b>Song name export</b> next to the project; <b>Choose folder...</b> picks another one, which the project remembers. After the export, <b>Show in Finder</b> (on Windows: Show in Explorer) opens the folder.</p>
+  <p>The export runs in the background and sounds exactly like the app. Reverb and echo ring out at the end.</p>
+</section>
+
+<section id="settings">
+  <h2>17. Settings</h2>
+  <p>File, Settings... (<kbd>Cmd+,</kbd>). These belong to the app, except the REPEAT mode and the metronome, which are saved with the project.</p>
+  <table>
+    <tr><th>Setting</th><th>What it does</th></tr>
+    <tr><td>Output</td><td>The device you listen through. "System default device" follows the choice of your computer.</td></tr>
+    <tr><td>Sample rate</td><td>From the device, or a rate it offers.</td></tr>
+    <tr><td>Buffer</td><td>Smaller gives less delay but asks more of the computer. Clicks or dropouts? Choose a larger buffer.</td></tr>
+    <tr><td>Input</td><td>The device you record from, with its number of inputs. "None" records nothing.</td></tr>
+    <tr><td>Monitoring</td><td>Hear the input through DAW 388, or switch it off and use the direct monitoring of your interface.</td></tr>
+    <tr><td>AUX output, EFF output</td><td>Send the AUX or EFF bus to an output of your interface (3 and up), for a headphone mix or an external effect.</td></tr>
+    <tr><td>Latency</td><td>What DAW 388 measured, plus your own correction in milliseconds.</td></tr>
+    <tr><td>Input per channel</td><td>The same choice as the red menu on each strip. Channels set to an input your device does not have move to one it has.</td></tr>
+    <tr><td>Metronome</td><td>Volume, count-in, and the click during normal playback.</td></tr>
+    <tr><td>REPEAT, RTZ and STC</td><td>388 (the tape rewinds to the zero point in real time) or Cycle (jumps straight back).</td></tr>
+  </table>
+</section>
+
+<section id="keys">
+  <h2>18. Keyboard shortcuts</h2>
+  <p>On Windows use <kbd>Ctrl</kbd> where the Mac uses <kbd>Cmd</kbd>.</p>
+  <table>
+    <tr><th>Key</th><th>Action</th></tr>
+    <tr><td><kbd>Space</kbd></td><td>Play or stop</td></tr>
+    <tr><td><kbd>R</kbd></td><td>REC</td></tr>
+    <tr><td><kbd>Home</kbd></td><td>RTZ, back to the zero point</td></tr>
+    <tr><td><kbd>,</kbd> and <kbd>.</kbd></td><td>REW and F FWD</td></tr>
+    <tr><td><kbd>C</kbd></td><td>REPEAT on or off</td></tr>
+    <tr><td><kbd>K</kbd></td><td>CLICK on or off</td></tr>
+    <tr><td><kbd>Tab</kbd></td><td>Switch between MIXER and TRACKS</td></tr>
+    <tr><td><kbd>Cmd+Z</kbd>, <kbd>Shift+Cmd+Z</kbd></td><td>Undo, redo</td></tr>
+    <tr><td><kbd>Cmd+N</kbd>, <kbd>Cmd+O</kbd>, <kbd>Cmd+S</kbd>, <kbd>Shift+Cmd+S</kbd></td><td>New, open, save, save as</td></tr>
+    <tr><td><kbd>Cmd+W</kbd>, <kbd>Cmd+Q</kbd></td><td>Close project, quit</td></tr>
+    <tr><td><kbd>Cmd+,</kbd></td><td>Settings</td></tr>
+    <tr><td><kbd>Ctrl+Cmd+F</kbd></td><td>Full screen (Mac)</td></tr>
+    <tr><td colspan="2"><b>In TRACKS</b></td></tr>
+    <tr><td><kbd>S</kbd></td><td>Split</td></tr>
+    <tr><td><kbd>Cmd+X</kbd>, <kbd>Cmd+C</kbd>, <kbd>Cmd+V</kbd></td><td>Cut, copy, paste</td></tr>
+    <tr><td><kbd>Delete</kbd></td><td>Delete</td></tr>
+    <tr><td><kbd>Cmd+Left</kbd>, <kbd>Cmd+Right</kbd>, <kbd>Cmd</kbd>+scroll</td><td>Zoom</td></tr>
+    <tr><td><kbd>Alt</kbd>+drag</td><td>Copy regions</td></tr>
+    <tr><td><kbd>Cmd</kbd> while dragging</td><td>Ignore SNAP</td></tr>
+    <tr><td colspan="2"><b>Knobs and faders</b></td></tr>
+    <tr><td><kbd>Shift</kbd>+drag</td><td>Fine adjustment</td></tr>
+    <tr><td>Double-click</td><td>Back to the default (0 dB, centre, off)</td></tr>
+  </table>
+</section>
+
+<section id="trouble">
+  <h2>19. When something does not work</h2>
+  <h3>I hear nothing at all</h3>
+  <ul>
+    <li>Look at the status line at the top right: is the device you chose connected? Check Output in Settings.</li>
+    <li>Are PHONES, the STEREO MASTER and the channel faders up, and is LISTEN on STEREO?</li>
+    <li>Is a track on SOLO? Then you only hear the soloed tracks.</li>
+  </ul>
+  <h3>I hear my instrument but nothing is recorded, or I do not hear my input</h3>
+  <ul>
+    <li>Is an Input device chosen in Settings, and does the channel have the right input (red menu)?</li>
+    <li>On a Mac: does DAW 388 have permission for the microphone (System Settings, Privacy &amp; Security, Microphone)?</li>
+    <li>Is the track armed (REC on the strip blinks)? Is Monitoring on in Settings?</li>
+    <li>In 388 mode: is the channel on L-R while others are? See the tip in <a href="#classic">chapter 12</a>.</li>
+  </ul>
+  <h3>REC does nothing</h3>
+  <p>The project has to be saved first; DAW 388 asks for it. A track that is still loading, or whose file is missing, cannot record until it is loaded or cleared.</p>
+  <h3>Clicks and dropouts</h3>
+  <p>Choose a larger Buffer in Settings, and close other programs that use audio.</p>
+  <h3>Recordings sit slightly late or early</h3>
+  <p>Adjust Latency in Settings by a few milliseconds, and record a test.</p>
+  <h3>Everything is tiny</h3>
+  <p>Use full screen and View, Compact console (<a href="#screen">chapter 4</a>).</p>
+  <h3>A track says "missing"</h3>
+  <p>A file of the project is not where it should be, for instance after moving files by hand. Put it back, or clear the track. Projects saved with DAW 388 keep their audio inside, so they can be moved and copied whole.</p>
+</section>
+
+<section id="files">
+  <h2>20. Files and folders</h2>
+  <ul>
+    <li><b>A project</b>: <b>Song name.daw388</b> with <b>project.json</b> (the song), <b>audio</b> (the recordings and copied files) and <b>backups</b> (the last ten versions of project.json). On a Mac, right-click it and choose Show Package Contents to look inside.</li>
+    <li><b>Exports</b>: the folder <b>Song name export</b> next to the project, unless you chose another.</li>
+    <li><b>The app settings</b>: settings.json in <b>~/Library/Application Support/DAW 388</b> (Mac) or <b>%APPDATA%\DAW 388</b> (Windows). Delete it to start with the default settings.</li>
+  </ul>
+  <p>Audio files that DAW 388 reads: WAV, AIFF, FLAC and MP3, mono or stereo, at any sample rate. MP3 files start and end with a little silence; that is how MP3 works.</p>
+  <p class="small">DAW 388 is free software under the MIT or Apache-2.0 licence. The typeface IBM Plex is under the SIL Open Font License. TASCAM and Studio 8 are names of TASCAM; DAW 388 is not made by or connected with TASCAM.</p>
+</section>
+
+</body>
+</html>
