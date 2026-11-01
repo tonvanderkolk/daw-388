@@ -240,6 +240,11 @@ const MAX_DB: f32 = 6.0;
 /// MONITOR GAIN goes up to +10 dB.
 const MONITOR_MAX_DB: f32 = 10.0;
 
+/// A project package or folder, or its `project.json`.
+fn is_project_path(path: &Path) -> bool {
+    path.is_dir() || path.file_name().is_some_and(|n| n == PROJECT_FILE)
+}
+
 fn db_to_gain(db: f32) -> f32 {
     if db <= MIN_DB { 0.0 } else { 10f32.powf(db / 20.0) }
 }
@@ -894,7 +899,17 @@ impl DawApp {
     pub fn open_arguments(&mut self, paths: Vec<PathBuf>) {
         match paths.as_slice() {
             [] => {}
-            [one] if one.is_dir() || one.file_name().is_some_and(|n| n == PROJECT_FILE) => self.open_project(one),
+            [one] if is_project_path(one) => self.open_project(one),
+            _ => self.load_paths(paths),
+        }
+    }
+
+    /// Files the system asks to open while the app runs (a double-click in the Finder): a project
+    /// replaces the current one, asking first about unsaved changes; audio files go onto tracks.
+    pub fn open_documents(&mut self, paths: Vec<PathBuf>) {
+        match paths.as_slice() {
+            [] => {}
+            [one] if is_project_path(one) => self.request(Pending::Open(Some(one.clone()))),
             _ => self.load_paths(paths),
         }
     }
@@ -4355,6 +4370,18 @@ mod tests {
         app.mark_dirty();
         app.request(Pending::New);
         assert_eq!(app.pending, Some(Pending::New));
+    }
+
+    #[test]
+    fn a_project_from_the_finder_asks_before_replacing_unsaved_work() {
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let project = root.path().join("Demo.daw388");
+        std::fs::create_dir(&project).unwrap_or_else(|e| panic!("{e}"));
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.mark_dirty();
+        app.open_documents(vec![project.clone()]);
+        assert_eq!(app.pending, Some(Pending::Open(Some(project))));
     }
 
     #[test]

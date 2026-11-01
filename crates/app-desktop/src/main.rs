@@ -4,6 +4,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+#[cfg(target_os = "macos")]
+mod open_documents;
 
 use audio::{Output, SilentClock};
 use cpal::traits::HostTrait;
@@ -160,6 +162,8 @@ struct DesktopApp(DawApp);
 
 impl eframe::App for DesktopApp {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
+        #[cfg(target_os = "macos")]
+        self.0.open_documents(open_documents::take());
         self.0.ui(ui);
     }
 }
@@ -184,10 +188,15 @@ fn main() -> eframe::Result {
     };
     // A project folder or project.json on the command line opens it; audio files go onto tracks 1 to 8.
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    // The Finder does not use the command line: a double-clicked project arrives as an open event.
+    #[cfg(target_os = "macos")]
+    open_documents::install();
     eframe::run_native(
         "DAW 388",
         options,
         Box::new(move |cc| {
+            #[cfg(target_os = "macos")]
+            open_documents::set_context(&cc.egui_ctx);
             let mut app = DawApp::new(&cc.egui_ctx, Box::new(Desktop::new()));
             app.open_arguments(files);
             Ok(Box::new(DesktopApp(app)))

@@ -38,15 +38,14 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 
 - Fase 9 (browserversie) is uitgesteld
 
 ## Huidige status
-Versie 0.31.0: de app controleert bij het starten (hooguit één keer per dag, uit te zetten in Settings) of er een nieuwere release op GitHub staat en meldt die; Help, Check for Updates... doet het met de hand. Sinds 0.30.0: M, S en R in TRACKS, ongebruikte opnames naar de prullenbak en een donatielink. De laatste release op GitHub is v0.30.0.
+Versie 0.31.1: een project opent met een dubbelklik in de Finder. Sinds 0.31.0: de app controleert bij het starten (hooguit één keer per dag, uit te zetten in Settings) of er een nieuwere release op GitHub staat en meldt die; Help, Check for Updates... doet het met de hand. Sinds 0.30.0: M, S en R in TRACKS, ongebruikte opnames naar de prullenbak en een donatielink. Release v0.31.0 staat op GitHub met de DMG, de ZIP en de handleiding.
 
 ## Actieve branch
 main
 
 ## Laatste sync
-31-10-2026 16:40
+01-11-2026 19:05
 
 ## Bekende issues / openstaande punten
 - Nog niet getest op een andere Mac en op Windows
-- Een project openen met een dubbelklik in de Finder werkt nog niet (winit geeft het open-event niet door)
 - Windows: geen ASIO, geen eigen ARM-build

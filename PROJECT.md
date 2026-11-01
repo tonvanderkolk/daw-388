@@ -1,7 +1,7 @@
 # PROJECT - DAW 388
 
-Versie: 0.31.0
-Laatst bijgewerkt: 31-10-2026
+Versie: 0.31.1
+Laatst bijgewerkt: 01-11-2026
 
 ## Doel
 
@@ -15,7 +15,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 - Audiobestanden: `hound` (WAV) en `symphonia` (AIFF en AIFF-C)
 - Realtime-communicatie: `rtrb` (lock-free ringbuffer)
 - Bestandsdialogen: `rfd`
-- Builds: GitHub Actions. Bij elke push een controle op Windows (opmaak, Clippy, tests). Bij een versielabel `v*` of handmatig: een universal macOS-app (Apple Silicon en Intel via `lipo`) in een DMG (`packaging/macos/bundle.sh`, met `Info.plist`, `AppIcon.icns` en een ad-hoc-handtekening) en een Windows-ZIP met `DAW 388.exe` (icoon via `crates/app-desktop/build.rs` en `winresource`). Bij een versielabel komen beide in een GitHub Release, samen met de handleiding als PDF. De handleiding (Engels) staat in `docs/manual/manual.html`; `packaging/manual.sh` drukt hem met headless Chrome af als PDF en vult de versie in. Die PDF gaat in de app (`Contents/Resources` op macOS, naast `DAW 388.exe` op Windows), in de DMG en in de ZIP; Help, User manual (PDF) opent hem via `Platform::manual`. Het icoon tekent `packaging/make_icon.py`; `packaging/make_icons.sh` maakt er de .icns en .ico van. De Info.plist meldt het pakket `.daw388` aan, zodat de Finder een project als één document toont. Een project openen door erop te dubbelklikken start de app nog zonder het project (winit geeft het open-event van macOS niet door); gebruik File, Open of Open Recent.
+- Builds: GitHub Actions. Bij elke push een controle op Windows (opmaak, Clippy, tests). Bij een versielabel `v*` of handmatig: een universal macOS-app (Apple Silicon en Intel via `lipo`) in een DMG (`packaging/macos/bundle.sh`, met `Info.plist`, `AppIcon.icns` en een ad-hoc-handtekening) en een Windows-ZIP met `DAW 388.exe` (icoon via `crates/app-desktop/build.rs` en `winresource`). Bij een versielabel komen beide in een GitHub Release, samen met de handleiding als PDF. De handleiding (Engels) staat in `docs/manual/manual.html`; `packaging/manual.sh` drukt hem met headless Chrome af als PDF en vult de versie in. Die PDF gaat in de app (`Contents/Resources` op macOS, naast `DAW 388.exe` op Windows), in de DMG en in de ZIP; Help, User manual (PDF) opent hem via `Platform::manual`. Het icoon tekent `packaging/make_icon.py`; `packaging/make_icons.sh` maakt er de .icns en .ico van. De Info.plist meldt het pakket `.daw388` aan, zodat de Finder een project als één document toont. Een project opent met een dubbelklik in de Finder (of Open With, of slepen op het Dock-icoon): macOS stuurt dan `application:openURLs:` naar de app-delegate. Die delegate is van winit en kent de methode niet; `crates/app-desktop/src/open_documents.rs` voegt hem toe zodra `NSApplicationWillFinishLaunchingNotification` komt (de delegate bestaat dan, het open-bericht van een koude start nog niet). De paden gaan in een wachtrij die de UI elk frame leest (`DawApp::open_documents`); een project vraagt eerst om niet-opgeslagen wijzigingen, net als File, Open. Dit is de enige plek met `unsafe` code: de app-desktop-crate heeft daarom `unsafe_code = "deny"` in plaats van het `forbid` van de workspace.
 
 ## Workspace
 

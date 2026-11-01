@@ -4,6 +4,11 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.31.1] - 2026-11-01
+
+### Opgelost
+- Een project openen met een dubbelklik in de Finder (of met Open With, of door het op het Dock-icoon te slepen) gaf de melding "DAW 388 cannot open files in the DAW 388 Project format". Het project opent nu, ook als de app al draait; zijn er niet-opgeslagen wijzigingen, dan vraagt de app eerst of die bewaard moeten worden.
+
 ## [0.31.0] - 2026-10-31
 
 ### Toegevoegd
