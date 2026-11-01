@@ -34,13 +34,14 @@ winresource = "0.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 # Same version eframe uses; needed to switch off winit's default macOS menu.
 winit = "0.30"
-# Opening a project from the Finder: adds `application:openURLs:` to winit's app delegate.
+# Opening a project from the Finder and the "save changes?" question when logging out: adds
+# `application:openURLs:` and `applicationShouldTerminate:` to winit's app delegate.
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["block2", "NSArray", "NSNotification", "NSOperation", "NSString", "NSURL"] }
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder"] }
+objc2-foundation = { version = "0.3", features = ["block2", "NSArray", "NSGeometry", "NSNotification", "NSOperation", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder", "NSView", "NSWindow"] }
 
-# The workspace forbids unsafe code; here it is denied, so open_documents.rs (the one place that
+# The workspace forbids unsafe code; here it is denied, so app_delegate.rs (the one place that
 # talks to the Objective-C runtime) can allow it.
 [lints.rust]
 unsafe_code = "deny"

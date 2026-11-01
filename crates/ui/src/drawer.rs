@@ -160,8 +160,8 @@ impl DawApp {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let m = &self.metronome;
-                    let text = if ui.input(|i| !i.raw.hovered_files.is_empty()) {
-                        format!("Drop: from track {} at {}", self.editor.target + 1, format_counter(self.playhead()))
+                    let text = if let Some((track, at)) = self.editor.drop_at {
+                        format!("Drop: from track {} at {}", track + 1, format_counter(at))
                     } else {
                         format!("Undo {}/{} · {:.0} BPM {}/{}", self.history.len(), history::STEPS, m.bpm, m.beats, m.unit)
                     };
@@ -208,15 +208,17 @@ impl DawApp {
         if !recording {
             self.lanes_input(ui, &response, &line, &areas);
         }
+        let files_over = ui.input(|i| !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty());
+        self.editor.drop_at = files_over.then(|| self.drop_point(ui, &line, &areas));
         self.paint(ui, rect, &areas, &line);
         self.track_controls(ui, &areas);
         self.track_keys(ui, &areas);
         if !recording {
             self.rename_field(ui, &areas);
             let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
-            if !dropped.is_empty() {
-                let at = self.playhead();
-                self.drop_files(self.editor.target, at, dropped);
+            if let Some((track, at)) = self.editor.drop_at.filter(|_| !dropped.is_empty()) {
+                self.editor.target = track;
+                self.drop_files(track, at, dropped);
             }
         }
     }
@@ -310,6 +312,27 @@ impl DawApp {
             marks.extend(timeline::beats(line.start, to, beat, m.beats).into_iter().map(|(t, _)| t));
         }
         marks
+    }
+
+    /// Where dragged files would land: the lane under the mouse, at the time under it (snapped
+    /// like a click in the ruler) or at the play head when the mouse is on the track names.
+    /// Where the mouse position is unknown, the track clicked last at the play head.
+    fn drop_point(&mut self, ui: &Ui, line: &Timeline, areas: &Areas) -> (usize, f64) {
+        let fallback = (self.editor.target, self.playhead());
+        let Some([x, y]) = self.platform.pointer_in_window() else { return fallback };
+        let zoom = ui.ctx().zoom_factor();
+        let pos = pos2(x / zoom, y / zoom);
+        let Some(track) = areas.track_at(pos.y) else { return fallback };
+        if pos.x < areas.head.left() || pos.x > areas.lanes.right() {
+            return fallback;
+        }
+        if pos.x < areas.lanes.left() {
+            return (track, self.playhead());
+        }
+        let (free, reach) = (ui.input(|i| i.modifiers.command), f64::from(timeline::SNAP_PIXELS) / line.zoom);
+        let to = line.seconds(areas.lanes.right());
+        let at = line.seconds(pos.x).max(0.0);
+        (track, if free { at } else { timeline::snap(at, &self.marks(line, to, &[]), reach) })
     }
 
     /// The mouse in the ruler and the lanes.
@@ -433,7 +456,8 @@ impl DawApp {
         painter.rect_filled(rect, 0.0, palette::LANE);
         self.paint_ruler(&painter.with_clip_rect(areas.ruler), areas, line);
 
-        let hovering = ui.input(|i| !i.raw.hovered_files.is_empty());
+        let dragged = ui.input(|i| i.raw.hovered_files.len());
+        let hovering = dragged > 0;
         for track in 0..TRACKS {
             let lane = areas.lane(track, false);
             painter.rect_filled(lane, 0.0, if track % 2 == 0 { palette::LANE } else { palette::LANE_ALT });
@@ -473,8 +497,14 @@ impl DawApp {
                 };
                 self.paint_region(&lane_painter, line, lane, &shown, picked, alpha);
             }
-            if hovering && track == self.editor.target {
+            if let Some((first, at)) = self.editor.drop_at.filter(|_| hovering)
+                && (first..first + dragged).contains(&track)
+            {
                 painter.rect_stroke(lane, 0.0, Stroke::new(2.0, palette::CREAM), egui::StrokeKind::Inside);
+                let x = line.x(at);
+                if lane.x_range().contains(x) {
+                    painter.line_segment([pos2(x, lane.top()), pos2(x, lane.bottom())], Stroke::new(2.0, palette::CREAM));
+                }
             }
         }
         // The moved selection where it would land.

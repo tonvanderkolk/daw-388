@@ -1,6 +1,6 @@
 # DAW 388
 
-<img width="2560" height="1440" alt="Scherm­afbeelding 2026-10-31 om 14 09 57" src="https://github.com/user-attachments/assets/8bbf859b-5f01-4920-9fdb-0ccedd3e9773" />
+<img width="2560" height="1440" alt="DAW 388: the vintage console with eight channel strips, the meter bridge and the tape transport" src="https://github.com/user-attachments/assets/8bbf859b-5f01-4920-9fdb-0ccedd3e9773" />
 
 
 A very simple 8-track DAW for macOS and Windows, modelled on the Tascam 388 (Studio 8): an 8:8:2 mixer combined with an 8-track tape recorder with tape character. Load or record eight tracks, mix them on a vintage console with EQ, AUX and EFF sends, a plate reverb and a tape echo, and export a stereo bounce or separate tracks. The interface is in English and uses the names of the 388 (TRK, PGM, AUX, REC, RTZ, CUE, ...).

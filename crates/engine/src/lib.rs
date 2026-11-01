@@ -140,6 +140,9 @@ pub enum Command {
     SetMonitoring(bool),
     /// AUTO PUNCH: after REC, record only between the zero point and the CUE point.
     SetAutoPunch(bool),
+    /// With AUTO PUNCH, REC from stop and every REPEAT pass start this many samples before the
+    /// zero point (0: at the zero point, or wherever the tape stands).
+    SetPreRoll(f64),
     /// Extra latency compensation in seconds on top of what the device reports.
     SetLatencyOffset(f64),
     /// The metronome on or off.
@@ -347,6 +350,7 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         insert: false,
         monitoring: true,
         auto_punch: false,
+        pre_roll: 0.0,
         rec_out,
         compensation: 0.0,
         click: Click::new(sample_rate),
@@ -438,6 +442,11 @@ impl EngineHandle {
     pub fn locate_seconds(&mut self, seconds: f64) {
         let samples = self.samples(seconds);
         self.send(Command::Locate(samples));
+    }
+
+    pub fn set_pre_roll_seconds(&mut self, seconds: f64) {
+        let samples = self.samples(seconds);
+        self.send(Command::SetPreRoll(samples));
     }
 
     pub fn set_zero_seconds(&mut self, seconds: f64) {
@@ -603,6 +612,8 @@ pub struct Engine {
     insert: bool,
     monitoring: bool,
     auto_punch: bool,
+    /// Pre-roll before the zero point with AUTO PUNCH, in samples.
+    pre_roll: f64,
     rec_out: RecordOut,
     /// Latency compensation in samples for this block.
     compensation: f64,
@@ -700,6 +711,14 @@ impl Engine {
         if matches!(self.state, State::Winding { .. } | State::CountIn { .. }) {
             return;
         }
+        if self.state == State::Stopped
+            && self.auto_punch
+            && self.pre_roll > 0.0
+            && let Some((zero, _)) = self.punch_span()
+        {
+            // The pre-roll: start a little before the zero point, unless the tape stands earlier.
+            self.position = self.position.min((zero - self.pre_roll).max(0.0));
+        }
         if self.state == State::Stopped && self.click.count_in > 0 {
             // Count in first; the clicks line up with the bar grid before this position.
             self.state = State::CountIn { left: self.click.count_in_samples() };
@@ -787,6 +806,7 @@ impl Engine {
                 Command::SetInsert(insert) => self.insert = insert,
                 Command::SetMonitoring(monitoring) => self.monitoring = monitoring,
                 Command::SetAutoPunch(auto) => self.auto_punch = auto,
+                Command::SetPreRoll(samples) => self.pre_roll = samples.max(0.0),
                 Command::SetLatencyOffset(seconds) => self.latency_offset = seconds,
                 Command::SetClick(on) => self.click.enabled = on,
                 Command::SetClickAlways(always) => self.click.always = always,
@@ -896,11 +916,13 @@ impl Engine {
                 if let Some(end) = self.loop_end()
                     && self.position >= end
                 {
+                    let mut from = self.zero;
                     if self.auto_record {
-                        // A new pass: the next take starts at the zero point again.
+                        // A new pass: the next take starts at the zero point again, after the pre-roll.
                         self.punch_out_all();
+                        from = (self.zero - self.pre_roll).max(0.0);
                     }
-                    self.search(self.zero, true);
+                    self.search(from, true);
                 } else if self.rec_mode == RecMode::Off && self.end > 0.0 && self.position >= self.end {
                     // While recording the tape runs on past the end of the longest track.
                     self.state = State::Stopped;
@@ -1572,6 +1594,33 @@ mod tests {
         let stops = items.iter().filter(|i| matches!(i, RecItem::Stop)).count();
         // 10 frames to the zero point, two passes of 100, then the third under way.
         assert_eq!((starts, stops), (3, 2), "a take on every pass");
+        assert_eq!(items.iter().take_while(|i| !matches!(i, RecItem::Stop)).filter(|i| matches!(i, RecItem::Sample(_))).count(), 100);
+    }
+
+    #[test]
+    fn pre_roll_starts_before_the_zero_point_on_every_pass() {
+        let (mut handle, mut engine, mut tx, mut recorder) = with_input();
+        handle.send(Command::SetChannel(0, line(0)));
+        handle.send(Command::SetArmed(0, true));
+        handle.send(Command::SetStyle(TransportStyle::Cycle));
+        handle.send(Command::SetZero(100.0));
+        handle.send(Command::SetCue(Some(200.0)));
+        handle.send(Command::SetRepeat(true));
+        handle.send(Command::SetAutoPunch(true));
+        handle.send(Command::SetPreRoll(30.0));
+        handle.send(Command::Locate(150.0));
+        handle.send(Command::Record);
+        feed(&mut tx, 0, 500);
+        run(&mut engine, 0);
+        assert_eq!(handle.position_samples(), 70.0, "REC from stop jumps to 30 samples before the zero point");
+        run(&mut engine, 25);
+        assert_eq!(handle.rec_mode(), RecMode::Ready, "the pre-roll records nothing");
+        // 5 more frames to the zero point, a pass of 100, then 30 of pre-roll and the next pass.
+        run(&mut engine, 5 + 100 + 30 + 10);
+        let items = takes(&mut recorder, 0);
+        let starts = items.iter().filter(|i| matches!(i, RecItem::Start(..))).count();
+        let stops = items.iter().filter(|i| matches!(i, RecItem::Stop)).count();
+        assert_eq!((starts, stops), (2, 1), "a take on every pass, after the pre-roll");
         assert_eq!(items.iter().take_while(|i| !matches!(i, RecItem::Stop)).filter(|i| matches!(i, RecItem::Sample(_))).count(), 100);
     }
 

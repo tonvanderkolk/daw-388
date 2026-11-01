@@ -4,6 +4,17 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-11-01
+
+### Toegevoegd
+- Pre-roll bij AUTO PUNCH (Settings, AUTO PUNCH: uit, 1, 2 of 4 seconden, per project): REC vanuit stop begint zoveel seconden voor het nulpunt, net als elke doorgang met REPEAT. Staat de band al eerder, dan begint hij daar.
+- Op macOS vragen afmelden, herstarten en Stop in het Dock-menu eerst of niet-opgeslagen wijzigingen bewaard moeten worden. Cancel breekt het afmelden af.
+
+### Gewijzigd
+- Bestanden uit de Finder komen op het spoor onder de muis, op de tijd waar je loslaat (vastgeklikt zoals in de liniaal, Cmd is vrij); op de spoornamen vanaf de afspeelpositie. Tijdens het slepen zie je op welke sporen en waar. Op Windows blijft het het laatst aangeklikte spoor.
+- Undo gaat 50 stappen terug in plaats van 10.
+- De README heeft een beschrijving bij de schermafbeelding.
+
 ## [0.31.1] - 2026-11-01
 
 ### Opgelost

@@ -3,9 +3,9 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod audio;
 #[cfg(target_os = "macos")]
-mod open_documents;
+mod app_delegate;
+mod audio;
 
 use audio::{Output, SilentClock};
 use cpal::traits::HostTrait;
@@ -153,18 +153,41 @@ impl Platform for Desktop {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn pointer_in_window(&mut self) -> Option<[f32; 2]> {
+        app_delegate::pointer_in_window()
+    }
+
     fn temp_dir(&self) -> PathBuf {
         std::env::temp_dir().join("daw388-takes")
     }
 }
 
-struct DesktopApp(DawApp);
+struct DesktopApp {
+    app: DawApp,
+    /// macOS asked to quit (logging out, restarting) and waits for the answer.
+    #[cfg(target_os = "macos")]
+    awaiting_terminate: bool,
+}
 
 impl eframe::App for DesktopApp {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
-        self.0.open_documents(open_documents::take());
-        self.0.ui(ui);
+        {
+            self.app.open_documents(app_delegate::take_opened());
+            if app_delegate::take_terminate_request() {
+                self.app.request_quit();
+                self.awaiting_terminate = true;
+            }
+        }
+        self.app.ui(ui);
+        #[cfg(target_os = "macos")]
+        if self.awaiting_terminate
+            && let Some(quit) = self.app.quit_answer()
+        {
+            self.awaiting_terminate = false;
+            app_delegate::reply_to_terminate(quit);
+        }
     }
 }
 
@@ -188,18 +211,23 @@ fn main() -> eframe::Result {
     };
     // A project folder or project.json on the command line opens it; audio files go onto tracks 1 to 8.
     let files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
-    // The Finder does not use the command line: a double-clicked project arrives as an open event.
+    // The Finder does not use the command line: a double-clicked project arrives as an open
+    // event. Logging out or restarting asks the app delegate whether the app may quit.
     #[cfg(target_os = "macos")]
-    open_documents::install();
+    app_delegate::install();
     eframe::run_native(
         "DAW 388",
         options,
         Box::new(move |cc| {
             #[cfg(target_os = "macos")]
-            open_documents::set_context(&cc.egui_ctx);
+            app_delegate::set_context(&cc.egui_ctx);
             let mut app = DawApp::new(&cc.egui_ctx, Box::new(Desktop::new()));
             app.open_arguments(files);
-            Ok(Box::new(DesktopApp(app)))
+            Ok(Box::new(DesktopApp {
+                app,
+                #[cfg(target_os = "macos")]
+                awaiting_terminate: false,
+            }))
         }),
     )
 }

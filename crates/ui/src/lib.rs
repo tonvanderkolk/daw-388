@@ -168,6 +168,12 @@ pub trait Platform {
     fn spawn_service(&mut self, job: Box<dyn FnOnce() + Send>);
     /// A folder for temporary files (takes while they are being recorded).
     fn temp_dir(&self) -> PathBuf;
+    /// Where the mouse is in the window, in points from the top left of its content. Only asked
+    /// while files are dragged over the window, which then gets no mouse events; `None` where the
+    /// platform cannot tell (dropped files then go to the track clicked last).
+    fn pointer_in_window(&mut self) -> Option<[f32; 2]> {
+        None
+    }
 }
 
 /// A source decoded (or resampled) in the background.
@@ -205,8 +211,10 @@ struct EditorState {
     drag: Option<drawer::Drag>,
     /// The track whose name is being edited, the text so far, and whether to ask for focus.
     renaming: Option<(usize, String, bool)>,
-    /// The track dropped files go to: the one clicked last.
+    /// The track dropped files go to when the mouse position is unknown: the one clicked last.
     target: usize,
+    /// While files are dragged over the drawer: the track and time they would land on.
+    drop_at: Option<(usize, f64)>,
     /// The zoom drawn last, for − and + while the whole song is shown.
     shown_zoom: f64,
     /// The group of the last drop and its note about files that found no track.
@@ -231,6 +239,10 @@ enum Pending {
     Open(Option<PathBuf>),
     Quit,
 }
+
+/// The pre-roll choices for AUTO PUNCH in seconds, and the most a project may ask for.
+const PRE_ROLLS: [f64; 4] = [0.0, 1.0, 2.0, 4.0];
+const PRE_ROLL_MAX: f64 = 10.0;
 
 /// The pitch control's range in percent (plus or minus).
 const PITCH_PERCENT: f32 = (PITCH_RANGE * 100.0) as f32;
@@ -389,6 +401,8 @@ pub struct DawApp {
     input_devices: Vec<DeviceInfo>,
     insert: bool,
     auto_punch: bool,
+    /// Seconds before the zero point that AUTO PUNCH starts from (0: none).
+    pre_roll_seconds: f64,
     /// Finished takes from the writer, and the jobs that lay them over their tracks.
     takes_tx: Sender<TakeDone>,
     takes_rx: Receiver<TakeDone>,
@@ -708,6 +722,7 @@ impl DawApp {
             input_devices,
             insert: false,
             auto_punch: false,
+            pre_roll_seconds: 0.0,
             takes_tx,
             takes_rx,
             composed_tx,
@@ -904,6 +919,23 @@ impl DawApp {
         }
     }
 
+    /// The system asks to quit (logging out, restarting): ask first about unsaved changes.
+    pub fn request_quit(&mut self) {
+        self.request(Pending::Quit);
+    }
+
+    /// After `request_quit`: `Some(true)` once the app may quit, `Some(false)` when the user
+    /// cancelled, `None` while the question is open.
+    pub fn quit_answer(&self) -> Option<bool> {
+        if self.may_close {
+            Some(true)
+        } else if self.pending == Some(Pending::Quit) {
+            None
+        } else {
+            Some(false)
+        }
+    }
+
     /// Files the system asks to open while the app runs (a double-click in the Finder): a project
     /// replaces the current one, asking first about unsaved changes; audio files go onto tracks.
     pub fn open_documents(&mut self, paths: Vec<PathBuf>) {
@@ -955,6 +987,7 @@ impl DawApp {
         self.vari = false;
         self.insert = false;
         self.auto_punch = false;
+        self.pre_roll_seconds = 0.0;
         self.metronome = MetronomeSettings::default();
         self.tape = new_tape();
         self.export.name.clear();
@@ -1045,6 +1078,7 @@ impl DawApp {
         self.vari = transport.vari;
         self.insert = transport.insert;
         self.auto_punch = transport.auto_punch;
+        self.pre_roll_seconds = transport.pre_roll_seconds.clamp(0.0, PRE_ROLL_MAX);
         let mut metronome = opened.file.metronome;
         metronome.bpm = metronome.bpm.clamp(20.0, 400.0);
         if !TIME_SIGNATURES.contains(&(metronome.beats, metronome.unit)) {
@@ -1107,6 +1141,7 @@ impl DawApp {
         let (zero, cue, repeat, style, pitch) =
             (self.zero_seconds, self.cue_seconds, self.repeat, style_of(self.repeat_mode), self.pitch_ratio());
         let (insert, auto_punch, monitoring) = (self.insert, self.auto_punch, self.preferences.software_monitoring);
+        let pre_roll = self.pre_roll_seconds;
         let offset = f64::from(self.preferences.latency_offset_ms) / 1000.0;
         let metronome = self.metronome;
         let tape = tape_params(&self.tape);
@@ -1119,6 +1154,7 @@ impl DawApp {
             engine.send(Command::SetPitch(pitch));
             engine.send(Command::SetInsert(insert));
             engine.send(Command::SetAutoPunch(auto_punch));
+            engine.set_pre_roll_seconds(pre_roll);
             engine.send(Command::SetMonitoring(monitoring));
             engine.send(Command::SetLatencyOffset(offset));
             engine.send(Command::SetClick(metronome.click));
@@ -1190,6 +1226,7 @@ impl DawApp {
             vari: self.vari,
             insert: self.insert,
             auto_punch: self.auto_punch,
+            pre_roll_seconds: self.pre_roll_seconds,
         };
         let settings = ProjectSettings {
             master_db: self.master_db,
@@ -1799,6 +1836,34 @@ impl DawApp {
             .color(skin::paper::INK_SOFT),
         );
         self.set_metronome(metronome);
+    }
+
+    fn punch_settings(&mut self, ui: &mut Ui) {
+        skin::paper::section_title(ui, "AUTO PUNCH");
+        ui.add_space(4.0);
+        let mut pre_roll = self.pre_roll_seconds;
+        let text = |seconds: f64| if seconds == 0.0 { "Off".to_string() } else { format!("{seconds:.0} s") };
+        egui::Grid::new("punch-settings").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Pre-roll");
+            egui::ComboBox::from_id_salt("pre-roll").selected_text(text(pre_roll)).width(120.0).show_ui(ui, |ui| {
+                for seconds in PRE_ROLLS {
+                    ui.selectable_value(&mut pre_roll, seconds, text(seconds));
+                }
+            });
+            ui.end_row();
+        });
+        skin::paper::note(
+            ui,
+            "With PUNCH on, REC from stop starts this long before the zero point, so you can play along before the \
+             punch-in; with REPEAT every pass does. If the tape stands earlier, it starts there. Saved with the project.",
+        );
+        if pre_roll != self.pre_roll_seconds {
+            self.pre_roll_seconds = pre_roll;
+            if let Some(engine) = &mut self.engine {
+                engine.set_pre_roll_seconds(pre_roll);
+            }
+            self.mark_dirty();
+        }
     }
 
     fn update_meters(&mut self, dt: f32) {
@@ -2615,6 +2680,8 @@ impl DawApp {
             self.metronome_settings(ui);
             ui.add_space(8.0);
             self.update_settings(ui);
+            ui.add_space(8.0);
+            self.punch_settings(ui);
             ui.add_space(8.0);
             skin::paper::section_title(ui, "REPEAT, RTZ and STC");
             let mut mode = self.repeat_mode;
@@ -3954,19 +4021,19 @@ mod tests {
     }
 
     #[test]
-    fn the_undo_stack_holds_ten_steps() {
+    fn the_undo_stack_holds_its_steps() {
         let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let kick = files.path().join("kick.wav");
         write_wav_of(&kick, 0.1, 0.25);
         let ctx = egui::Context::default();
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
-        for _ in 0..6 {
+        for _ in 0..history::STEPS / 2 + 1 {
             app.load_paths(vec![kick.clone()]);
             settle(&mut app);
             app.clear_track(0);
         }
-        assert_eq!(app.history.len(), 10);
-        for _ in 0..10 {
+        assert_eq!(app.history.len(), history::STEPS);
+        for _ in 0..history::STEPS {
             app.undo();
         }
         app.undo();
@@ -4370,6 +4437,20 @@ mod tests {
         app.mark_dirty();
         app.request(Pending::New);
         assert_eq!(app.pending, Some(Pending::New));
+    }
+
+    #[test]
+    fn quitting_from_the_system_asks_about_unsaved_work() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.request_quit();
+        assert_eq!(app.quit_answer(), Some(true), "nothing unsaved: quit straight away");
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.mark_dirty();
+        app.request_quit();
+        assert_eq!(app.quit_answer(), None, "the question is open");
+        app.pending = None;
+        assert_eq!(app.quit_answer(), Some(false), "cancelled");
     }
 
     #[test]

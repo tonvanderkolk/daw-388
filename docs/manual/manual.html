@@ -162,7 +162,7 @@
     <li><b>File, New</b> (<kbd>Cmd+N</kbd>): an empty project with eight tracks in SIMPLE mode.</li>
     <li><b>File, Open...</b> (<kbd>Cmd+O</kbd>) or <b>Open Recent</b>: open a project. On a Mac you can also double-click a project in the Finder.</li>
     <li><b>File, Save</b> (<kbd>Cmd+S</kbd>) and <b>Save as...</b> (<kbd>Shift+Cmd+S</kbd>). Audio you loaded from elsewhere is copied into the project when you save, so the project is complete on its own. The originals stay where they were.</li>
-    <li><b>File, Close project</b> (<kbd>Cmd+W</kbd>) and <b>Quit DAW 388</b> (<kbd>Cmd+Q</kbd>) ask first when there are unsaved changes.</li>
+    <li><b>File, Close project</b> (<kbd>Cmd+W</kbd>) and <b>Quit DAW 388</b> (<kbd>Cmd+Q</kbd>) ask first when there are unsaved changes. On a Mac, Quit in the Dock menu, logging out and restarting ask too; Cancel stops the logout.</li>
   </ul>
   <p>Once a project has been saved, DAW 388 saves it by itself 30 seconds after every change. A backup is made at every save you do yourself and at most every five minutes otherwise.</p>
   <p>When you close a project, open another or quit, recordings that the saved song no longer uses (takes you undid or recorded over, or recordings you did not save) go to the Trash, on Windows the Recycle Bin. The status line says how many. That keeps projects from growing with files nobody plays. Changed your mind? Put them back from the Trash into the project's audio folder before you empty it. An older backup that used such a take will miss it.</p>
@@ -260,6 +260,7 @@
   <h3>Punching in and out</h3>
   <p>To repair a part: play the song, and press REC at the spot where the new take should start (punch-in). Stop recording with PLAY (keeps playing), STOP, or any wind key. With <b class="k">INSERT</b> on you hear the tape until the punch-in, and then your input.</p>
   <p>With <b class="k">PUNCH</b> (AUTO PUNCH) DAW 388 punches in and out by itself: set the zero point (RESET) before the part and the CUE point after it, start a little earlier, and press REC. Only the part between the two points is recorded. With REPEAT on, you can try again and again; the last take stays.</p>
+  <p>With a <b>pre-roll</b> (Settings, AUTO PUNCH: 1, 2 or 4 seconds) you don't need to start earlier yourself: REC from stop starts that long before the zero point, and so does every pass with REPEAT. If the tape already stands earlier, it starts there.</p>
   <h3>Count-in</h3>
   <p>With a count-in (Settings, Metronome) REC from stop first counts one or two bars while the tape waits, then starts on the beat.</p>
   <h3>Recording on VARI</h3>
@@ -326,8 +327,8 @@
     <tr><td><b class="k">PASTE</b> (<kbd>Cmd+V</kbd>)</td><td>Pastes at the play position, each region on its own track. A time range is inserted.</td></tr>
     <tr><td><b class="k">DELETE</b> (<kbd>Delete</kbd>)</td><td>Removes the selection or the time range, without moving anything up.</td></tr>
   </table>
-  <p>Drop audio files from the Finder or Explorer onto the window: they go on the track you clicked last (and the ones after it), from the play position. "File, Load 8 audio files..." puts up to eight files on tracks 1 to 8 from the start.</p>
-  <p>Undo (<kbd>Cmd+Z</kbd>) and redo (<kbd>Shift+Cmd+Z</kbd>) go back up to ten steps for everything that changes the tracks: recordings, loading, clearing and editing. Not during a recording.</p>
+  <p>Drag audio files from the Finder onto the tracks: they go on the track under the mouse (and the ones after it), at the spot where you let go. While you drag, a frame shows the tracks they will land on and a line the time; it snaps like a click in the ruler (hold <kbd>Cmd</kbd> for free placement). Let go on the track names to place them at the play position. On Windows they go on the track you clicked last, from the play position. "File, Load 8 audio files..." puts up to eight files on tracks 1 to 8 from the start.</p>
+  <p>Undo (<kbd>Cmd+Z</kbd>) and redo (<kbd>Shift+Cmd+Z</kbd>) go back up to 50 steps for everything that changes the tracks: recordings, loading, clearing and editing. Not during a recording.</p>
 </section>
 
 <section id="tape">
@@ -384,6 +385,7 @@
     <tr><td>Latency</td><td>What DAW 388 measured, plus your own correction in milliseconds.</td></tr>
     <tr><td>Input per channel</td><td>The same choice as the red menu on each strip. Channels set to an input your device does not have move to one it has.</td></tr>
     <tr><td>Metronome</td><td>Volume, count-in, and the click during normal playback.</td></tr>
+    <tr><td>AUTO PUNCH</td><td>A pre-roll of 1, 2 or 4 seconds before the zero point (<a href="#recording">chapter 11</a>).</td></tr>
     <tr><td>REPEAT, RTZ and STC</td><td>388 (the tape rewinds to the zero point in real time) or Cycle (jumps straight back).</td></tr>
     <tr><td>Updates</td><td>Check for updates at startup, at most once a day (<a href="#install">chapter 2</a>).</td></tr>
   </table>

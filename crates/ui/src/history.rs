@@ -4,7 +4,7 @@
 use daw388_project::regions::{Region, SourceId, Unresolved, fit_to_source};
 
 /// How many steps can be undone.
-pub(crate) const STEPS: usize = 10;
+pub(crate) const STEPS: usize = 50;
 
 /// What a track holds.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -140,9 +140,9 @@ mod tests {
     }
 
     #[test]
-    fn at_most_ten_steps() {
+    fn at_most_steps() {
         let mut history = History::default();
-        for n in 0..12 {
+        for n in 0..STEPS + 2 {
             history.push(format!("step {n}"), vec![(0, TrackContent::default())]);
         }
         assert_eq!(history.len(), STEPS);

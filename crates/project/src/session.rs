@@ -372,6 +372,10 @@ pub struct TransportSettings {
     /// AUTO PUNCH: record between the zero point and the CUE point.
     #[serde(default)]
     pub auto_punch: bool,
+    /// With AUTO PUNCH: how many seconds before the zero point REC from stop and every REPEAT
+    /// pass start. Missing (older projects): 0, no pre-roll.
+    #[serde(default)]
+    pub pre_roll_seconds: f64,
 }
 
 /// Clean or 388: the tape's character on playback. Missing (older projects): Clean.
@@ -922,6 +926,7 @@ mod tests {
                     vari: true,
                     insert: true,
                     auto_punch: true,
+                    pre_roll_seconds: 2.0,
                 },
                 metronome: MetronomeSettings { click: true, always: true, bpm: 96.5, beats: 6, unit: 8, volume_db: -12.0, count_in: 2 },
                 editor: EditorSettings { open: true, height: 400.0, zoom: Some(80.0), snap: false },

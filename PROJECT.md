@@ -1,6 +1,6 @@
 # PROJECT - DAW 388
 
-Versie: 0.31.1
+Versie: 0.32.0
 Laatst bijgewerkt: 01-11-2026
 
 ## Doel
@@ -40,7 +40,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388: opnemen
 - Een spoor bestaat uit regio's: een stuk van een bron (een audiobestand) op een plek op de band, gesorteerd en zonder overlap. Wat op een plek komt, vervangt wat er lag; de bron blijft, dus een rand is terug te halen. De bewerkingen zijn pure functies in `regions.rs`, zodat undo de oude lijst kan bewaren.
 - De engine kent geen regio's. Na elke wijziging rekent de UI het spoor op de achtergrond uit tot één buffer (`render.rs`: stilte tussen regio's, een fade van 3 ms aan een vrije rand, een crossfade van 3 ms waar twee regio's elkaar raken, niets waar een regio zijn bron naadloos voortzet) en stuurt die met `SetTrack`. De bronnen staan in een gedeelde tabel (`crates/ui/src/sources.rs`), elk één keer gedecodeerd en één keer omgezet naar de samplerate van de engine.
 - De SPOREN-weergave (`crates/ui/src/drawer.rs`) tekent met de egui-painter en zet muis en toetsen om in bewerkingen (`edit.rs`), elk één undo-stap op basis van de pure functies in `regions.rs`. De tijd-as, het raster, vastklikken en wat onder de muis ligt staan los in `timeline.rs`.
-- Undo en redo (`crates/ui/src/history.rs`): 10 stappen voor alles wat de inhoud van de sporen verandert. Een stap bewaart de regio's van de sporen die hij raakte; de bronnen worden gedeeld.
+- Undo en redo (`crates/ui/src/history.rs`): 50 stappen voor alles wat de inhoud van de sporen verandert. Een stap bewaart de regio's van de sporen die hij raakte; de bronnen worden gedeeld.
 - Het formaat van een audiobestand wordt herkend aan de eerste bytes (`RIFF` of `FORM`), niet aan de extensie.
 
 ## Projectmap
@@ -80,7 +80,7 @@ Naar de handleiding van de 388 (Memory/Transport Controls):
 - CUE onthoudt de huidige plek. STC zoekt het CUE-punt op (zonder CUE-punt: het begin). RTZ zoekt het nulpunt op. PLAY tijdens een zoekactie speelt bij aankomst.
 - REW en F FWD spoelen op 30 keer de normale snelheid, stil, tot STOP, het begin of het einde van het langste spoor.
 - REPEAT loopt van het nulpunt tot het CUE-punt. In de 388-modus spoelt de band terug en speelt opnieuw, en zet elke transporttoets behalve PLAY en RTZ REPEAT uit. In de cycle-modus springt de positie direct terug (ook bij RTZ en STC) en blijft REPEAT aan.
-- Nulpunt, CUE-punt, REPEAT-modus, pitch en VARI/FIX worden in `project.json` bewaard onder `transport`.
+- Nulpunt, CUE-punt, REPEAT-modus, pitch, VARI/FIX, INSERT, AUTO PUNCH en de pre-roll worden in `project.json` bewaard onder `transport` (`pre_roll_seconds`; ontbreekt: 0).
 
 ## Opnemen
 
@@ -89,11 +89,11 @@ Naar de handleiding van de 388 (REC FUNCTION, REC, INSERT, Punch-in):
 - REC FUNCTION maakt een spoor klaar (lampje knippert); tijdens de opname brandt het. REC start de opname op de klaargezette sporen, vanuit stop samen met PLAY. Zonder klaargezette sporen gaat de machine record-ready (REC knippert) en start REC FUNCTION de opname op dat spoor; nogmaals drukken punch-out.
 - Punch-out met PLAY (speelt door), STOP, REW, F FWD, RTZ of STC, of automatisch bij het CUE-punt (de band stopt, of spoelt terug met REPEAT).
 - INSERT: klaargezette sporen spelen de band tot de punch-in en schakelen dan naar de ingang. Wat je hoort volgt de MONITOR-sectie (zie Mixer). Meeluisteren via DAW 388 kan uit (direct monitoring van de interface); een spoor dat opneemt speelt dan niets.
-- AUTO PUNCH: na REC wordt alleen tussen nulpunt en CUE-punt opgenomen, bij elke doorgang met REPEAT opnieuw.
+- AUTO PUNCH: na REC wordt alleen tussen nulpunt en CUE-punt opgenomen, bij elke doorgang met REPEAT opnieuw. Met een pre-roll (Settings, AUTO PUNCH: uit, 1, 2 of 4 seconden, per project) begint REC vanuit stop zoveel seconden voor het nulpunt, net als elke doorgang met REPEAT; staat de band al eerder, dan begint hij daar (`Command::SetPreRoll`).
 - De ingang draait op de samplerate van de uitvoer. De input-callback vult een lock-free ring, de output-callback leest per uitvoerframe een invoerframe, zodat band en ingang op dezelfde klok lopen. Bij twee apparaten met een eigen klok stuurt de engine bij door af en toe een frame over te slaan.
 - Latencycompensatie: de tijd van opname tot callback (ingang) plus van callback tot weergave (uitgang), gemeten met de tijdstempels van cpal, plus de vulling van de ring, plus een handmatige correctie in milliseconden. Een opname wordt zoveel eerder op de band gelegd.
 - De engine stuurt per spoor een stroom `Start(positie)`, samples en `Stop` naar een schrijver op een eigen thread, die elke take als 32-bit float WAV in een tijdelijke map zet. Daarna schrijft een achtergrondtaak de take als 24-bit WAV `NN_Naam_opnameN.wav` in `audio/` (alleen het opgenomen stuk), en wordt hij een regio op zijn plek die vervangt wat eronder lag, zoals op band. Takes van hetzelfde spoor worden op volgorde verwerkt. Een take die door latencycorrectie voor 0:00 zou beginnen, verliest dat stuk. Een take die binnenkomt nadat er een ander project is geopend, wordt niet geplaatst (het bestand blijft staan).
-- Cmd+Z (Bewerken, Ongedaan maken) zet tot 10 stappen terug: opnames, laden, Laad en Wis. Cmd+Shift+Z doet ze opnieuw. Tijdens een opname kan dat niet. De bestanden blijven in `audio/` staan.
+- Cmd+Z (Bewerken, Ongedaan maken) zet tot 50 stappen terug: opnames, laden, Laad en Wis. Cmd+Shift+Z doet ze opnieuw. Tijdens een opname kan dat niet. De bestanden blijven in `audio/` staan.
 - Opnemen kan ook met de pitch-knop op VARI, zoals op band: de engine geeft de bandsnelheid mee met de take (`RecItem::Start`), en bij het opslaan rekent `recording::to_tape_time` de take met de hoge-kwaliteits-resampler om naar bandtijd. Wat op +10% is ingespeeld, beslaat 10% meer band en klinkt bij normale weergave langzamer en lager. Het bestand blijft op de samplerate van het project. Tijdens het opnemen staat de snelheid vast: de pitch-knop en VARI/FIX zijn uitgeschakeld, en de latencycompensatie wordt met de snelheid omgerekend.
 - Een project zonder map vraagt bij REC eerst om op te slaan.
 - Ingangsapparaat, meeluisteren en latencycorrectie zijn app-voorkeuren; de ingang per kanaal, INSERT en AUTO PUNCH worden per project bewaard. Staat een kanaal op een ingang die de interface niet heeft, dan gaat het naar een die er wel is, verdeeld als kanaal 1, 2, 3 op ingang 1, 2, 1 enzovoort. Dat gebeurt bij een nieuw project, bij het openen van een project en bij een ander apparaat; bij openen en wisselen zegt de statusregel welke kanalen verschoven.
@@ -181,7 +181,7 @@ Er zijn twee routes: wat er op band komt (kanaal, bus, spoor) en wat je hoort (M
 - SPLITS splitst de geselecteerde regio's op de afspeelpositie, zonder selectie alle sporen. KNIP, KOPIEER en WIS werken op het tijdvak als er een is, anders op de geselecteerde regio's. Knippen van een tijdvak is een splice (de rest schuift aan); een geplakt tijdvak wordt op de afspeelpositie ingevoegd. Geplakte regio's komen op de afspeelpositie, elk op zijn eigen spoor.
 - Vastklikken op tellen (met RASTER), randen van regio's, nulpunt, CUE-punt en afspeelpositie, binnen 8 pixels; Cmd ingedrukt is vrij.
 - Zoomen met Cmd en scrollen rond de muis, of met Cmd+Links en Cmd+Rechts, scrollen schuift door de tijd. Tijdens het afspelen bladeren de sporen mee.
-- Bestanden uit de Finder komen op het laatst aangeklikte spoor (en de sporen erna) vanaf de afspeelpositie, samen één undo-stap. Waar je loslaat kan niet: winit geeft bij het slepen van bestanden geen muispositie door.
+- Bestanden uit de Finder komen op het spoor onder de muis (en de sporen erna), op de tijd onder de muis (vastgeklikt zoals in de liniaal, Cmd is vrij), samen één undo-stap. Op de spoornamen: vanaf de afspeelpositie. Tijdens het slepen omlijnt de app de sporen waar de bestanden komen, met een streep op de tijd. winit geeft bij het slepen geen muispositie door; op macOS vraagt `Platform::pointer_in_window` hem aan het venster (`mouseLocationOutsideOfEventStream`). Waar dat niet kan (Windows), komen ze op het laatst aangeklikte spoor vanaf de afspeelpositie.
 - Dubbelklik op de naam van een spoor wijzigt hem. Naast de naam staan M, S en R: MUTE, SOLO en REC FUNCTION, dezelfde waarden als op de strip.
 - Een spoor dat nog geladen wordt of waarvan het bestand ontbreekt, neemt niets nieuws aan; bewerkingen over alle sporen wachten tot het geladen of gewist is. Tijdens een opname kan er niet bewerkt worden.
 - Undo-namen: Splitsen, Knippen, Splice, Plakken, Invoegen, Wissen, Verwijderen, Verschuiven, Kopiëren, Inkorten, Naam, Importeren, Laden, Wis en Opname spoor N.
@@ -210,7 +210,7 @@ Een bron (audiobestand) wordt op een achtergrondthread gedecodeerd en naar de sa
 - Op macOS vraagt het systeem bij het eerste gebruik van een ingang om toegang tot de microfoon. Zolang de app als los programma vanuit de terminal draait, hoort die toestemming bij de terminal.
 - De app is niet ondertekend (geen Apple Developer-account). Op macOS kiest de gebruiker bij de eerste keer openen Gereed (niet Verplaats naar prullenmand) en daarna Open Anyway in Privacy en beveiliging; de stappen staan in de README en bij elke release. Versies die ooit wel ondertekend en genotariseerd worden, blijven werken als het lidmaatschap later stopt.
 - Windows: 10 en 11, 64-bit. Windows 7 en 8 kan niet (Rust ondersteunt ze niet meer). Op Windows op ARM draait de x64-versie via emulatie, niet getest. Audio loopt via WASAPI; ASIO wordt nog niet ondersteund, dus de vertraging bij opnemen kan hoger zijn dan in een DAW met ASIO.
-- Op macOS is het standaard app-menu uitgezet, zodat Cmd+Q via de opslaan-vraag loopt. Afsluiten door uitloggen of herstarten van de Mac gaat nog wel buiten die vraag om; autosave beperkt dan het verlies tot de laatste 30 seconden.
+- Op macOS is het standaard app-menu uitgezet, zodat Cmd+Q via de opslaan-vraag loopt. Afmelden, herstarten en Stop in het Dock-menu vragen het ook: `app_delegate.rs` beantwoordt `applicationShouldTerminate:` met "later", de UI stelt de vraag en geeft het antwoord terug. Op Windows stopt de app bij afmelden of afsluiten nog zonder vraag (zie de roadmap); autosave beperkt het verlies dan tot de laatste 30 seconden.
 
 ## Versiebeheer
 

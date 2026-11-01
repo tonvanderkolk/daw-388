@@ -76,6 +76,11 @@
 - [x] Repository openbaar gemaakt (31-10-2026)
 - [x] Controleren op updates (0.31.0): bij het starten op de achtergrond (hooguit één keer per dag, uit te zetten in Settings) de laatste release opvragen bij de GitHub-API (`releases/latest`) en vergelijken met de eigen versie. Is er een nieuwere, dan een melding in de statusregel en een item in Help dat de releasepagina opent; daarnaast Help, Check for Updates.... Geen automatische installatie (de app is niet ondertekend). Vraagt een kleine HTTP-bibliotheek (`ureq`); ook in de handleiding vermelden
 - [x] Een project openen door erop te dubbelklikken in de Finder (0.31.1): de app-delegate van winit krijgt zelf `application:openURLs:`
+- [x] Opslaan-vraag bij afmelden, herstarten en Stop in het Dock-menu op macOS (0.32.0): de app-delegate van winit krijgt `applicationShouldTerminate:`
+- [x] Undo van 10 naar 50 stappen (0.32.0)
+- [x] Bestanden uit de Finder op het spoor en de tijd onder de muis, met een kader tijdens het slepen (0.32.0, macOS)
+- [x] Pre-roll bij AUTO PUNCH: 1, 2 of 4 seconden voor het nulpunt, ook bij elke doorgang met REPEAT (0.32.0)
+- [ ] Windows: de opslaan-vraag bij afmelden of afsluiten van Windows. winit beantwoordt `WM_QUERYENDSESSION` niet, dus de app stopt dan zonder vraag (autosave beperkt het verlies tot 30 seconden). Aanpak: het venster subclassen, bij niet-opgeslagen wijzigingen `FALSE` teruggeven met `ShutdownBlockReasonCreate` en de vraag tonen. Alleen als het nodig blijkt; vraagt een test op een Windows-pc
 
 ## Overwegingen voor later
 - [ ] Afstandsbediening op een telefoon of tablet: de app draait (alleen als je het aanzet) een kleine webserver op het lokale netwerk en toont een QR-code met het adres en een geheime sleutel. De pagina in Safari of Chrome heeft het transport (REW, F FWD, STOP, PLAY, REC), de teller, REC FUNCTION per spoor en eventueel undo van de laatste take; geen faders, pan of mixer. Let op: de firewall van macOS en Windows vraagt om toestemming (bij een niet-ondertekende app mogelijk na elke update). Eerst de details uitwerken
