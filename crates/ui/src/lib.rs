@@ -3028,7 +3028,7 @@ impl DawApp {
         let ctx = ui.ctx().clone();
         let window = ui.input(|i| i.viewport_rect().size()) * ctx.zoom_factor();
         if self.needed.y > 0.0 {
-            let zoom = skin::zoom::zoom_for(window, self.needed);
+            let zoom = skin::zoom::next_zoom(ctx.zoom_factor(), window, self.needed);
             if (zoom - ctx.zoom_factor()).abs() > 1e-3 {
                 ctx.set_zoom_factor(zoom);
             }
@@ -4437,6 +4437,27 @@ mod tests {
         app.mark_dirty();
         app.request(Pending::New);
         assert_eq!(app.pending, Some(Pending::New));
+    }
+
+    #[test]
+    fn the_zoom_settles_at_every_window_size() {
+        // Run frames as eframe does (the window in points shrinks as the zoom grows) and check
+        // that the zoom stops moving: at some heights it used to flip every frame (0.32.0).
+        for (compact, drawer) in [(false, false), (true, false), (false, true)] {
+            for height in (560..1300).step_by(37).chain([644, 779, 806]) {
+                let (ctx, size) = (egui::Context::default(), egui::vec2(1500.0, height as f32));
+                let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+                (app.compact, app.compact_pending, app.editor.settings.open) = (compact, false, drawer);
+                let mut zooms = Vec::new();
+                for _ in 0..30 {
+                    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size / ctx.zoom_factor());
+                    let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| app.ui(ui));
+                    out.textures_delta.clear();
+                    zooms.push(ctx.zoom_factor());
+                }
+                assert!(zooms[15..].windows(2).all(|p| p[0] == p[1]), "compact {compact}, drawer {drawer}, height {height}: {zooms:?}");
+            }
+        }
     }
 
     #[test]

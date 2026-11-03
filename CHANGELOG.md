@@ -4,6 +4,11 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-11-03
+
+### Opgelost
+- Bij sommige venstergroottes trilde het beeld, alsof er twee versies over elkaar lagen. De console schaalt mee met het venster in stappen van 5%, en de benodigde ruimte wordt gemeten bij de zoom van dat moment; tekst rondt per zoom net anders af. Precies rond een stap wees de meting dan om en om naar de ene en de andere zoom, elk frame opnieuw. De huidige zoom blijft nu staan zolang hij binnen 1% past, en gaat pas een stap omhoog met 1% ruimte over (`skin::zoom::next_zoom`). Vooral de compacte console had er last van.
+
 ## [0.32.0] - 2026-11-01
 
 ### Toegevoegd

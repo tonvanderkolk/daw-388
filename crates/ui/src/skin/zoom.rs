@@ -15,6 +15,20 @@ pub fn zoom_for(window: Vec2, needed: Vec2) -> f32 {
     (((fit + 1e-3) / STEP).floor() * STEP).clamp(MIN, MAX)
 }
 
+/// How far the fit may stray from the current zoom before it changes: a step down only when the
+/// window is short by more than this, a step up only with this to spare.
+const HOLD: f32 = 0.01;
+
+/// The zoom for the next frame: [`zoom_for`], but the current zoom holds while the fit stays
+/// within [`HOLD`] of its step. What is needed is measured at the current zoom, and text rounds
+/// to pixels differently at each zoom (a few points on the width of the console). Right at a
+/// step the measurement then pointed to the other zoom in turn, and the window trembled.
+pub fn next_zoom(current: f32, window: Vec2, needed: Vec2) -> f32 {
+    let fit = (window.x / needed.x).min(window.y / needed.y);
+    let holds = (MIN..=MAX).contains(&current) && fit >= current - HOLD && (fit < current + STEP + HOLD || current >= MAX);
+    if holds { current } else { zoom_for(window, needed) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -30,6 +44,19 @@ mod tests {
         assert!(close(zoom_for(Vec2::new(1680.0, 950.0), console), 0.65), "a step down, so it fits");
         assert!(close(zoom_for(Vec2::new(2880.0, 1800.0), console), 1.25));
         assert!(close(zoom_for(Vec2::new(400.0, 300.0), console), 0.5), "scrolls below the minimum");
+    }
+
+    #[test]
+    fn the_zoom_holds_at_a_step() {
+        // Measured at 0.90 and at 0.85: the fit lands on either side of 0.90 in turn.
+        let window = Vec2::new(1500.0, 779.0);
+        let (at_90, at_85) = (Vec2::new(1668.6, 859.4), Vec2::new(1666.1, 859.1));
+        assert!(close(zoom_for(window, at_90), 0.85) && close(zoom_for(window, at_85), 0.9), "zoom_for alone flips");
+        assert!(close(next_zoom(0.9, window, at_90), 0.9));
+        assert!(close(next_zoom(0.85, window, at_85), 0.85));
+        // A real change of the window still moves it.
+        assert!(close(next_zoom(0.9, Vec2::new(1400.0, 779.0), at_90), 0.8));
+        assert!(close(next_zoom(0.85, Vec2::new(1700.0, 900.0), at_85), 1.0));
     }
 
     #[test]
