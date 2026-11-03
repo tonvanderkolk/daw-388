@@ -81,6 +81,7 @@
 - [x] Bestanden uit de Finder op het spoor en de tijd onder de muis, met een kader tijdens het slepen (0.32.0, macOS)
 - [x] Pre-roll bij AUTO PUNCH: 1, 2 of 4 seconden voor het nulpunt, ook bij elke doorgang met REPEAT (0.32.0)
 - [x] Trillend beeld bij sommige venstergroottes opgelost: de zoom houdt zijn stap vast binnen 1% (0.32.1)
+- [x] Authentiekere faders en knoppen: streepjes, het gearceerde vak bij 0 dB, geribbelde kapjes en een schaal rond elke knop; de teller uitgelijnd met het tapevenster (0.33.0)
 - [ ] Windows: de opslaan-vraag bij afmelden of afsluiten van Windows. winit beantwoordt `WM_QUERYENDSESSION` niet, dus de app stopt dan zonder vraag (autosave beperkt het verlies tot 30 seconden). Aanpak: het venster subclassen, bij niet-opgeslagen wijzigingen `FALSE` teruggeven met `ShutdownBlockReasonCreate` en de vraag tonen. Alleen als het nodig blijkt; vraagt een test op een Windows-pc
 
 ## Overwegingen voor later

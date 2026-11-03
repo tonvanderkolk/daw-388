@@ -1,7 +1,7 @@
 # PROJECT - DAW 388
 
-Versie: 0.32.1
-Laatst bijgewerkt: 03-11-2026
+Versie: 0.33.0
+Laatst bijgewerkt: 04-11-2026
 
 ## Doel
 
@@ -174,6 +174,7 @@ Er zijn twee routes: wat er op band komt (kanaal, bus, spoor) en wat je hoort (M
 ## Bewerken
 
 - De hele UI schaalt mee met het venster in stappen van 5% (`skin::zoom`, 50% tot 125%), gemeten aan wat de console, de kop en de sporen het vorige frame nodig hadden. Omdat tekst per zoom net anders afrondt, houdt `next_zoom` de huidige stap vast zolang hij binnen 1% past en gaat hij pas omhoog met 1% ruimte over; anders kon de zoom rond een stap elk frame heen en weer springen (trillend beeld, opgelost in 0.32.1).
+- Faders en knoppen zijn getekend naar de 388 (`fader`, `knob`, `knob_scale` en `eq_knob` in `crates/ui/src/lib.rs`): de fader met streepjes aan beide kanten en een gearceerd vak bij 0 dB, de knoppen met een schaal van elf streepjes van -135 tot +135 graden (langer in het midden als het bereik rond 0 ligt, zoals pan, EQ en pitch). De niveauknoppen lopen lineair in dB van -60 tot +6; 0 dB staat dus ver rechts. De teller (`led_counter`) krijgt zijn breedte mee: 262 in de MIXER-kolom, net als het tapevenster, 232 in TRACKS.
 - Twee weergaven: MIXER (de hele console, meeschalend met het venster) en SPOREN (de sporen over het hele venster, met daarboven de VU-brug, de teller en de transporttoetsen). De leren armsteun onderaan of Tab wisselt; de weergave wordt per project bewaard.
 - Per spoor in SPOREN een kleine fader voor het volume en een PAN-knop, dezelfde waarden als in de mixer.
 - Werkbalk: SPLITS (S), KNIP (Cmd+X), KOPIEER (Cmd+C), PLAK (Cmd+V), WIS (Delete), RASTER, zoom (−, PAST, +), rechts de stand van undo en het tempo. De sneltoetsen werken alleen in SPOREN en geen tekstveld de focus heeft.

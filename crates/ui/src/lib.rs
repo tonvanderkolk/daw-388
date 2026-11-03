@@ -1985,8 +1985,9 @@ impl DawApp {
         });
     }
 
-    /// The LED counter: min:sec, the CUE point, the pitch and the bar and beat.
-    fn led_counter(&self, ui: &mut Ui) {
+    /// The LED counter: min:sec, the CUE point, the pitch and the bar and beat, `width` wide
+    /// including its frame.
+    fn led_counter(&self, ui: &mut Ui, width: f32) {
         let (counter, motion) = self.engine.as_ref().map_or((0.0, Motion::Stopped), |e| (e.counter_seconds(), e.motion()));
         let cue_counter = self.cue_seconds.map(|cue| cue - self.zero_seconds);
         let (tape, count_in) = self.engine.as_ref().map_or((0.0, 0.0), |e| (e.position_seconds(), e.count_in_seconds()));
@@ -1997,7 +1998,8 @@ impl DawApp {
             .inner_margin(Margin::symmetric(14, 6))
             .stroke(Stroke::new(2.0, palette::EDGE))
             .show(ui, |ui| {
-                ui.set_width(200.0);
+                // The frame adds its margins (14 each side) and its stroke (2 each side).
+                ui.set_width(width - 32.0);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(format_counter(counter)).monospace().size(34.0).color(palette::LED));
                     let cue = cue_counter.map_or("CUE  --:--.-".to_string(), |c| format!("CUE  {}", format_counter(c)));
@@ -2063,7 +2065,8 @@ impl DawApp {
         const SMALL_H: f32 = 33.0;
         let key_box = vec2(48.0, SMALL_H);
         column(ui, 262.0, |ui| {
-            self.led_counter(ui);
+            // As wide as the tape deck above and the panel below.
+            self.led_counter(ui, 262.0);
             ui.add_space(10.0);
             let (block, _) = ui.allocate_exact_size(vec2(262.0, 214.0), Sense::hover());
             let top = block.top();
@@ -2779,18 +2782,48 @@ fn knob(
     let painter = ui.painter();
     let centre = rect.center();
     let radius = size / 2.0 - 2.0;
+    knob_scale(painter, centre, radius + 3.0, min < 0.0 && (min + max).abs() < 1e-3);
     let cap = if enabled { colour } else { Color32::from_rgb(0x8a, 0x86, 0x7c) };
-    painter.circle_filled(centre, radius + 2.0, Color32::from_rgb(0x1b, 0x1b, 0x1c));
-    painter.circle_filled(centre, radius, cap);
+    // As on the 388: a grey ribbed skirt with a coloured cap on top.
+    painter.circle_filled(centre, radius + 1.0, Color32::from_rgb(0x1b, 0x1b, 0x1c));
+    painter.circle_filled(centre, radius, KNOB_SKIRT);
+    for i in 0..24 {
+        let a = i as f32 * std::f32::consts::TAU / 24.0;
+        let d = vec2(a.sin(), -a.cos());
+        painter.line_segment([centre + d * (radius * 0.8), centre + d * radius], Stroke::new(1.0, KNOB_SKIRT_SHADE));
+    }
+    painter.circle_filled(centre, radius * 0.72, shade(cap, 0.7));
+    painter.circle_filled(centre - vec2(0.0, 0.5), radius * 0.68, cap);
     // From -135 to +135 degrees, 0 at the top.
     let fraction = (*value - min) / (max - min);
     let angle = (-135.0 + 270.0 * fraction).to_radians();
     let direction = vec2(angle.sin(), -angle.cos());
-    painter.line_segment(
-        [centre + direction * (radius * 0.3), centre + direction * (radius * 0.9)],
-        Stroke::new(2.5, Color32::from_rgb(0x2a, 0x26, 0x22)),
-    );
+    let ink = if colour == palette::CREAM { Color32::from_rgb(0x2a, 0x26, 0x22) } else { palette::CREAM };
+    painter.line_segment([centre + direction * (radius * 0.1), centre + direction * (radius * 0.68)], Stroke::new(2.0, ink));
     response
+}
+
+/// The grey skirt of a knob.
+const KNOB_SKIRT: Color32 = Color32::from_rgb(0x6e, 0x6a, 0x62);
+const KNOB_SKIRT_SHADE: Color32 = Color32::from_rgb(0x55, 0x51, 0x4a);
+
+/// A colour darkened (factor below 1) or lightened (above 1).
+fn shade(colour: Color32, factor: f32) -> Color32 {
+    let f = |c: u8| (c as f32 * factor).clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(f(colour.r()), f(colour.g()), f(colour.b()))
+}
+
+/// The printed scale around a knob: eleven ticks from -135 to +135 degrees, with longer ones at
+/// the ends and, for a knob with a centre (pan, EQ), in the middle.
+fn knob_scale(painter: &egui::Painter, centre: egui::Pos2, radius: f32, centred: bool) {
+    for i in 0..=10 {
+        let angle = (-135.0 + 27.0 * i as f32).to_radians();
+        let d = vec2(angle.sin(), -angle.cos());
+        let long = i == 0 || i == 10 || (centred && i == 5);
+        let length = if long { 4.5 } else { 2.5 };
+        let colour = if long { palette::TEXT } else { palette::TEXT_DIM };
+        painter.line_segment([centre + d * radius, centre + d * (radius + length)], Stroke::new(1.0, colour));
+    }
 }
 
 /// Which part of a concentric knob a drag started on.
@@ -2840,6 +2873,7 @@ fn eq_knob(ui: &mut Ui, band: &mut BandEntry, range: &std::ops::RangeInclusive<f
         let angle = (-135.0 + 270.0 * fraction).to_radians();
         vec2(angle.sin(), -angle.cos())
     };
+    knob_scale(painter, centre, outer + 2.0, true);
     // The ring: grey, with a light tick for the frequency.
     painter.circle_filled(centre, outer + 1.0, Color32::from_rgb(0x1b, 0x1b, 0x1c));
     painter.circle_filled(centre, outer, Color32::from_rgb(0x6e, 0x6a, 0x62));
@@ -2974,18 +3008,57 @@ fn fader(ui: &mut Ui, db: &mut f32, cap: Color32) -> egui::Response {
     }
     let painter = ui.painter();
     let font = egui::FontId::proportional(9.0);
+    // The nominal zone around 0 dB, hatched on both sides of the slot as on the 388.
+    let zero = to_y(0.0);
+    for (left, right) in [(slot_x - 14.0, slot_x - 5.0), (slot_x + 5.0, slot_x + 14.0)] {
+        let zone = egui::Rect::from_min_max(egui::pos2(left, zero - 5.0), egui::pos2(right, zero + 5.0));
+        let hatch = painter.with_clip_rect(zone);
+        hatch.rect_filled(zone, 0.0, palette::PANEL_DARK);
+        let mut x = zone.left() - zone.height();
+        while x < zone.right() {
+            hatch.line_segment(
+                [egui::pos2(x, zone.bottom()), egui::pos2(x + zone.height(), zone.top())],
+                Stroke::new(1.0, palette::TEXT_DIM),
+            );
+            x += 2.5;
+        }
+    }
+    // Ticks on both sides of the slot: long at the printed values, short in between.
+    let tick = |y: f32, length: f32, colour: Color32| {
+        painter.line_segment([egui::pos2(slot_x - 5.0 - length, y), egui::pos2(slot_x - 5.0, y)], Stroke::new(1.0, colour));
+        painter.line_segment([egui::pos2(slot_x + 5.0, y), egui::pos2(slot_x + 5.0 + length, y)], Stroke::new(1.0, colour));
+    };
+    for pair in FADER_MARKS.windows(2) {
+        let between = (fader_position(pair[0].0) + fader_position(pair[1].0)) / 2.0;
+        tick(rect.bottom() - FADER_MARGIN - between * travel, 4.0, palette::TEXT_DIM);
+    }
     for (value, label) in FADER_MARKS {
         let y = to_y(value);
         let colour = if value == 0.0 { palette::CREAM } else { palette::TEXT_DIM };
-        painter.line_segment([egui::pos2(slot_x - 19.0, y), egui::pos2(slot_x - 15.0, y)], Stroke::new(1.0, colour));
-        painter.text(egui::pos2(slot_x - 20.0, y), egui::Align2::RIGHT_CENTER, label, font.clone(), colour);
+        if value != 0.0 {
+            tick(y, 9.0, colour);
+        }
+        painter.text(egui::pos2(slot_x - 17.0, y), egui::Align2::RIGHT_CENTER, label, font.clone(), colour);
     }
     let slot = egui::Rect::from_center_size(egui::pos2(slot_x, rect.center().y), vec2(4.0, travel + 6.0));
     painter.rect_filled(slot, 2.0, Color32::BLACK);
-    let knob = egui::Rect::from_center_size(egui::pos2(slot_x, to_y(*db)), vec2(28.0, 16.0));
-    painter.rect_filled(knob, 3.0, cap);
+    // The cap: two ribbed halves with a groove in the middle, as on the 388.
+    let knob = egui::Rect::from_center_size(egui::pos2(slot_x, to_y(*db)), vec2(30.0, 20.0));
+    painter.rect_filled(knob.translate(vec2(0.0, 1.5)), 3.0, Color32::from_rgba_premultiplied(0, 0, 0, 120));
+    painter.rect_filled(knob, 3.0, shade(cap, 0.72));
+    let half = |top: f32, bottom: f32| egui::Rect::from_min_max(egui::pos2(knob.left() + 1.0, top), egui::pos2(knob.right() - 1.0, bottom));
+    let upper = half(knob.top() + 1.0, knob.center().y - 1.0);
+    let lower = half(knob.center().y + 1.0, knob.bottom() - 1.0);
+    for part in [upper, lower] {
+        painter.rect_filled(part, 2.0, cap);
+        let mut y = part.top() + 2.0;
+        while y < part.bottom() - 1.0 {
+            painter.line_segment([egui::pos2(part.left() + 2.0, y), egui::pos2(part.right() - 2.0, y)], Stroke::new(0.7, shade(cap, 0.85)));
+            y += 2.0;
+        }
+    }
     painter.line_segment(
-        [egui::pos2(knob.left() + 3.0, knob.center().y), egui::pos2(knob.right() - 3.0, knob.center().y)],
+        [egui::pos2(knob.left() + 1.0, knob.center().y), egui::pos2(knob.right() - 1.0, knob.center().y)],
         Stroke::new(1.5, Color32::from_rgb(0x2a, 0x26, 0x22)),
     );
     response.on_hover_text("Drag: level, shift: fine, double-click: 0 dB")
@@ -3079,7 +3152,7 @@ impl DawApp {
                         self.meter_bridge(ui);
                         ui.add_space(16.0);
                         ui.vertical(|ui| {
-                            self.led_counter(ui);
+                            self.led_counter(ui, 232.0);
                             ui.add_space(6.0);
                             self.transport_keys(ui);
                         });
