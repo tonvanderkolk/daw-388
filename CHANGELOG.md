@@ -10,6 +10,7 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 - De faders lijken meer op die van de 388: streepjes aan beide kanten van de gleuf (lang bij de getallen, kort ertussen), een gearceerd vak aan beide kanten bij 0 dB (de nominale stand, op de 388 tussen 7 en 8) en een kapje in twee geribbelde helften met een groef in het midden.
 - De draaiknoppen hebben een geprinte schaal van elf streepjes, met langere aan de uiteinden en bij pan en EQ ook in het midden. De gewone knoppen hebben een grijze geribbelde rok met een gekleurd kapje erop en een lichte streep als wijzer, zoals op de 388.
 - De teller is even breed als het tapevenster en het paneel eronder, zodat de rechterkolom links en rechts in één lijn staat.
+- De schermafbeelding in de README toont de nieuwe look en staat nu in de repository (`docs/images/screenshot.png`).
 
 ## [0.32.1] - 2026-11-03
 
