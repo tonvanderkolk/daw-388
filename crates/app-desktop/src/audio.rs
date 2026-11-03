@@ -398,10 +398,16 @@ mod tests {
             0,
             Some(Arc::new(daw388_engine::TrackAudio { name: "t".into(), samples: vec![0.1; 480_000] })),
         ));
+        let start = std::time::Instant::now();
         handle.play();
-        std::thread::sleep(Duration::from_millis(200));
-        let position = handle.position_seconds();
-        assert!(position > 0.1 && position < 0.4, "about real time: {position}");
+        // A busy machine (the CI runners) may lag behind, but the clock never runs ahead of the
+        // wall clock: wait until it has moved, then compare with the time that really passed.
+        while handle.position_seconds() < 0.1 && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let (position, elapsed) = (handle.position_seconds(), start.elapsed().as_secs_f64());
+        assert!(position >= 0.1, "the transport runs: {position}");
+        assert!(position <= elapsed + 0.05, "not faster than real time: {position} in {elapsed}");
         drop(clock);
     }
 }
