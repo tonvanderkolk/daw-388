@@ -211,19 +211,22 @@
   <table>
     <tr><th>Control</th><th>What it does</th></tr>
     <tr><td><b>ROUTING</b> SIMPLE | 388</td><td>The mode of the console (<a href="#about">chapter 1</a>). Going back from 388 to SIMPLE asks first when you would lose 388 routing.</td></tr>
+    <tr><td><b>BOUNCE</b></td><td>Opens Bounce Setup: the routing for a live mix onto one track or a pair in one go (<a href="#bounce">chapter 12</a>).</td></tr>
     <tr><td><b>MASTER</b> AUX and EFF</td><td>The level of the AUX and EFF buses, to the effects and to their own outputs of your interface (Settings).</td></tr>
     <tr><td><b class="k">L-R</b> and <b class="k">AUX-EFF</b></td><td>What the large meters show: the stereo mix, or the AUX and EFF buses.</td></tr>
     <tr><td><b class="k">PRE</b> and <b class="k">POST</b> (SIMPLE)</td><td>Whether the TRK meters show the channels before or after the fader.</td></tr>
     <tr><td><b class="k">MONO</b></td><td>Left and right together, to check the mix in mono.</td></tr>
     <tr><td><b>LISTEN</b> STEREO, AUX, EFF</td><td>What the main output plays: the stereo mix, or the AUX or EFF bus (to hear a headphone mix, for instance).</td></tr>
     <tr><td><b>PHONES</b></td><td>The volume of the main output. The click has its own volume.</td></tr>
-    <tr><td><b>STEREO MASTER</b></td><td>The level of the stereo mix, before PHONES. This is what you export.</td></tr>
+    <tr><td><b>STEREO MASTER</b></td><td>The level of the stereo mix, before PHONES. This is what you export. The <b>OL</b> lamp beside the top of its scale lights for 2 seconds when the mix goes over 0 dBFS: there it clips, at the output and in an export. Turn the STEREO MASTER or the channel faders down. There is no limiter, as on the 388.</td></tr>
   </table>
 </section>
 
 <section id="effects">
   <h2>9. Reverb and echo</h2>
-  <p>As on the 388, the AUX bus feeds a reverb and the EFF bus an echo. Turn up AUX or EFF on a channel to send it there. The returns come back into the stereo mix through <b>EFFECT RTN</b>: RTN 1 is the plate (GAIN and a balance PAN), RTN 2 the echo (GAIN and PAN). Effects are never recorded on a track.</p>
+  <p>As on the 388, the AUX bus feeds a reverb and the EFF bus an echo. Turn up AUX or EFF on a channel to send it there. The returns come back into the stereo mix through <b>EFFECT RTN</b>: RTN 1 is the plate (GAIN and a balance PAN), RTN 2 the echo (GAIN and PAN). Normally effects are not recorded on a track.</p>
+  <h3>TO PGM: recording the effects</h3>
+  <p>In 388 mode, <b>TO PGM</b> next to the returns sends them onto a pair of buses (1-2 up to 7-8) instead of into the stereo mix. Then reverb and echo are recorded on those tracks, with the amount per track that AUX and EFF set. The plate goes left to the odd bus and right to the even bus; the echo follows its PAN. While TO PGM is on, you hear the returns through the target in MONITOR, and the effects get every track's send, whatever is soloed. On the 388 itself you did this with a cable from the effect into PGM BUSS IN on the back. Bounce Setup sets TO PGM for you (<a href="#bounce">chapter 12</a>); set it back to – afterwards. An export always takes the returns into the stereo mix.</p>
   <h3>PLATE (AUX)</h3>
   <ul>
     <li><b>DECAY</b>: how long the reverb lasts, 0.5 to 6 seconds.</li>
@@ -310,6 +313,18 @@
     <li><b>Mixdown</b>: all channels on RMX with L-R on. The faders and PAN are the mix.</li>
   </ul>
   <p>Ping-pong records the tape as it plays back, so it takes the tape character with it, as on a real machine.</p>
+  <h3 id="bounce">Bounce Setup</h3>
+  <p>Setting all those keys by hand takes a while. <b>Edit, Bounce Setup...</b> or the <b class="k">BOUNCE</b> key under LISTEN (in the compact console next to SIMPLE | 388) does it in one go. Choose:</p>
+  <ul>
+    <li><b>Mix these tracks</b>: the tracks you want to mix. Only tracks with audio can be chosen; a linked pair is chosen together.</li>
+    <li><b>Onto</b>: <b>A stereo pair</b> (1 + 2 up to 7 + 8) or <b>One track</b> (1 to 8). A track you mix onto cannot also be mixed.</li>
+    <li><b>Silence the sources in MONITOR</b>: you hear the mix once, through the target.</li>
+    <li><b>Include reverb and echo</b>: TO PGM onto the target, so the plate and the echo are recorded too (<a href="#effects">chapter 9</a>). Onto one track, both returns pan to its side.</li>
+    <li><b>Link the target pair</b>: LINK on for a stereo pair.</li>
+  </ul>
+  <p>Above the buttons one line says what Apply will set up, for example "Tracks 1 to 6 onto 7 and 8 (stereo)".</p>
+  <p><b>Apply</b> switches the console to 388 if needed and sets the recipe: the sources on RMX with only the target's ASSIGN key, L-R, DIRECT and REC off; for one target track their PAN goes to its side (odd tracks left, even tracks right), for a pair PAN stays the place between left and right. The target is armed and heard in MONITOR (a pair left and right). Every channel comes off L-R, so you hear everything through MONITOR; the other tracks stay as they are otherwise. Then press REC and PLAY yourself and mix live with the faders while the tape runs.</p>
+  <p>The window warns when the target already has audio (recording replaces it where you record), when a PGM MASTER is closed and when both effect returns are closed. A mono target on a linked pair unlinks that pair.</p>
 </section>
 
 <section id="tracks">
@@ -379,6 +394,7 @@
   <p>WAV or AIFF, 16 bit (with dither), 24 bit or 32 bit float, 44.1, 48 or 96 kHz. The sample rate starts on the rate of the audio in the project.</p>
   <h3>Name and folder</h3>
   <p>The files are called <b>Name_mix</b> and <b>Name_01_Trackname</b>. Name is the project name, unless you type another in the Name field. They go into a folder <b>Song name export</b> next to the project; <b>Choose folder...</b> picks another one, which the project remembers. After the export, <b>Show in Finder</b> (on Windows: Show in Explorer) opens the folder.</p>
+  <p>The window then shows the <b>peak</b> of the export in dBFS. When it is over 0 dBFS, it says in which file, and how many dB to turn the STEREO MASTER down before you export again. A 16-bit or 24-bit file is clipped there; a 32-bit float file keeps the peak, but most players clip it.</p>
   <p>The export runs in the background and sounds exactly like the app. Reverb and echo ring out at the end.</p>
 </section>
 

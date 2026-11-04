@@ -1,6 +1,7 @@
 //! The egui interface of DAW 388. Platform-specific parts (audio devices, file dialogs) come in
 //! through the [`Platform`] trait, so the same UI can later run in the browser.
 
+mod bounce;
 mod console;
 mod content;
 mod drawer;
@@ -331,6 +332,8 @@ pub struct DawApp {
     big_vu: [skin::vu::Needle; 2],
     /// The big meters' OL lamps stay lit until this time.
     big_ol_until: [f64; 2],
+    /// Until when the OL of the STEREO MASTER is lit: the mix went over 0 dBFS.
+    master_ol_until: f64,
     /// The reels in the tape deck.
     reels: skin::reels::Reels,
     /// Where each channel strip's centre was in the last frame (0: not drawn yet), so the meter
@@ -403,11 +406,15 @@ pub struct DawApp {
     help: Option<help::Help>,
     export: ExportChoices,
     show_export: bool,
+    /// The Bounce Setup window, while it is open.
+    bounce: Option<bounce::BounceDraft>,
     running_export: Option<RunningExport>,
     /// Where exports go, when chosen for this project; else next to it.
     export_dir: Option<PathBuf>,
     /// The folder of the last export, for Show in Finder.
     last_export_dir: Option<PathBuf>,
+    /// The peak of the last export, as the Export window shows it, and whether it was over.
+    last_export_peak: Option<(String, bool)>,
     /// The question before the 388 routing is reset for the simple mode.
     confirm_simple: bool,
     input_devices: Vec<DeviceInfo>,
@@ -477,6 +484,26 @@ fn fraction_freq(fraction: f32, range: &std::ops::RangeInclusive<f32>) -> f32 {
 /// OL: a peak after the EQ above -3 dBFS.
 fn overload(peak: f32) -> bool {
     peak > 0.708
+}
+
+/// Over full scale: the output and an integer export clip there.
+fn clips(peak: f32) -> bool {
+    peak > 1.0
+}
+
+/// How long the OL of the STEREO MASTER stays lit after a clip, in seconds: long enough to see
+/// a single one.
+const MASTER_OL_HOLD: f64 = 2.0;
+
+/// The line under the export's folder: its peak in dBFS, and what to do when it is over.
+/// Returns the text and whether it is over.
+fn export_peak_note(peak: f32, file: &str, float: bool) -> (String, bool) {
+    let db = gain_to_db(peak);
+    if !clips(peak) {
+        return (format!("Last export: peak {db:+.1} dBFS, no clipping."), false);
+    }
+    let what = if float { "kept above full scale in the 32-bit float file, but most players clip it" } else { "clipped in the file" };
+    (format!("Last export: peak {db:+.1} dBFS in {file}, {what}. Turn the STEREO MASTER down {db:.1} dB and export again."), true)
 }
 
 fn bands(eq: &EqEntry) -> [&BandEntry; 3] {
@@ -566,7 +593,7 @@ impl Default for ExportChoices {
 /// An export on its way: its progress and where its result arrives.
 struct RunningExport {
     progress: Arc<Progress>,
-    result: Receiver<Result<Vec<PathBuf>, String>>,
+    result: Receiver<Result<export::Exported, String>>,
 }
 
 /// The tape of a new project: the 388 at 7½ IPS on 456.
@@ -658,6 +685,8 @@ fn mixer_params(mixer: &MixerEntry, preferences: &Preferences, output_channels: 
             tone: effects.echo.tone,
         },
         rtn: effects.rtn.map(|r| RtnParams { gain: db_to_gain(r.gain_db), pan: r.pan }),
+        // The simple mode has no buses: the returns stay on the stereo bus.
+        rtn_to_pgm: effects.to_pgm.filter(|_| mixer.mode == Routing::Classic),
     }
 }
 
@@ -685,6 +714,7 @@ impl DawApp {
             meter_post: false,
             big_vu: Default::default(),
             big_ol_until: [0.0; 2],
+            master_ol_until: 0.0,
             reels: Default::default(),
             strip_centres: [0.0; TRACKS],
             strip_numbers: [egui::Rect::NOTHING; TRACKS],
@@ -731,9 +761,11 @@ impl DawApp {
             help: None,
             export: ExportChoices::default(),
             show_export: false,
+            bounce: None,
             running_export: None,
             export_dir: None,
             last_export_dir: None,
+            last_export_peak: None,
             confirm_simple: false,
             input_devices,
             insert: false,
@@ -1337,7 +1369,11 @@ impl DawApp {
             let c = &t.channel;
             c.auto && c.direct && c.lr && c.assign == [false; 4] && c.source != ChannelSource::Rmx && t.monitor == MonitorEntry::default()
         });
-        channels && self.mixer.odd_db == 0.0 && self.mixer.even_db == 0.0 && self.mixer.mon == MonSwitch::Cue
+        channels
+            && self.mixer.odd_db == 0.0
+            && self.mixer.even_db == 0.0
+            && self.mixer.mon == MonSwitch::Cue
+            && self.mixer.effects.to_pgm.is_none()
     }
 
     /// The Eenvoudig | 388 switch. To the simple mode asks first when that resets routing.
@@ -1367,6 +1403,7 @@ impl DawApp {
         }
         // Only the 388 routing goes back; MONO, the sends' masters and PHONES stay.
         self.mixer = MixerEntry { mode: Routing::Simple, odd_db: 0.0, even_db: 0.0, mon: MonSwitch::Cue, ..self.mixer };
+        self.mixer.effects.to_pgm = None;
         self.send_mix();
         self.mark_dirty();
     }
@@ -1487,6 +1524,11 @@ impl DawApp {
             let label = redo_name.as_ref().map_or_else(|| "Redo".to_string(), |n| format!("Redo {n}"));
             if ui.add_enabled(redo_name.is_some(), egui::Button::new(label).shortcut_text(redo)).clicked() {
                 self.redo();
+            }
+            ui.separator();
+            let tip = "Mix tracks live onto one track or a pair: sets the 388 routing in one go";
+            if ui.button("Bounce Setup...").on_hover_text(tip).clicked() {
+                self.open_bounce();
             }
         });
     }
@@ -1920,6 +1962,10 @@ impl DawApp {
         // Both sources are read every frame, so the one not shown does not pile up.
         let (master, sends) = (engine.take_master_energy(), engine.take_send_energy());
         let (master_peaks, send_peaks) = (engine.take_master_peaks(), engine.take_send_peaks());
+        // The OL of the STEREO MASTER watches the mix whatever the METER switch shows.
+        if master_peaks.iter().any(|&p| clips(p)) {
+            self.master_ol_until = now + MASTER_OL_HOLD;
+        }
         let (energy, peaks) = if self.mixer.meter == MeterSwitch::AuxEff { (sends, send_peaks) } else { (master, master_peaks) };
         for side in 0..2 {
             if peaks[side] > VU_PEAK {
@@ -2424,7 +2470,8 @@ impl DawApp {
             sources,
             channels: std::array::from_fn(|i| channel_params(&self.tracks[i])),
             monitors: std::array::from_fn(|i| monitor_params(&self.tracks[i].monitor)),
-            mixer: mixer_params(&self.mixer, &self.preferences, 2),
+            // An export records nothing: the returns go to the stereo bus, also with TO PGM on.
+            mixer: MixerParams { rtn_to_pgm: None, ..mixer_params(&self.mixer, &self.preferences, 2) },
             master: db_to_gain(self.master_db),
             tape: tape_params(&self.tape),
             meter: meter_of(&self.metronome),
@@ -2469,10 +2516,14 @@ impl DawApp {
         let Ok(result) = running.result.try_recv() else { return };
         self.running_export = None;
         self.status = match result {
-            Ok(files) => {
+            Ok(exported) => {
+                let files = &exported.files;
                 self.last_export_dir = files.first().and_then(|f| f.parent()).map(Path::to_path_buf);
                 let dir = self.last_export_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
-                format!("{} file(s) exported to {dir}", files.len())
+                let float = self.export.depth == BitDepth::Float32;
+                self.last_export_peak = Some(export_peak_note(exported.peak, &exported.loudest, float));
+                let over = if clips(exported.peak) { ", over 0 dBFS: see the Export window" } else { "" };
+                format!("{} file(s) exported to {dir}{over}", files.len())
             }
             Err(e) => e,
         };
@@ -2588,6 +2639,10 @@ impl DawApp {
                     ui.label(RichText::new(format!("{example}.{}", choices.format.extension())).monospace().size(12.0));
                 });
                 note(ui, &format!("Folder: {place}"));
+                if let Some((text, over)) = &self.last_export_peak {
+                    let colour = if *over { paper::RUST } else { paper::INK_SOFT };
+                    ui.label(RichText::new(text).size(11.5).color(colour));
+                }
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(self.project_dir.is_some(), |ui| {
@@ -3205,6 +3260,7 @@ impl DawApp {
         self.tape_window(&ctx);
         self.help_window(&ctx);
         self.export_window(&ctx);
+        self.bounce_window(&ctx);
         self.unsaved_dialog(&ctx);
         self.confirm_simple_dialog(&ctx);
         // egui moves the focus to the next widget on Tab; after a switch nothing should keep it,
@@ -3371,6 +3427,7 @@ impl DawApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bounce::{BounceDraft, BounceOptions, Target};
 
     /// A platform without audio hardware whose dialogs give fixed answers. Its devices can be
     /// plugged in, pulled out and made to fail.
@@ -3645,6 +3702,11 @@ mod tests {
 
     #[test]
     fn ol_lights_above_minus_3_dbfs() {
+        assert!(!clips(1.0) && clips(1.001), "full scale itself is not a clip");
+        let (quiet, over) = (export_peak_note(0.5, "Demo_mix.wav", false), export_peak_note(1.5, "Demo_mix.wav", false));
+        assert!(!quiet.1 && quiet.0.contains("-6.0 dBFS"), "{}", quiet.0);
+        assert!(over.1 && over.0.contains("+3.5 dBFS in Demo_mix.wav") && over.0.contains("down 3.5 dB"), "{}", over.0);
+        assert!(export_peak_note(1.5, "a.wav", true).0.contains("float"));
         assert!(!overload(0.70));
         assert!(overload(0.71));
     }
@@ -4712,6 +4774,205 @@ mod tests {
         app.link_touched = Some(1);
         app.sync_links();
         assert!(!app.tracks[0].solo, "the right side's key counts too");
+    }
+
+    fn sources(tracks: &[usize]) -> [bool; TRACKS] {
+        std::array::from_fn(|t| tracks.contains(&t))
+    }
+
+    #[test]
+    fn bounce_to_a_pair_sets_the_recipe() {
+        // PROJECT.md, "Pingpong naar stereo": 3 to 5 onto 7 and 8.
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.bounce_setup(sources(&[2, 3, 4]), Target::Pair(3), BounceOptions::default());
+        assert_eq!(app.mixer.mode, Routing::Classic);
+        for t in 2..5 {
+            let c = &app.tracks[t].channel;
+            assert_eq!(c.source, ChannelSource::Rmx, "track {}", t + 1);
+            assert_eq!(c.assign, [false, false, false, true]);
+            assert!(!c.lr && !c.direct);
+            assert!(app.tracks[t].monitor.mute, "silenced in MONITOR");
+        }
+        for (t, pan) in [(6, -1.0), (7, 1.0)] {
+            let track = &app.tracks[t];
+            assert!(track.armed, "track {} armed", t + 1);
+            assert!(!track.channel.lr && !track.channel.direct && track.channel.assign == [false; 4]);
+            assert!(!track.monitor.mute);
+            assert_eq!(track.monitor.pan, pan);
+        }
+        assert!(app.mixer.links[3], "the target pair is linked");
+        assert!(app.tracks.iter().all(|t| !t.channel.lr), "no channel on L-R: MONITOR reaches STEREO");
+        assert_eq!(app.status, "Bounce ready: press REC and PLAY");
+    }
+
+    #[test]
+    fn bounce_to_one_track_pans_to_its_side() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.bounce_setup(sources(&[0, 1, 2]), Target::Track(3), BounceOptions::default());
+        for t in 0..3 {
+            assert_eq!(app.tracks[t].pan, 1.0, "track 4 is an even bus: right");
+            assert_eq!(app.tracks[t].channel.assign, [false, true, false, false]);
+        }
+        assert!(app.tracks[3].armed);
+        assert_eq!(app.tracks[3].monitor.pan, 0.0, "a mono target in the middle");
+        assert!(!app.tracks[2].armed, "track 3 is a source, not a target");
+
+        app.bounce_setup(sources(&[0, 1]), Target::Track(2), BounceOptions::default());
+        assert_eq!(app.tracks[0].pan, -1.0, "track 3 is an odd bus: left");
+    }
+
+    #[test]
+    fn bounce_keeps_the_pan_of_a_pair_and_leaves_the_rest() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.set_routing(Routing::Classic);
+        app.tracks[0].pan = 0.3;
+        app.tracks[5].fader_db = -7.0;
+        let before = ChannelEntry { lr: false, ..app.tracks[5].channel };
+        let options = BounceOptions { silence_sources: false, link_target: false, include_effects: false };
+        app.bounce_setup(sources(&[0]), Target::Pair(3), options);
+        assert_eq!(app.tracks[0].pan, 0.3, "PAN places the source between 7 and 8");
+        assert!(!app.tracks[0].monitor.mute, "not silenced without the option");
+        assert!(!app.mixer.links[3], "not linked without the option");
+        assert_eq!(app.mixer.effects.to_pgm, None, "the returns stay on the stereo bus without the option");
+        assert_eq!(app.tracks[5].channel, before, "track 6 is neither source nor target: only off L-R");
+        assert_eq!(app.tracks[5].fader_db, -7.0);
+    }
+
+    #[test]
+    fn bounce_takes_the_effects_onto_the_target() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.bounce_setup(sources(&[0, 1]), Target::Pair(3), BounceOptions::default());
+        assert_eq!(app.mixer.effects.to_pgm, Some(3));
+        assert_eq!(mixer_params(&app.mixer, &app.preferences, 2).rtn_to_pgm, Some(3));
+        app.mixer.effects.rtn[1].pan = 0.4;
+        app.bounce_setup(sources(&[0, 1]), Target::Track(3), BounceOptions::default());
+        assert_eq!(app.mixer.effects.to_pgm, Some(1), "track 4 is on ASSIGN 3-4");
+        assert!(app.mixer.effects.rtn.iter().all(|r| r.pan == 1.0), "both returns to the even side");
+        assert!(!app.bounce_notes(Target::Track(3), true).iter().any(|n| n.contains("EFFECT RTN")), "a new project's returns are open");
+        for rtn in &mut app.mixer.effects.rtn {
+            rtn.gain_db = MIN_DB;
+        }
+        assert!(app.bounce_notes(Target::Track(3), true).iter().any(|n| n.contains("EFFECT RTN 1 and 2 are closed")));
+        assert!(!app.bounce_notes(Target::Track(3), false).iter().any(|n| n.contains("EFFECT RTN")), "not without the option");
+        app.mixer.effects.rtn[0].gain_db = 0.0;
+        assert!(!app.bounce_notes(Target::Track(3), true).iter().any(|n| n.contains("EFFECT RTN")));
+        app.set_routing(Routing::Simple);
+        app.apply_simple();
+        assert_eq!(app.mixer.effects.to_pgm, None, "SIMPLE has no buses");
+    }
+
+    #[test]
+    fn a_track_is_never_source_and_target() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.bounce_setup(sources(&[0, 6, 7]), Target::Pair(3), BounceOptions::default());
+        assert_eq!(app.tracks[6].channel.assign, [false; 4], "7 is the target, not a source");
+        assert!(app.tracks[6].armed);
+        assert_eq!(app.tracks[0].channel.assign, [false, false, false, true]);
+    }
+
+    #[test]
+    fn armed_sources_are_made_safe() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.toggle_arm(0);
+        assert!(app.tracks[0].armed);
+        app.bounce_setup(sources(&[0]), Target::Track(1), BounceOptions::default());
+        assert!(!app.tracks[0].armed, "a source would record over itself");
+    }
+
+    #[test]
+    fn a_mono_target_on_a_linked_pair_unlinks_it() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 2);
+        app.set_link(3, true);
+        app.sync_links();
+        app.bounce_setup(sources(&[0, 1]), Target::Track(6), BounceOptions::default());
+        app.sync_links();
+        assert!(!app.mixer.links[3]);
+        assert!(app.tracks[6].armed);
+        assert!(!app.tracks[7].armed, "only the target records");
+    }
+
+    #[test]
+    fn a_linked_source_pair_stays_together_onto_one_track() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 2);
+        app.set_link(0, true);
+        app.sync_links();
+        app.bounce_setup(sources(&[0, 1]), Target::Track(3), BounceOptions::default());
+        app.sync_links();
+        assert_eq!((app.tracks[0].pan, app.tracks[1].pan), (1.0, 1.0), "both to bus 4, not mirrored back");
+        assert!(app.mixer.links[0]);
+    }
+
+    #[test]
+    fn the_routing_sent_is_that_of_the_manual_bounce() {
+        // The engine's test `a_bounce_from_tape_needs_no_input_and_lines_up_with_its_source`
+        // records track 1 onto track 3 with: RMX, ASSIGN 3-4, PAN hard left, no L-R, no DIRECT.
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.bounce_setup(sources(&[0]), Target::Track(2), BounceOptions::default());
+        let params = channel_params(&app.tracks[0]);
+        assert_eq!(params.source, Source::Remix);
+        assert_eq!(params.assign, [false, true, false, false]);
+        assert_eq!(params.pan, -1.0);
+        assert!(!params.lr && !params.direct);
+        assert!(app.tracks[2].armed);
+    }
+
+    #[test]
+    fn bounce_notes_warn_about_audio_and_closed_masters() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 1);
+        // Track 1 has audio; in SIMPLE every channel is on L-R.
+        let notes = app.bounce_notes(Target::Pair(0), false);
+        assert!(notes.iter().any(|n| n == "Track 1 has audio; recording replaces it where you record."), "{notes:?}");
+        assert!(notes.iter().any(|n| n.starts_with("Apply switches the console to 388")), "{notes:?}");
+
+        app.set_routing(Routing::Classic);
+        for t in &mut app.tracks {
+            t.channel.lr = false;
+        }
+        app.mixer.even_db = MIN_DB;
+        let notes = app.bounce_notes(Target::Pair(0), false);
+        assert!(notes.iter().any(|n| n.contains("PGM MASTER EVEN is closed: track 2 records silence")), "{notes:?}");
+        assert!(!notes.iter().any(|n| n.contains("switches")), "{notes:?}");
+    }
+
+    #[test]
+    fn bounce_setup_opens_empty_and_closes_on_apply() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.open_bounce();
+        assert_eq!(app.bounce, Some(BounceDraft::default()));
+        app.apply_bounce();
+        assert!(app.bounce.is_some(), "nothing chosen: Apply does nothing");
+        if let Some(draft) = &mut app.bounce {
+            draft.sources[0] = true;
+            draft.target = Some(Target::Track(1));
+        }
+        app.apply_bounce();
+        assert!(app.bounce.is_none());
+        assert!(app.tracks[1].armed);
+    }
+
+    #[test]
+    fn a_track_an_edit_empties_loses_its_name() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 2);
+        assert_eq!(app.tracks[0].name, "01_track");
+        app.select_region(0, 0, false);
+        app.delete();
+        assert!(app.tracks[0].regions.is_empty());
+        assert_eq!(app.tracks[0].name, "", "the name came with the audio, as with CLEAR");
+        assert_eq!(app.tracks[1].name, "02_track", "track 2 keeps its audio and name");
+        app.undo();
+        assert_eq!(app.tracks[0].name, "01_track", "undo brings it back");
     }
 
     #[test]

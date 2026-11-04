@@ -286,6 +286,9 @@ pub struct EffectsEntry {
     pub plate: PlateEntry,
     pub echo: EchoEntry,
     pub rtn: [RtnEntry; 2],
+    /// TO PGM: the returns go to the buses of this ASSIGN pair (0 for 1-2) instead of the
+    /// stereo bus; missing: off.
+    pub to_pgm: Option<usize>,
 }
 
 /// What the main output carries.
@@ -968,6 +971,7 @@ mod tests {
                         plate: PlateEntry { decay_s: 4.0, predelay_ms: 35.0, tone: 0.2 },
                         echo: EchoEntry { time_ms: 120.0, sync: EchoSyncEntry::Eighth, feedback: 0.6, tone: 0.8 },
                         rtn: [RtnEntry { gain_db: -3.0, pan: 0.25 }, RtnEntry { gain_db: 0.0, pan: -0.5 }],
+                        to_pgm: Some(3),
                     },
                     links: [false, true, false, false],
                 },
@@ -1046,7 +1050,8 @@ mod tests {
                 effects: EffectsEntry {
                     plate: PlateEntry { decay_s: 4.0, predelay_ms: 35.0, tone: 0.2 },
                     echo: EchoEntry { time_ms: 120.0, sync: EchoSyncEntry::Eighth, feedback: 0.6, tone: 0.8 },
-                    rtn: [RtnEntry { gain_db: -3.0, pan: 0.25 }, RtnEntry { gain_db: 0.0, pan: -0.5 }]
+                    rtn: [RtnEntry { gain_db: -3.0, pan: 0.25 }, RtnEntry { gain_db: 0.0, pan: -0.5 }],
+                    to_pgm: Some(3),
                 },
                 links: [false, true, false, false],
             }
@@ -1239,6 +1244,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&MeterSwitch::AuxEff).unwrap_or_default(), r#""aux_eff""#);
         assert_eq!(mixer.effects.rtn, [RtnEntry::default(); 2], "older projects: the returns stay closed");
         assert_eq!(mixer.effects.rtn[0].gain_db, SEND_CLOSED_DB);
+        assert_eq!(mixer.effects.to_pgm, None, "older projects: the returns stay on the stereo bus");
         assert_eq!((mixer.effects.plate, mixer.effects.echo), (PlateEntry::default(), EchoEntry::default()));
         assert_eq!(serde_json::to_string(&EchoSyncEntry::DottedEighth).unwrap_or_default(), r#""dotted_eighth""#);
     }

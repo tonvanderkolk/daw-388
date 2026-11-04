@@ -31,6 +31,8 @@ pub(crate) const BAND_ROUTING_COMPACT: f32 = BAND_TRACK;
 pub(crate) const BAND_SWITCHES_COMPACT: f32 = BAND_INPUT;
 pub(crate) const BAND_LISTEN_COMPACT: f32 = BAND_PAN + BAND_KEYS;
 pub(crate) const BAND_LISTEN: f32 = 100.0;
+/// BOUNCE on its own under LISTEN (the compact console has it beside SIMPLE | 388).
+pub(crate) const BAND_BOUNCE: f32 = 52.0;
 /// The height of a key with its label above it.
 const KEY_SMALL_H: f32 = 33.0;
 const KEY_NARROW_H: f32 = 27.0;
@@ -58,7 +60,7 @@ pub(crate) fn master_bands(compact: bool) -> f32 {
     if compact {
         BAND_ROUTING_COMPACT + BAND_SWITCHES_COMPACT + BAND_LISTEN_COMPACT
     } else {
-        BAND_ROUTING + BAND_MASTER + BAND_SWITCHES + BAND_LISTEN
+        BAND_ROUTING + BAND_MASTER + BAND_SWITCHES + BAND_LISTEN + BAND_BOUNCE
     }
 }
 
@@ -72,6 +74,13 @@ pub(crate) fn place<R>(ui: &mut Ui, x: f32, top: f32, size: Vec2, add: impl FnOn
 fn name_tag(ui: &Ui, y: f32, text: &str) {
     let x = ui.max_rect().center().x;
     ui.painter().text(pos2(x, y), Align2::CENTER_CENTER, text, FontId::proportional(9.0), palette::TEXT_DIM);
+}
+
+/// BOUNCE, which opens Bounce Setup; whether it was clicked.
+fn bounce_key(ui: &mut Ui, x: f32, top: f32) -> bool {
+    place(ui, x, top, vec2(40.0, KEY_SMALL_H), |ui| KeyCap::new("BOUNCE", keys::SMALL).show(ui))
+        .on_hover_text("BOUNCE: mix tracks live onto one track or a pair (Edit, Bounce Setup...)")
+        .clicked()
 }
 
 /// A small label at `pos`, painted so it moves nothing; returns where it went.
@@ -364,6 +373,8 @@ impl DawApp {
                 _ if loading => ("loading...".to_string(), palette::ORANGE),
                 Some(path) => (format!("missing: {}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), palette::LED),
                 None if has_content => (track.name.clone(), palette::TEXT_DIM),
+                // A name typed on an empty track, as in TRACKS.
+                None if !track.name.is_empty() => (track.name.clone(), palette::TEXT_DIM.gamma_multiply(0.6)),
                 // A dash, not a word: eight empty strips stay quiet.
                 None => ("–".to_string(), palette::TEXT_DIM.gamma_multiply(0.6)),
             };
@@ -455,6 +466,37 @@ impl DawApp {
                         });
                         let pan = pan.on_hover_text(tip);
                         mixer_changed |= pan.changed() || pan.double_clicked();
+                    }
+                    // TO PGM: the returns onto a pair of buses, as an effect patched into the
+                    // 388's PGM BUSS IN. Only the 388 routing has buses.
+                    if classic {
+                        tag(ui, pos2(cx + 71.0, top - 8.0), Align2::CENTER_CENTER, "TO PGM");
+                        let text = |pair: Option<usize>| pair.map_or("–".to_string(), |p| format!("{}-{}", 2 * p + 1, 2 * p + 2));
+                        let mut to_pgm = self.mixer.effects.to_pgm;
+                        place(ui, cx + 71.0, top + 6.0, vec2(46.0, 20.0), |ui| {
+                            keys::led_style(ui);
+                            // Narrow, with a small arrow: it keeps clear of the PAN knobs.
+                            let spacing = ui.spacing_mut();
+                            spacing.button_padding = vec2(3.0, 1.0);
+                            spacing.icon_width = 9.0;
+                            spacing.icon_spacing = 3.0;
+                            egui::ComboBox::from_id_salt("rtn-to-pgm")
+                                .selected_text(text(to_pgm))
+                                .wrap_mode(egui::TextWrapMode::Extend)
+                                .width(44.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut to_pgm, None, text(None));
+                                    for pair in 0..TRACKS / 2 {
+                                        ui.selectable_value(&mut to_pgm, Some(pair), text(Some(pair)));
+                                    }
+                                })
+                                .response
+                        })
+                        .on_hover_text("TO PGM: the returns go onto these two buses instead of STEREO, so reverb and echo are recorded");
+                        if to_pgm != self.mixer.effects.to_pgm {
+                            self.mixer.effects.to_pgm = to_pgm;
+                            mixer_changed = true;
+                        }
                     }
                 });
                 // Three knobs side by side on the same three columns for the plate and the echo.
@@ -608,7 +650,7 @@ impl DawApp {
             let db = track.trk_meter_db;
             place(ui, bar_x, y - 3.0, vec2(36.0, 6.0), |ui| level_bar(ui, db));
         }
-        let y = top + 250.0;
+        let y = top + 243.0;
         tag(ui, pos2(cx - 80.0, y + 20.0), Align2::CENTER_CENTER, "MON");
         for (x, (mon, label, tip)) in [
             (cx - 24.0, (MonSwitch::Cue, "CUE", "Tape or input, following REC FUNCTION and INSERT (as on the 388)")),
@@ -631,17 +673,23 @@ impl DawApp {
         let compact = self.compact;
         let mut mixer_changed = false;
         let mut routing = None;
+        let mut open_bounce = false;
         column(ui, 124.0, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             // SIMPLE or the 388's routing, the switch that was in the header.
             section(ui, "ROUTING", if compact { BAND_ROUTING_COMPACT } else { BAND_ROUTING }, |ui| {
                 let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
                 let mut chosen = usize::from(classic);
-                let switch = place(ui, cx, top, vec2(80.0, 23.0), |ui| keys::slide_switch(ui, &["SIMPLE", "388"], &mut chosen, 80.0)).on_hover_text(
+                let x = if compact { cx - 16.0 } else { cx };
+                let switch = place(ui, x, top, vec2(80.0, 23.0), |ui| keys::slide_switch(ui, &["SIMPLE", "388"], &mut chosen, 80.0)).on_hover_text(
                     "SIMPLE: one strip per track (input, REC and fader), as in most DAWs. 388: the buses, ASSIGN, DIRECT and the MONITOR section",
                 );
                 if switch.changed() {
                     routing = Some(if chosen == 1 { Routing::Classic } else { Routing::Simple });
+                }
+                // The compact console has no room under LISTEN: BOUNCE goes beside the switch.
+                if compact {
+                    open_bounce = bounce_key(ui, cx + 42.0, top);
                 }
             });
             // AUX MASTER and EFF MASTER, to their own interface outputs (Instellingen, Audio).
@@ -744,8 +792,23 @@ impl DawApp {
                 ));
                 mixer_changed |= phones.changed() || phones.double_clicked();
             });
+            if !compact {
+                section(ui, "", BAND_BOUNCE, |ui| {
+                    let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
+                    open_bounce = bounce_key(ui, cx, top + 4.0);
+                });
+            }
             ui.add_space(fader_top(classic, compact) - master_bands(compact) + FADER_GAP);
             let response = fader(ui, &mut self.master_db, palette::RED);
+            // OL beside the top of the scale: the mix went over 0 dBFS and clips.
+            let lamp = pos2(response.rect.center().x + 30.0, response.rect.top() + FADER_MARGIN);
+            let lit = self.now < self.master_ol_until;
+            ui.painter().circle_filled(lamp, 3.0, if lit { palette::LED } else { palette::PANEL_DARK });
+            tag(ui, lamp + vec2(5.0, 0.0), Align2::LEFT_CENTER, "OL");
+            ui.interact(Rect::from_center_size(lamp + vec2(8.0, 0.0), vec2(22.0, 12.0)), ui.scope_id().with("master-ol"), Sense::hover())
+                .on_hover_text(
+                    "OL: the STEREO MASTER went over 0 dBFS. That clips at the output and in an export: turn it or the faders down",
+                );
             if response.changed() || response.double_clicked() {
                 let gain = db_to_gain(self.master_db);
                 self.engine_send(Command::SetMaster(gain));
@@ -754,6 +817,9 @@ impl DawApp {
             ui.label(RichText::new(format_db(self.master_db)).size(11.0).color(palette::TEXT_DIM));
             name_tag(ui, self.name_line, "STEREO MASTER");
         });
+        if open_bounce {
+            self.open_bounce();
+        }
         if let Some(mode) = routing {
             self.set_routing(mode);
         }

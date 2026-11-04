@@ -192,17 +192,38 @@ fn render_tracks(job: &ExportJob) -> [Option<Arc<TrackAudio>>; TRACKS] {
 }
 
 /// Run an export; returns the files written. On an error or a cancel, nothing is left behind.
-pub(crate) fn run(job: &ExportJob, progress: &Progress) -> Result<Vec<PathBuf>, String> {
+/// What an export wrote: the files, and its highest sample with the name of the file it is in.
+#[derive(Debug)]
+pub(crate) struct Exported {
+    pub files: Vec<PathBuf>,
+    /// The highest absolute sample over all files, before the conversion to the bit depth: above
+    /// 1.0 an integer file is clipped there.
+    pub peak: f32,
+    pub loudest: String,
+}
+
+/// The highest absolute sample of `channels`.
+pub(crate) fn peak_of(channels: &[Vec<f32>]) -> f32 {
+    channels.iter().flatten().fold(0.0f32, |m, &x| m.max(x.abs()))
+}
+
+pub(crate) fn run(job: &ExportJob, progress: &Progress) -> Result<Exported, String> {
     std::fs::create_dir_all(&job.dir).map_err(|e| format!("Cannot create folder {}: {e}", job.dir.display()))?;
     let audio = render_tracks(job);
     let mut renderer = Renderer { job, audio, progress, done: 0, total: 0 };
     let renders = job.stereo.iter().count() + job.stems.len();
     renderer.total = (renders * renderer.frames()) as u64;
     let mut written = Vec::new();
+    let (mut peak, mut loudest) = (0.0f32, String::new());
     let result = (|| {
-        let save = |name: String, channels: Vec<Vec<f32>>, written: &mut Vec<PathBuf>| {
+        let mut save = |name: String, channels: Vec<Vec<f32>>, written: &mut Vec<PathBuf>| {
             let path = unused_path(&job.dir, &name, job.format.extension());
             write_audio(&path, &channels, job.rate, job.format, job.depth).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
+            let file_peak = peak_of(&channels);
+            if file_peak > peak || loudest.is_empty() {
+                peak = peak.max(file_peak);
+                loudest = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            }
             written.push(path);
             Ok::<(), String>(())
         };
@@ -232,7 +253,7 @@ pub(crate) fn run(job: &ExportJob, progress: &Progress) -> Result<Vec<PathBuf>, 
     match result {
         Ok(()) => {
             progress.done.store(1000, Ordering::Relaxed);
-            Ok(written)
+            Ok(Exported { files: written, peak, loudest })
         }
         Err(e) => {
             for path in &written {
@@ -324,15 +345,24 @@ mod tests {
     fn a_dry_stem_is_the_recording_and_files_are_named_and_complete() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let job = ExportJob { stems: vec![(0, StemKind::Dry), (1, StemKind::Mixed)], ..job(dir.path().join("export")) };
-        let files = run(&job, &Progress::default()).unwrap_or_else(|e| panic!("{e}"));
+        let exported = run(&job, &Progress::default()).unwrap_or_else(|e| panic!("{e}"));
+        let files = &exported.files;
         let names: Vec<String> = files.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["Demo_mix.wav", "Demo_01_Kick.wav", "Demo_02_Bas.wav"]);
+        assert!(exported.peak > 0.0 && names.contains(&exported.loudest), "the peak and the file it is in");
         let dry = daw388_project::load_audio(&files[1]).unwrap_or_else(|e| panic!("{e}"));
         let original = job.sources[&0].samples.clone();
         // Bit for bit, apart from the 3 ms fades at the edges (144 samples at 48 kHz).
         assert_eq!(dry.samples.len(), original.len());
         assert_eq!(dry.samples[144..original.len() - 144], original[144..original.len() - 144]);
         assert!(dry.samples[0] < original[0], "the first sample is faded in");
+    }
+
+    #[test]
+    fn the_peak_is_the_highest_sample_on_either_side() {
+        assert_eq!(peak_of(&[vec![0.2, -0.5], vec![1.3, 0.1]]), 1.3);
+        assert_eq!(peak_of(&[vec![-0.9]]), 0.9);
+        assert_eq!(peak_of(&[]), 0.0);
     }
 
     #[test]

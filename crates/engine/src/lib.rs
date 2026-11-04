@@ -1070,6 +1070,41 @@ impl Engine {
             send_peaks[1] = send_peaks[1].max(eff.abs());
             send_energy[0] += f64::from(aux * aux);
             send_energy[1] += f64::from(eff * eff);
+            // The plate on AUX and the echo on EFF, back through EFFECT RTN 1 and 2: to the stereo
+            // bus, or with TO PGM onto a pair of buses. What goes onto the tape does not depend on
+            // SOLO, so then the effects get the sends of every track.
+            self.plate.params = self.mixer.plate;
+            self.echo.params = self.mixer.echo;
+            let to_pgm = self.mixer.rtn_to_pgm.filter(|pair| *pair < TRACKS / 2);
+            let fed = if to_pgm.is_some() { sends } else { fx_sends };
+            let quarter = (self.click.meter.beat_seconds() * f64::from(self.click.meter.unit) / 4.0) as f32;
+            let [plate_l, plate_r] = self.plate.process(fed[0] * self.send_gains[0]);
+            let echo = self.echo.process(fed[1] * self.send_gains[1], quarter);
+            let [plate_rtn, echo_rtn] = self.mixer.rtn;
+            let targets = [
+                [plate_rtn.gain * (1.0 - plate_rtn.pan).min(1.0), plate_rtn.gain * (1.0 + plate_rtn.pan).min(1.0)],
+                pan_gains(echo_rtn.gain, echo_rtn.pan),
+            ];
+            for (current, target) in self.rtn_gains.iter_mut().zip(targets) {
+                smooth(&mut current[0], target[0]);
+                smooth(&mut current[1], target[1]);
+            }
+            let returns = [
+                plate_l * self.rtn_gains[0][0] + echo * self.rtn_gains[1][0],
+                plate_r * self.rtn_gains[0][1] + echo * self.rtn_gains[1][1],
+            ];
+            match to_pgm {
+                Some(pair) => {
+                    for (side, value) in returns.into_iter().enumerate() {
+                        bus_recorded[2 * pair + side] += value;
+                        bus_heard[2 * pair + side] += value;
+                    }
+                }
+                None => {
+                    stereo[0] += returns[0];
+                    stereo[1] += returns[1];
+                }
+            }
             // Track N records PGM bus N (or the channel's DIRECT tap); its MONITOR hears the input,
             // the tape or nothing, as the 388's switching logic decides.
             let mut monitor = [0.0f32; 2];
@@ -1101,23 +1136,6 @@ impl Engine {
                 stereo[0] += monitor[0];
                 stereo[1] += monitor[1];
             }
-            // The plate on AUX and the echo on EFF, back through EFFECT RTN 1 and 2.
-            self.plate.params = self.mixer.plate;
-            self.echo.params = self.mixer.echo;
-            let quarter = (self.click.meter.beat_seconds() * f64::from(self.click.meter.unit) / 4.0) as f32;
-            let [plate_l, plate_r] = self.plate.process(fx_sends[0] * self.send_gains[0]);
-            let echo = self.echo.process(fx_sends[1] * self.send_gains[1], quarter);
-            let [plate_rtn, echo_rtn] = self.mixer.rtn;
-            let targets = [
-                [plate_rtn.gain * (1.0 - plate_rtn.pan).min(1.0), plate_rtn.gain * (1.0 + plate_rtn.pan).min(1.0)],
-                pan_gains(echo_rtn.gain, echo_rtn.pan),
-            ];
-            for (current, target) in self.rtn_gains.iter_mut().zip(targets) {
-                smooth(&mut current[0], target[0]);
-                smooth(&mut current[1], target[1]);
-            }
-            stereo[0] += plate_l * self.rtn_gains[0][0] + echo * self.rtn_gains[1][0];
-            stereo[1] += plate_r * self.rtn_gains[0][1] + echo * self.rtn_gains[1][1];
             // The click follows the tape's bar grid; during the count-in the grid runs ahead of the
             // waiting tape, so the beats carry on into the recording without a jump.
             let (click_at, sounding) = match self.state {
@@ -1773,6 +1791,35 @@ mod tests {
         handle.send(Command::SetMixer(MixerParams::default()));
         settle(&mut engine);
         assert!(run(&mut engine, 1_000).iter().all(|s| *s == 0.0), "RTN closed: silence");
+    }
+
+    #[test]
+    fn to_pgm_records_the_returns_on_a_pair_instead_of_the_stereo_bus() {
+        let (mut handle, mut engine) = create(48_000);
+        let mut recorder = handle.take_recorder().unwrap_or_else(|| unreachable!());
+        handle.send(Command::SetTrack(0, audio((0..100_000).map(|i| if i % 4_800 == 0 { 0.5 } else { 0.0 }).collect())));
+        // Track 1 only feeds the plate: no ASSIGN, no L-R, its MONITOR row silent.
+        handle.send(Command::SetChannel(0, ChannelParams { aux: 1.0, aux_pre: true, ..ChannelParams::default() }));
+        handle.send(Command::SetMonitor(0, silent_monitor()));
+        for track in [6, 7] {
+            handle.send(Command::SetMonitor(track, silent_monitor()));
+            handle.send(Command::SetArmed(track, true));
+        }
+        // SOLO on another track: what goes onto the tape does not depend on it.
+        handle.send(Command::SetSolo(1, true));
+        let rtn = [RtnParams { gain: 1.0, pan: 0.0 }, RtnParams::default()];
+        handle.send(Command::SetMixer(MixerParams { rtn, rtn_to_pgm: Some(3), ..MixerParams::default() }));
+        settle(&mut engine);
+        handle.send(Command::Record);
+        let out = run(&mut engine, 24_000);
+        assert!(out.iter().all(|s| *s == 0.0), "the returns are not on the stereo bus as well");
+        handle.stop();
+        run(&mut engine, 0);
+        for track in [6, 7] {
+            let samples = samples_of(&takes(&mut recorder, track));
+            assert!(samples.iter().any(|s| s.abs() > 1e-3), "the plate is on track {}", track + 1);
+        }
+        assert!(samples_of(&takes(&mut recorder, 5)).is_empty(), "track 6 is not armed");
     }
 
     #[test]

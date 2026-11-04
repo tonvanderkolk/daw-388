@@ -134,6 +134,15 @@ Cancel verandert niets. De knopstanden die Apply zet, zitten niet in undo, zoals
 
 Een functie `bounce_setup(sources, target, options)` die alleen de mixerstanden in `DawApp` zet en los te testen is; het venster roept haar aan.
 
+### Effecten op de bounce (aanvulling, 04-11-2026)
+
+Op de 388 gaan EFFECT RTN 1 en 2 alleen naar de stereobus; wie effecten wilde opnemen, stak het effect in de PGM BUSS IN achterop. In de app kan dat met de ingebouwde plate en echo nog niet, en daardoor komt een live mix met galm en echo droog op de band. Omdat de galm per spoor via AUX en EFF wordt ingesteld, gaat die balans verloren als je hem pas bij de mixdown toevoegt.
+
+- **TO PGM** bij EFFECT RTN (alleen in de 388-stand): een LED-keuzelijst met `–`, `1-2`, `3-4`, `5-6` en `7-8`. Staat er een paar, dan gaan de returns met hun GAIN en PAN naar die twee bussen (links naar de oneven, rechts naar de even bus) en niet meer naar de stereobus, zodat je ze één keer hoort, via het doel in de MONITOR. Dit is de PGM BUSS IN-verbinding van de 388 als toets.
+- Zolang TO PGM aan staat, krijgen de effecten de AUX- en EFF-som zonder SOLO: wat op de band komt, hangt niet af van wat je soleert.
+- Opgeslagen als `mixer.effects.to_pgm` (0 tot 3, ontbreekt: uit). Naar SIMPLE zet hem uit.
+- **Bounce Setup** krijgt het vinkje **Include reverb and echo**, standaard aan: Apply zet TO PGM op het paar van het doel; bij één doelspoor gaan beide RTN-PAN's naar de kant van dat spoor. Uit: TO PGM uit. Staan RTN 1 en 2 allebei dicht, dan meldt het venster dat er geen galm of echo op de bounce komt.
+
 ## Testen
 
 **0.34.0**
@@ -146,6 +155,8 @@ Een functie `bounce_setup(sources, target, options)` die alleen de mixerstanden 
 - De hoogtes van de MASTER-vlakken passen nog boven de faders, gewoon en compact.
 
 **0.35.0**
+- Met TO PGM komen plate en echo op de bussen van het gekozen paar en niet op de stereobus; zonder blijft alles zoals het was.
+- Bounce Setup met Include reverb and echo zet TO PGM; bij één doelspoor gaan de RTN-PAN's naar zijn kant.
 - Bounce Setup van 1 tot en met 6 naar 7-8 geeft precies de routing van het recept "Pingpong naar stereo" in PROJECT.md.
 - Naar één spoor (bijvoorbeeld 1 tot en met 3 naar 4) zet PAN naar de goede kant.
 - Een spoor kan niet bron en doel tegelijk zijn.

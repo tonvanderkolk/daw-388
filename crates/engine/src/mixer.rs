@@ -119,6 +119,9 @@ pub struct MixerParams {
     pub plate: PlateParams,
     pub echo: EchoParams,
     pub rtn: [RtnParams; 2],
+    /// TO PGM: the returns go to the buses of this ASSIGN pair (0 for 1-2) instead of the
+    /// stereo bus, as an effect patched into the 388's PGM BUSS IN.
+    pub rtn_to_pgm: Option<usize>,
 }
 
 impl Default for MixerParams {
@@ -137,6 +140,7 @@ impl Default for MixerParams {
             plate: PlateParams::default(),
             echo: EchoParams::default(),
             rtn: [RtnParams::default(); 2],
+            rtn_to_pgm: None,
         }
     }
 }

@@ -4,6 +4,19 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-11-04
+
+### Toegevoegd
+- Bounce Setup (Edit, Bounce Setup... of de toets BOUNCE onder LISTEN; in de compacte console naast SIMPLE/388): kies de bronnen en een doel (één spoor of een paar) en Apply zet de routing voor een live mix in één keer, in de 388-stand. De bronnen gaan op RMX met ASSIGN naar de bus van het doel, zonder L-R en DIRECT en van REC af; bij één doelspoor gaat hun PAN naar de kant van die bus. Het doel gaat op REC en klinkt in de MONITOR (een paar links en rechts). Alle kanalen gaan van L-R af, want zolang er één op L-R staat, komt de MONITOR niet op STEREO en hoor je de bounce niet. Twee vinkjes: de bronnen in de MONITOR op mute en LINK aan op het doelpaar. Daarna druk je zelf REC en PLAY en mix je met de faders.
+- Galm en echo op de bounce: TO PGM bij EFFECT RTN (388-stand) stuurt de returns naar een paar bussen (1-2 tot 7-8) in plaats van naar de stereobus, zoals een effect in de PGM BUSS IN van de 388. De galm per spoor (AUX en EFF) gaat zo mee de band op. Bounce Setup heeft het vinkje Include reverb and echo, standaard aan; bij één doelspoor gaan beide RTN-PAN's naar zijn kant. Een export houdt de returns altijd op de stereobus.
+- OL op de STEREO MASTER: een lampje naast de bovenkant van de fader brandt 2 seconden als de mix boven 0 dBFS komt, ongeacht de stand van METER. Daar clipt de uitgang en een export.
+- Na een export staat in het exportvenster de piek in dBFS. Komt die boven 0 dBFS, dan staat er in welk bestand, dat het in 16 of 24 bit is afgekapt (in 32 bit float blijft het staan, maar clippen de meeste spelers het) en hoeveel dB de STEREO MASTER omlaag moet. De statusregel verwijst ernaar.
+- Het venster waarschuwt bij audio op het doel, een dichte PGM MASTER en dichte effectreturns. Alleen sporen met audio zijn te kiezen, en onderaan staat in één regel wat Apply klaarzet, zoals "Tracks 1 to 6 onto 7 and 8 (stereo)".
+
+### Gewijzigd
+- Een spoor dat door een bewerking leeg raakt (verschuiven, knippen, wissen), verliest zijn naam, net als met CLEAR; de naam kwam met de audio mee. Daardoor hadden lege sporen in TRACKS soms nog een naam en in de mixer niet.
+- De mixer toont een naam die een leeg spoor toch heeft (zelf getypt) gedimd, zoals TRACKS dat doet, in plaats van een streepje.
+
 ## [0.34.0] - 2026-11-04
 
 ### Toegevoegd

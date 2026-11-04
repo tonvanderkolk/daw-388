@@ -150,6 +150,15 @@ fn card(ui: &mut Ui, rect: Rect, label: &str, sub: Option<&str>, chosen: bool, r
 
 /// Cards side by side for one choice; returns whether it changed.
 pub fn choice_cards<T: PartialEq + Copy>(ui: &mut Ui, options: &[(T, &str, Option<&str>)], value: &mut T) -> bool {
+    cards(ui, options, value, true)
+}
+
+/// Like [`choice_cards`], without the radio ring: for short labels such as track numbers.
+pub fn plain_cards<T: PartialEq + Copy>(ui: &mut Ui, options: &[(T, &str, Option<&str>)], value: &mut T) -> bool {
+    cards(ui, options, value, false)
+}
+
+fn cards<T: PartialEq + Copy>(ui: &mut Ui, options: &[(T, &str, Option<&str>)], value: &mut T, radio: bool) -> bool {
     let height = if options.iter().any(|(_, _, sub)| sub.is_some()) { 52.0 } else { 40.0 };
     let gap = 8.0;
     let width = (ui.available_width() - gap * (options.len() as f32 - 1.0)) / options.len() as f32;
@@ -157,7 +166,7 @@ pub fn choice_cards<T: PartialEq + Copy>(ui: &mut Ui, options: &[(T, &str, Optio
     let mut changed = false;
     for (i, (option, label, sub)) in options.iter().enumerate() {
         let rect = Rect::from_min_size(pos2(row.left() + i as f32 * (width + gap), row.top()), vec2(width, height));
-        if card(ui, rect, label, *sub, *value == *option, true).clicked() && *value != *option {
+        if card(ui, rect, label, *sub, *value == *option, radio).clicked() && *value != *option {
             *value = *option;
             changed = true;
         }

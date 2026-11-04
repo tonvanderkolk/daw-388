@@ -39,6 +39,10 @@ impl DawApp {
                 if let Some(name) = name {
                     app.tracks[t].name = name;
                 }
+                // The name came with the audio: a track an edit leaves empty loses it, as with CLEAR.
+                if new[t].is_empty() && app.tracks[t].unresolved.is_none() {
+                    app.tracks[t].name.clear();
+                }
             }
         });
     }
