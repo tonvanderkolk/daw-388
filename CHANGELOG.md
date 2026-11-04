@@ -4,6 +4,17 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-11-04
+
+### Toegevoegd
+- LINK: de sporen 1-2, 3-4, 5-6 en 7-8 als stereopaar. Een toets LINK in elke strip (naast LOAD en CLEAR) en twee ringetjes tussen de spoorkoppen in TRACKS zetten het aan of uit; een lijntje verbindt dan de spoornummers onder de faders. Gekoppeld zijn fader, MUTE, SOLO, REC, de kanaalinstellingen en de MONITOR gelijk, PAN spiegelt (de breedte van het stereobeeld) en de ingang loopt door (IN 1 en IN 2). Bij aanzetten neemt het rechterspoor de instellingen van het linker over; bij uitzetten blijft alles staan.
+- Bewerken op een gekoppeld paar gaat op beide sporen: kies je een regio, dan ook zijn tegenhanger, en verschuiven, knippen, splitsen, inkorten en CLEAR werken op beide, in één undo-stap. Een paar verschuift alleen naar een ander gekoppeld paar.
+- Een stereobestand op spoor 1, 3, 5 of 7 koppelt het paar meteen; uit te zetten in Settings met Link stereo imports. LOAD op een gekoppeld paar zet een stereobestand over beide sporen en een monobestand op allebei.
+
+### Gewijzigd
+- PGM MASTERS en STEREO MASTER staan op de regel van de spoornamen.
+- MONO heeft meer ruimte boven de lijn onder het vlak.
+
 ## [0.33.0] - 2026-11-04
 
 ### Gewijzigd

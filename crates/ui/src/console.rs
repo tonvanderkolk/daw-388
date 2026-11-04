@@ -22,7 +22,9 @@ pub(crate) const BAND_MONITOR: f32 = 302.0;
 /// Bands of the MASTER column.
 pub(crate) const BAND_ROUTING: f32 = 48.0;
 pub(crate) const BAND_MASTER: f32 = 66.0;
-pub(crate) const BAND_SWITCHES: f32 = 110.0;
+pub(crate) const BAND_SWITCHES: f32 = 116.0;
+/// Where MONO stands in the switches band, with room above the line under it.
+const MONO_TOP: f32 = 70.0;
 /// The compact MASTER column on the lines of the strips (SIMPLE): ROUTING beside the LOAD band,
 /// the switches without L-R and AUX-EFF beside INPUT, LISTEN beside PAN and the keys.
 pub(crate) const BAND_ROUTING_COMPACT: f32 = BAND_TRACK;
@@ -32,6 +34,8 @@ pub(crate) const BAND_LISTEN: f32 = 100.0;
 /// The height of a key with its label above it.
 const KEY_SMALL_H: f32 = 33.0;
 const KEY_NARROW_H: f32 = 27.0;
+// MONO keeps room above the line under the switches band.
+const _: () = assert!(BAND_SWITCHES - (MONO_TOP + KEY_SMALL_H) >= 12.0);
 
 /// Where the faders start below the top of the strips: the bands above them, ASSIGN only in the
 /// 388 routing, EQ and AUX only in the full console.
@@ -62,6 +66,12 @@ pub(crate) fn master_bands(compact: bool) -> f32 {
 pub(crate) fn place<R>(ui: &mut Ui, x: f32, top: f32, size: Vec2, add: impl FnOnce(&mut Ui) -> R) -> R {
     let rect = Rect::from_min_size(pos2(x - size.x / 2.0, top), size);
     ui.scope_builder(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Center)), add).inner
+}
+
+/// The name of a master fader, centred in its column on the line of the track names (`y`).
+fn name_tag(ui: &Ui, y: f32, text: &str) {
+    let x = ui.max_rect().center().x;
+    ui.painter().text(pos2(x, y), Align2::CENTER_CENTER, text, FontId::proportional(9.0), palette::TEXT_DIM);
 }
 
 /// A small label at `pos`, painted so it moves nothing; returns where it went.
@@ -97,6 +107,8 @@ impl DawApp {
         let mut arm = false;
         let mut changed = false;
         let mut solo = false;
+        let mut link_key: Option<bool> = None;
+        let linked = self.mixer.links[link::pair_of(index)];
         let recording = self.engine.as_ref().is_some_and(|e| e.is_recording(index));
         let blink = (self.now * 2.0).fract() < 0.5;
         let now = self.now;
@@ -118,15 +130,23 @@ impl DawApp {
             // What the 388 does not have: loading, wiping and the interface input.
             section(ui, "", BAND_TRACK, |ui| {
                 let (cx, top) = (ui.max_rect().center().x, ui.max_rect().top());
-                let load_key = place(ui, cx - 16.0, top, vec2(30.0, KEY_NARROW_H), |ui| KeyCap::new("LOAD", keys::NARROW).show(ui));
+                let load_key = place(ui, cx - 32.0, top, vec2(30.0, KEY_NARROW_H), |ui| KeyCap::new("LOAD", keys::NARROW).show(ui));
                 if load_key.on_hover_text("Put a WAV, AIFF, FLAC or MP3 file on this track, from the play position").clicked() {
                     load = true;
                 }
-                let wipe = place(ui, cx + 16.0, top, vec2(30.0, KEY_NARROW_H), |ui| {
+                let wipe = place(ui, cx, top, vec2(30.0, KEY_NARROW_H), |ui| {
                     ui.add_enabled_ui(has_content, |ui| KeyCap::new("CLEAR", keys::NARROW).show(ui)).inner
                 });
                 if wipe.on_hover_text("Remove everything from this track (Cmd+Z brings it back)").clicked() {
                     clear = true;
+                }
+                // LINK is not on the 388 either: both strips of a pair have the same key.
+                let link_button = place(ui, cx + 32.0, top, vec2(30.0, KEY_NARROW_H), |ui| {
+                    KeyCap::new("LINK", keys::NARROW).lamp(linked, palette::LED_GREEN).show(ui)
+                });
+                let first = index - index % 2 + 1;
+                if link_button.on_hover_text(format!("LINK: tracks {first} and {} as a stereo pair", first + 1)).clicked() {
+                    link_key = Some(!linked);
                 }
                 if track.channel.source != ChannelSource::Rmx || track.channel.auto {
                     let text = |c: Option<u16>| c.map_or("no input".to_string(), |c| format!("in {c}"));
@@ -329,6 +349,7 @@ impl DawApp {
                 if button.on_hover_text("SOLO: hear only the soloed tracks. Recordings and buses are not affected").clicked() {
                     track.solo = !track.solo;
                     solo = true;
+                    self.link_touched = Some(index);
                 }
             });
             ui.add_space(FADER_GAP);
@@ -338,7 +359,7 @@ impl DawApp {
             }
             ui.label(RichText::new(format_db(track.fader_db)).size(11.0).color(palette::TEXT_DIM));
             // The number and the name under the fader, as on the 388.
-            ui.label(bold(format!("{}", index + 1)).size(20.0).color(palette::CREAM));
+            self.strip_numbers[index] = ui.label(bold(format!("{}", index + 1)).size(20.0).color(palette::CREAM)).rect;
             let (name, colour) = match missing.first() {
                 _ if loading => ("loading...".to_string(), palette::ORANGE),
                 Some(path) => (format!("missing: {}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), palette::LED),
@@ -349,6 +370,7 @@ impl DawApp {
             match &mut renaming {
                 Some((track_index, text, focus)) if *track_index == index => {
                     let field = ui.add(egui::TextEdit::singleline(text).desired_width(100.0).font(FontId::proportional(11.0)));
+                    self.name_line = field.rect.center().y;
                     if *focus {
                         field.request_focus();
                         *focus = false;
@@ -362,6 +384,7 @@ impl DawApp {
                 }
                 _ => {
                     let label = ui.add(egui::Label::new(RichText::new(name).size(11.0).color(colour)).truncate().sense(Sense::click()));
+                    self.name_line = label.rect.center().y;
                     let label = if missing.is_empty() {
                         label.on_hover_text("Double-click: rename")
                     } else {
@@ -388,6 +411,9 @@ impl DawApp {
         if changed {
             self.send_channel(index);
             self.mark_dirty();
+        }
+        if let Some(on) = link_key {
+            self.set_link(link::pair_of(index), on);
         }
         if load {
             self.import(index);
@@ -535,7 +561,8 @@ impl DawApp {
                         });
                     }
                 });
-                ui.label(RichText::new("PGM MASTERS").size(9.0).color(palette::TEXT_DIM));
+                // On the line of the track names, as STEREO MASTER.
+                name_tag(ui, self.name_line, "PGM MASTERS");
             }
         });
         for index in &monitors {
@@ -683,7 +710,7 @@ impl DawApp {
                         self.mark_dirty();
                     }
                 }
-                let mono = place(ui, cx, top + 70.0, vec2(48.0, KEY_SMALL_H), |ui| {
+                let mono = place(ui, cx, top + MONO_TOP, vec2(48.0, KEY_SMALL_H), |ui| {
                     KeyCap::new("MONO", keys::SMALL).lamp(self.mixer.mono, palette::LED_GREEN).show(ui)
                 });
                 if mono.on_hover_text("Left and right together on both sides").clicked() {
@@ -725,7 +752,7 @@ impl DawApp {
                 self.mark_dirty();
             }
             ui.label(RichText::new(format_db(self.master_db)).size(11.0).color(palette::TEXT_DIM));
-            ui.label(RichText::new("STEREO MASTER").size(9.0).color(palette::TEXT_DIM));
+            name_tag(ui, self.name_line, "STEREO MASTER");
         });
         if let Some(mode) = routing {
             self.set_routing(mode);

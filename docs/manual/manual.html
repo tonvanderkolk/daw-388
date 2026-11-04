@@ -174,8 +174,9 @@
   <p>Each of the eight strips belongs to the track with the same number. From top to bottom:</p>
   <table>
     <tr><th>Control</th><th>What it does</th></tr>
-    <tr><td><b class="k">LOAD</b></td><td>Put an audio file (WAV, AIFF, FLAC or MP3) on this track, starting at the play position. A stereo file goes on two tracks: left on this one, right on the next, with PAN fully left and right.</td></tr>
+    <tr><td><b class="k">LOAD</b></td><td>Put an audio file (WAV, AIFF, FLAC or MP3) on this track, starting at the play position. A stereo file goes on two tracks: left on this one, right on the next, with PAN fully left and right; on track 1, 3, 5 or 7 it links the pair.</td></tr>
     <tr><td><b class="k">CLEAR</b></td><td>Remove everything from this track. <kbd>Cmd+Z</kbd> brings it back.</td></tr>
+    <tr><td><b class="k">LINK</b></td><td>Link this track and its neighbour (1-2, 3-4, 5-6, 7-8) as a stereo pair. See <a href="#link">Linking a stereo pair</a> below.</td></tr>
     <tr><td>Input menu (red)</td><td>Which input of your audio device this channel records: <b>in 1</b>, <b>in 2</b> and so on, or <b>no input</b>. Also in Settings.</td></tr>
     <tr><td><b>INPUT</b> switch</td><td><b class="k">MIC</b> goes through an emulated preamp that saturates softly when you drive it; <b class="k">LINE</b> is clean. In 388 mode there is a third position, <b class="k">RMX</b>: the playback of the track (see <a href="#classic">chapter 12</a>).</td></tr>
     <tr><td><b class="k">TRIM</b> and <b>OL</b></td><td>The input level. OL lights when the channel comes near the top; let it only flash on the loudest notes.</td></tr>
@@ -190,6 +191,16 @@
     <tr><td>Fader</td><td>The level of the channel, from off to +6 dB. The value is shown underneath.</td></tr>
     <tr><td>Number and name</td><td>Double-click the name to rename the track. A track without a name takes the name of the file or the track its audio came from.</td></tr>
   </table>
+  <h3 id="link">Linking a stereo pair</h3>
+  <p>The tracks are mono, as on the 388; a stereo sound takes two tracks. <b class="k">LINK</b> makes such a pair behave as one stereo channel. Press it on either strip of the pair (or click the two rings between the track names in TRACKS); a line joins the two numbers under the faders.</p>
+  <ul>
+    <li>The fader, MUTE, SOLO, REC, the input switch, TRIM, EQ, the sends, ASSIGN and the MONITOR row are the same on both tracks: change one side and the other follows.</li>
+    <li><b>PAN</b> mirrors: turning the left track further left turns the right one further right. PAN is now the width of the stereo picture.</li>
+    <li>The input runs on: <b>in 1</b> on the left track gives <b>in 2</b> on the right one, so you record in stereo at once.</li>
+    <li>When you switch LINK on, the right track takes the settings of the left one. Switching it off leaves everything as it is.</li>
+    <li>In TRACKS, selecting a region also selects the one beside it on the other track, so moving, cutting, splitting and trimming work on both. A pair moves only onto another linked pair.</li>
+    <li>A stereo file loaded on track 1, 3, 5 or 7 links its pair by itself. Switch this off in Settings, <b>Link stereo imports</b>. <b class="k">LOAD</b> on a linked pair puts a stereo file over both tracks and a mono file on both.</li>
+  </ul>
   <h3>The meter bridge</h3>
   <p>Above each strip is the <b>TRK</b> meter of its track; on the right the two large meters of the stereo mix. A red lamp in a meter (PEAK) lights near full scale. In SIMPLE mode the TRK meters show the channel, before the fader (PRE) or after it (POST), chosen in the master section. In 388 mode they show what the track's MONITOR row hears, as on the machine: the bus going to the track while recording, otherwise the tape.</p>
 </section>

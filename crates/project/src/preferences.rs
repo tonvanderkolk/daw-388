@@ -46,6 +46,9 @@ pub struct Preferences {
     pub update_checked_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_version: Option<String>,
+    /// A stereo file loaded on an odd track links that track and the next one.
+    #[serde(default = "yes")]
+    pub link_stereo_imports: bool,
 }
 
 /// How many projects File, Open Recent lists.
@@ -80,6 +83,7 @@ impl Default for Preferences {
             check_updates: true,
             update_checked_at: None,
             latest_version: None,
+            link_stereo_imports: true,
         }
     }
 }
@@ -105,6 +109,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stereo_imports_link_unless_switched_off() {
+        let old: Preferences = serde_json::from_str("{}").unwrap_or_else(|e| panic!("{e}"));
+        assert!(old.link_stereo_imports);
+        assert!(Preferences::default().link_stereo_imports);
+    }
+
+    #[test]
     fn round_trip_and_defaults() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let path = dir.path().join("DAW 388").join("settings.json");
@@ -123,6 +134,7 @@ mod tests {
             check_updates: false,
             update_checked_at: Some(1_790_000_000),
             latest_version: Some("0.31.0".into()),
+            link_stereo_imports: false,
         };
         save(&path, &preferences).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(load(&path), preferences);

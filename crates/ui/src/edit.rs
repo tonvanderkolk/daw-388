@@ -195,6 +195,8 @@ impl DawApp {
             return;
         }
         // The same limits as regions::move_regions, so the moved regions can be found again.
+        let picked_tracks: Vec<usize> = picked.iter().map(|(t, _)| *t).collect();
+        let track_delta = self.linked_delta(&picked_tracks, track_delta);
         let lowest = picked.iter().map(|(t, _)| *t as isize).min().unwrap_or(0);
         let highest = picked.iter().map(|(t, _)| *t as isize).max().unwrap_or(0);
         let track_delta = track_delta.clamp(-lowest, TRACKS as isize - 1 - highest);
@@ -219,6 +221,8 @@ impl DawApp {
         if picked.is_empty() {
             return;
         }
+        let picked_tracks: Vec<usize> = picked.iter().map(|(t, _)| *t).collect();
+        let track_delta = self.linked_delta(&picked_tracks, track_delta);
         let lowest = picked.iter().map(|(t, _)| *t as isize).min().unwrap_or(0);
         let highest = picked.iter().map(|(t, _)| *t as isize).max().unwrap_or(0);
         let track_delta = track_delta.clamp(-lowest, TRACKS as isize - 1 - highest);
@@ -257,12 +261,24 @@ impl DawApp {
                 }
         });
         let trimmed = trimmed.cloned();
+        // On a linked pair the other side's region takes the same edge.
+        let other = self.counterpart(track, index);
         let mut tracks = self.all_regions();
         tracks[track] = new;
-        self.set_regions("Trim", tracks);
-        if let Some(trimmed) = trimmed {
-            self.select(&[(track, trimmed)]);
+        let mut picked: Vec<(usize, Region)> = trimmed.into_iter().map(|r| (track, r)).collect();
+        if let Some((t2, i2)) = other {
+            let old = &self.tracks[t2].regions;
+            tracks[t2] = match edge {
+                Edge::Start => regions::trim_start(old, i2, at),
+                Edge::End => regions::trim_end(old, i2, at, self.source_length(old[i2].source)),
+            };
+            if let Some((_, r)) = picked.first() {
+                let twin = tracks[t2].iter().find(|x| (x.start - r.start).abs() < 1e-9 && (x.length - r.length).abs() < 1e-9);
+                picked.extend(twin.cloned().map(|x| (t2, x)));
+            }
         }
+        self.set_regions("Trim", tracks);
+        self.select(&picked);
     }
 
     /// A new name for a track.
@@ -300,7 +316,7 @@ impl DawApp {
         }
         for (target, path) in placements {
             let source = self.source_for(&path);
-            let import = PendingImport { source, track: target, start: at.max(0.0), group: Some(group) };
+            let import = PendingImport { source, track: target, start: at.max(0.0), group: Some(group), pair: false };
             if self.source_is(source, SourceState::Ready) {
                 self.place_import(import);
             } else {
@@ -310,14 +326,20 @@ impl DawApp {
     }
 
     /// Select one region; with `add`, add it to the selection or take it out.
+    /// On a linked pair the region on the other track comes along.
     pub(crate) fn select_region(&mut self, track: usize, index: usize, add: bool) {
         self.editor.range = None;
+        let both: Vec<(usize, usize)> = std::iter::once((track, index)).chain(self.counterpart(track, index)).collect();
         if !add {
-            self.editor.selection = vec![(track, index)];
-        } else if let Some(at) = self.editor.selection.iter().position(|s| *s == (track, index)) {
-            self.editor.selection.remove(at);
+            self.editor.selection = both;
+        } else if self.editor.selection.contains(&(track, index)) {
+            self.editor.selection.retain(|s| !both.contains(s));
         } else {
-            self.editor.selection.push((track, index));
+            for s in both {
+                if !self.editor.selection.contains(&s) {
+                    self.editor.selection.push(s);
+                }
+            }
         }
     }
 

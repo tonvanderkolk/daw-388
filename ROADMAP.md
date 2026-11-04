@@ -34,10 +34,13 @@
 - [x] SOLO per spoor, alleen voor wat je hoort (0.10.1)
 - [x] Master-sectie: MONITOR/PHONES, AUX- en EFF-masters naar interface-uitgangen, STEREO/AUX/EFF, METER, STEREO MASTER (0.11.0; EFFECT RTN in fase 6)
 - [x] Signaalroute controleren met het blokschema uit de handleiding (0.23.2: alles klopt, op de TRK-meters na; die volgen nu de MONITOR)
+- [x] LINK: sporenparen als stereo (0.34.0)
+- [ ] Bounce Setup: de routing voor pingpong in één keer (0.35.0)
 
 ## Fase 5: Bewerken
 - [x] Niet-destructieve regio's: verschuiven, knippen, kopiëren, plakken, splitsen (0.17.0 en 0.18.0)
 - [x] Undo (maximaal 10 stappen) (0.17.0, met redo)
+- [x] Bewerken op een gekoppeld paar gaat op beide sporen (0.34.0)
 - [x] Ping-pong bounce naar een vrij spoor (0.8.0: in de 388-stand via ASSIGN en de bussen, zie PROJECT.md)
 
 ## Fase 6: Effecten en tape-model

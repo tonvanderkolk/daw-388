@@ -329,13 +329,16 @@ impl DawApp {
     }
 
     /// Put `path` on a track at the playhead, once it has loaded.
+    /// On a linked pair the file goes to the pair, from its left track.
     pub(crate) fn import_path(&mut self, index: usize, path: &Path) {
-        if self.refuse_unresolved(index) {
+        let pair = self.mixer.links[link::pair_of(index)];
+        let index = if pair { index & !1 } else { index };
+        if self.refuse_unresolved(index) || (pair && self.refuse_unresolved(index + 1)) {
             return;
         }
         let start = self.engine.as_ref().map_or(0.0, EngineHandle::position_seconds).max(0.0);
         let source = self.source_for(path);
-        let import = PendingImport { source, track: index, start, group: None };
+        let import = PendingImport { source, track: index, start, group: None, pair };
         if self.source_is(source, SourceState::Ready) {
             self.place_import(import);
         } else {
@@ -355,11 +358,15 @@ impl DawApp {
         let Some(clip) = self.sources.get(import.source).and_then(|s| s.clip.clone()) else { return };
         let region =
             Region { source: import.source, start: import.start, offset: 0.0, length: clip.duration_seconds(), name: clip.name.clone() };
-        self.change_in("Import", import.group, &[track], |app| {
-            let t = &mut app.tracks[track];
-            t.regions = place(&t.regions, region);
-            if t.name.is_empty() {
-                t.name.clone_from(&clip.name);
+        // A mono file loaded on a linked pair goes on both tracks.
+        let tracks: Vec<usize> = if import.pair { vec![track, track + 1] } else { vec![track] };
+        self.change_in("Import", import.group, &tracks, |app| {
+            for &track in &tracks {
+                let t = &mut app.tracks[track];
+                t.regions = place(&t.regions, region.clone());
+                if t.name.is_empty() {
+                    t.name.clone_from(&clip.name);
+                }
             }
         });
         self.status = format!("Track {}: {} placed at {}", track + 1, clip.name, format_counter(import.start));
@@ -378,10 +385,12 @@ impl DawApp {
     fn import_sides(&mut self, import: &PendingImport) -> Result<(), Option<String>> {
         let Some([left, right]) = self.sources.get(import.source).and_then(|s| s.split.clone()) else { return Err(None) };
         let next = import.track + 1;
-        let free = next < TRACKS
-            && self.tracks[next].regions.is_empty()
-            && self.tracks[next].unresolved.is_none()
-            && !self.pending_imports.iter().any(|i| i.track == next);
+        // On a linked pair the right track takes its side over what it holds.
+        let free = import.pair
+            || next < TRACKS
+                && self.tracks[next].regions.is_empty()
+                && self.tracks[next].unresolved.is_none()
+                && !self.pending_imports.iter().any(|i| i.track == next);
         if !free {
             let reason = if next < TRACKS { format!("track {} is not free", next + 1) } else { "there is no track 9".into() };
             return Err(Some(format!("stereo mixed to mono, {reason}")));
@@ -390,7 +399,7 @@ impl DawApp {
         for (track, path, pan) in [(import.track, left, -1.0), (next, right, 1.0)] {
             self.tracks[track].pan = pan;
             let source = self.source_for(&path);
-            let side = PendingImport { source, track, start: import.start, group: Some(group) };
+            let side = PendingImport { source, track, start: import.start, group: Some(group), pair: false };
             if self.source_is(source, SourceState::Ready) {
                 self.place_import(side);
             } else {
@@ -398,6 +407,11 @@ impl DawApp {
             }
         }
         self.send_mix();
+        // Loaded on an odd track: the pair is a stereo pair from now on (unless switched off).
+        let pair = link::pair_of(import.track);
+        if import.track.is_multiple_of(2) && self.preferences.link_stereo_imports && !self.mixer.links[pair] {
+            self.set_link(pair, true);
+        }
         Ok(())
     }
 
@@ -440,14 +454,18 @@ impl DawApp {
     }
 
     /// Wis: the track empty.
+    /// On a linked pair both tracks.
     pub(crate) fn clear_track(&mut self, index: usize) {
-        self.change("Clear", &[index], |app| {
-            let t = &mut app.tracks[index];
-            t.regions.clear();
-            t.unresolved = None;
-            t.name.clear();
+        let tracks: Vec<usize> = if self.mixer.links[link::pair_of(index)] { vec![index & !1, index | 1] } else { vec![index] };
+        self.change("Clear", &tracks, |app| {
+            for &index in &tracks {
+                let t = &mut app.tracks[index];
+                t.regions.clear();
+                t.unresolved = None;
+                t.name.clear();
+            }
         });
-        self.pending_imports.retain(|i| i.track != index);
+        self.pending_imports.retain(|i| !tracks.contains(&i.track));
     }
 
     pub(crate) fn recording_now(&self) -> bool {

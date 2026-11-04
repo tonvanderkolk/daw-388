@@ -336,6 +336,8 @@ pub struct MixerEntry {
     pub listen: ListenSwitch,
     pub meter: MeterSwitch,
     pub effects: EffectsEntry,
+    /// LINK: tracks 1-2, 3-4, 5-6 and 7-8 as stereo pairs.
+    pub links: [bool; 4],
 }
 
 /// How REPEAT (and RTZ and STC) reach their point.
@@ -847,6 +849,16 @@ pub fn clock_time() -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn links_are_saved_and_missing_means_none() {
+        let mixer = MixerEntry { links: [true, false, false, true], ..MixerEntry::default() };
+        let json = serde_json::to_string(&mixer).unwrap_or_else(|e| panic!("{e}"));
+        let back: MixerEntry = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back.links, [true, false, false, true]);
+        let old: MixerEntry = serde_json::from_str("{}").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(old.links, [false; 4], "older projects open unlinked");
+    }
+
     fn write_wav(path: &Path) {
         let spec = hound::WavSpec { channels: 1, sample_rate: 48_000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
         let mut writer = hound::WavWriter::create(path, spec).unwrap_or_else(|e| panic!("{e}"));
@@ -957,6 +969,7 @@ mod tests {
                         echo: EchoEntry { time_ms: 120.0, sync: EchoSyncEntry::Eighth, feedback: 0.6, tone: 0.8 },
                         rtn: [RtnEntry { gain_db: -3.0, pan: 0.25 }, RtnEntry { gain_db: 0.0, pan: -0.5 }],
                     },
+                    links: [false, true, false, false],
                 },
             },
             &tracks([Some(kick.clone()), None]),
@@ -1035,6 +1048,7 @@ mod tests {
                     echo: EchoEntry { time_ms: 120.0, sync: EchoSyncEntry::Eighth, feedback: 0.6, tone: 0.8 },
                     rtn: [RtnEntry { gain_db: -3.0, pan: 0.25 }, RtnEntry { gain_db: 0.0, pan: -0.5 }]
                 },
+                links: [false, true, false, false],
             }
         );
         assert_eq!(opened.file.editor, EditorSettings { open: true, height: 400.0, zoom: Some(80.0), snap: false });

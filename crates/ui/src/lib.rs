@@ -8,6 +8,7 @@ mod edit;
 mod export;
 mod help;
 mod history;
+mod link;
 mod recording;
 mod skin;
 mod sources;
@@ -114,6 +115,8 @@ struct PendingImport {
     start: f64,
     /// Files dropped together share a group: one undo step.
     group: Option<u64>,
+    /// LOAD on a linked pair: stereo over both tracks, mono on both.
+    pair: bool,
 }
 
 /// Buffer sizes offered in the settings, when the device allows them.
@@ -333,6 +336,15 @@ pub struct DawApp {
     /// Where each channel strip's centre was in the last frame (0: not drawn yet), so the meter
     /// bridge can put each TRK meter above its strip.
     strip_centres: [f32; TRACKS],
+    /// Where each strip's number under the fader was in the last frame: LINK joins them.
+    strip_numbers: [egui::Rect; TRACKS],
+    /// The height of the track names under the faders in the last frame: the master faders' names stand on it.
+    name_line: f32,
+    /// What each track's linked settings were after the last `sync_links`; `None` after a reset
+    /// or a LINK switch, so the next frame is taken as it is.
+    link_seen: Option<[link::Linked; TRACKS]>,
+    /// The track whose SOLO or REC FUNCTION was pressed this frame: the side a linked pair follows.
+    link_touched: Option<usize>,
     /// What the console, header and drawer needed in the last frame, in points: the zoom fits it in the window.
     needed: egui::Vec2,
     /// The routing the window was last fitted to, and the frames to wait before fitting it
@@ -675,6 +687,10 @@ impl DawApp {
             big_ol_until: [0.0; 2],
             reels: Default::default(),
             strip_centres: [0.0; TRACKS],
+            strip_numbers: [egui::Rect::NOTHING; TRACKS],
+            name_line: 0.0,
+            link_seen: None,
+            link_touched: None,
             needed: egui::Vec2::ZERO,
             fitted_for: None,
             fit_in: 0,
@@ -978,6 +994,8 @@ impl DawApp {
         }
         self.master_db = 0.0;
         self.mixer = new_mixer();
+        self.link_seen = None;
+        self.link_touched = None;
         self.meter_post = false;
         self.zero_seconds = 0.0;
         self.cue_seconds = None;
@@ -1689,6 +1707,7 @@ impl DawApp {
             return;
         }
         self.tracks[index].armed = armed;
+        self.link_touched = Some(index);
         self.engine_send(Command::SetArmed(index, armed));
         if armed && !self.feeds(index) && self.mixer.mode == Routing::Simple {
             self.status = format!("Track {} receives nothing: choose an input", index + 1);
@@ -2675,10 +2694,24 @@ impl DawApp {
         }
     }
 
+    fn import_settings(&mut self, ui: &mut Ui) {
+        skin::paper::section_title(ui, "Import");
+        ui.add_space(4.0);
+        let mut link = self.preferences.link_stereo_imports;
+        skin::paper::check(ui, &mut link, "Link stereo imports")
+            .on_hover_text("A stereo file loaded on track 1, 3, 5 or 7 links that track and the next one (LINK)");
+        if link != self.preferences.link_stereo_imports {
+            self.preferences.link_stereo_imports = link;
+            self.store_preferences();
+        }
+    }
+
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
         skin::paper::paper_window(ctx, "settings-window", "Settings", "", &mut open, 480.0, |ui| {
             self.audio_settings(ui);
+            ui.add_space(8.0);
+            self.import_settings(ui);
             ui.add_space(8.0);
             self.metronome_settings(ui);
             ui.add_space(8.0);
@@ -3183,6 +3216,7 @@ impl DawApp {
                 }
             });
         }
+        self.sync_links();
         if self.may_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -3258,6 +3292,7 @@ impl DawApp {
                                                 self.strip_centres[index] = (left + ui.cursor().min.x - ui.spacing().item_spacing.x) / 2.0;
                                                 ui.separator();
                                             }
+                                            self.paint_links(ui);
                                             // The master section in two columns, as on the 388.
                                             // Compact and SIMPLE, the column would hold nothing: it goes.
                                             if !(self.compact && self.mixer.mode == Routing::Simple) {
@@ -4624,5 +4659,183 @@ mod tests {
         assert_eq!(db_to_gain(MIN_DB), 0.0);
         assert!((db_to_gain(0.0) - 1.0).abs() < 1e-6);
         assert!((gain_to_db(db_to_gain(-12.0)) + 12.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_linked_pair_follows_either_side() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 2);
+        app.set_link(0, true);
+        app.sync_links();
+        app.tracks[0].fader_db = -6.0;
+        app.tracks[0].channel.trim_db = 10.0;
+        app.sync_links();
+        assert_eq!(app.tracks[1].fader_db, -6.0);
+        assert_eq!(app.tracks[1].channel.trim_db, 10.0);
+        app.tracks[1].pan = 0.4;
+        app.tracks[1].mute = true;
+        app.sync_links();
+        assert_eq!(app.tracks[0].pan, -0.4, "the right side moved: the left mirrors it");
+        assert!(app.tracks[0].mute);
+        assert!(app.mixer.links[0]);
+    }
+
+    #[test]
+    fn linking_with_a_centred_pan_spreads_the_pair() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 2);
+        app.tracks[0].pan = 0.0;
+        app.tracks[1].fader_db = -10.0;
+        app.set_link(0, true);
+        assert_eq!((app.tracks[0].pan, app.tracks[1].pan), (-1.0, 1.0));
+        assert_eq!(app.tracks[1].fader_db, app.tracks[0].fader_db, "the right takes the left's settings");
+        app.sync_links();
+        app.set_link(0, false);
+        app.sync_links();
+        app.tracks[0].fader_db = -20.0;
+        app.sync_links();
+        assert_ne!(app.tracks[1].fader_db, -20.0, "unlinked: loose again");
+    }
+
+    #[test]
+    fn solo_and_rec_follow_the_pair() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 2);
+        app.set_link(0, true);
+        app.sync_links();
+        app.tracks[0].solo = true;
+        app.toggle_arm(0);
+        app.sync_links();
+        assert!(app.tracks[1].solo);
+        assert!(app.tracks[1].armed);
+        app.tracks[1].solo = false;
+        app.link_touched = Some(1);
+        app.sync_links();
+        assert!(!app.tracks[0].solo, "the right side's key counts too");
+    }
+
+    #[test]
+    fn a_new_project_is_unlinked() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 2);
+        app.set_link(0, true);
+        app.sync_links();
+        app.reset();
+        assert!(!app.mixer.links[0]);
+        assert!(app.link_seen.is_none());
+    }
+
+    #[test]
+    fn a_linked_region_brings_its_counterpart() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 2);
+        app.set_link(0, true);
+        app.select_region(1, 0, false);
+        let mut picked = app.editor.selection.clone();
+        picked.sort_unstable();
+        assert_eq!(picked, vec![(0, 0), (1, 0)]);
+        app.move_selection(0, 0.5);
+        assert_eq!(regions_ms(&app, 0), vec![(500, 0, 1000)]);
+        assert_eq!(regions_ms(&app, 1), vec![(500, 0, 1000)]);
+        app.undo();
+        assert_eq!(regions_ms(&app, 0), vec![(0, 0, 1000)], "one undo step for both");
+        assert_eq!(regions_ms(&app, 1), vec![(0, 0, 1000)]);
+        app.select_region(0, 0, false);
+        app.select_region(0, 0, true);
+        assert!(app.editor.selection.is_empty(), "taking one out takes out both");
+    }
+
+    #[test]
+    fn a_linked_pair_moves_only_onto_a_linked_pair() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 2);
+        app.set_link(0, true);
+        app.select_region(0, 0, false);
+        app.move_selection(1, 0.0);
+        assert_eq!(regions_ms(&app, 0).len(), 1, "one track down would split the pair: stays");
+        app.move_selection(2, 0.0);
+        assert_eq!(regions_ms(&app, 0).len(), 1, "3-4 is not linked: stays");
+        app.set_link(1, true);
+        app.select_region(0, 0, false);
+        app.move_selection(2, 0.0);
+        assert!(app.tracks[0].regions.is_empty() && app.tracks[1].regions.is_empty());
+        assert_eq!(regions_ms(&app, 2).len(), 1);
+        assert_eq!(regions_ms(&app, 3).len(), 1);
+    }
+
+    #[test]
+    fn trim_and_clear_take_both_sides() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, _engines) = app_with_tracks(files.path(), 2);
+        app.set_link(0, true);
+        app.trim(0, 0, timeline::Edge::End, 0.5);
+        assert_eq!(regions_ms(&app, 1), vec![(0, 0, 500)]);
+        app.clear_track(1);
+        assert!(app.tracks[0].regions.is_empty() && app.tracks[1].regions.is_empty());
+        app.undo();
+        assert_eq!(regions_ms(&app, 0).len(), 1, "one undo step");
+        assert_eq!(regions_ms(&app, 1).len(), 1);
+    }
+
+    /// A short stereo WAV: left 0.5, right -0.25.
+    fn write_stereo(path: &Path) {
+        let spec = hound::WavSpec { channels: 2, sample_rate: 48_000, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap_or_else(|e| panic!("{e}"));
+        for _ in 0..4_800 {
+            writer.write_sample(0.5f32).unwrap_or_else(|e| panic!("{e}"));
+            writer.write_sample(-0.25f32).unwrap_or_else(|e| panic!("{e}"));
+        }
+        writer.finalize().unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    #[test]
+    fn a_stereo_import_on_an_odd_track_links_the_pair() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let stereo = files.path().join("Pair.wav");
+        write_stereo(&stereo);
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.import_path(2, &stereo);
+        settle(&mut app);
+        assert!(app.mixer.links[1], "tracks 3 and 4 linked");
+        assert_eq!((app.tracks[2].pan, app.tracks[3].pan), (-1.0, 1.0));
+        app.import_path(5, &stereo);
+        settle(&mut app);
+        assert_eq!(regions_ms(&app, 6).len(), 1, "on 6 and 7");
+        assert!(!app.mixer.links[2] && !app.mixer.links[3], "not a pair: stays loose");
+
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.preferences.link_stereo_imports = false;
+        app.import_path(0, &stereo);
+        settle(&mut app);
+        assert_eq!(regions_ms(&app, 1).len(), 1);
+        assert!(!app.mixer.links[0], "switched off in Settings");
+    }
+
+    #[test]
+    fn load_on_a_linked_pair_fills_both_tracks() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut app, engines) = app_with_tracks(files.path(), 2);
+        app.set_link(0, true);
+        let stereo = files.path().join("Over.wav");
+        write_stereo(&stereo);
+        app.import_path(1, &stereo);
+        settle(&mut app);
+        let source_level = |app: &DawApp, track: usize| {
+            let source = app.tracks[track].regions[0].source;
+            app.sources.get(source).and_then(|s| s.clip.as_ref()).map_or(0.0, |c| c.samples[10])
+        };
+        assert!((source_level(&app, 0) - 0.5).abs() < 1e-3, "left on track 1, although it was loaded on 2");
+        assert!((source_level(&app, 1) + 0.25).abs() < 1e-3, "right on track 2, although 2 was not free");
+
+        let mono = files.path().join("Mono.wav");
+        write_wav_of(&mono, 0.5, 0.25);
+        locate(&mut app, &engines, 2.0);
+        app.import_path(0, &mono);
+        settle(&mut app);
+        assert_eq!(app.tracks[0].regions.last().map(|r| r.start), Some(2.0));
+        assert_eq!(app.tracks[1].regions.last().map(|r| r.start), Some(2.0), "a mono file on both");
+        app.undo();
+        assert!(app.tracks[1].regions.iter().all(|r| r.start < 2.0), "one undo step");
     }
 }

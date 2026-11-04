@@ -213,6 +213,7 @@ impl DawApp {
         self.paint(ui, rect, &areas, &line);
         self.track_controls(ui, &areas);
         self.track_keys(ui, &areas);
+        self.link_rings(ui, &areas);
         if !recording {
             self.rename_field(ui, &areas);
             let dropped: Vec<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
@@ -276,10 +277,36 @@ impl DawApp {
                 Some(1) => {
                     let on = !self.tracks[index].solo;
                     self.tracks[index].solo = on;
+                    self.link_touched = Some(index);
                     self.engine_send(Command::SetSolo(index, on));
                 }
                 Some(_) => self.toggle_arm(index),
                 None => {}
+            }
+        }
+    }
+
+    /// LINK between the heads of each pair: two rings, lit when the pair is linked.
+    fn link_rings(&mut self, ui: &mut Ui, areas: &Areas) {
+        for pair in 0..TRACKS / 2 {
+            let head = areas.lane(2 * pair, true);
+            let rect = Rect::from_center_size(pos2(head.left() + 16.0, head.bottom()), vec2(20.0, 14.0));
+            let on = self.mixer.links[pair];
+            let response = ui.allocate_rect(rect, Sense::click());
+            let colour = if on {
+                palette::LED_GREEN
+            } else if response.hovered() {
+                palette::TEXT_DIM
+            } else {
+                palette::TEXT_DIM.gamma_multiply(0.5)
+            };
+            let painter = ui.painter();
+            for dx in [-3.5, 3.5] {
+                painter.circle_stroke(rect.center() + vec2(dx, 0.0), 4.5, Stroke::new(1.5, colour));
+            }
+            let (a, b) = (2 * pair + 1, 2 * pair + 2);
+            if response.on_hover_text(format!("LINK: tracks {a} and {b} as a stereo pair")).clicked() {
+                self.set_link(pair, !on);
             }
         }
     }
