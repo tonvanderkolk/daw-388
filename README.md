@@ -1,9 +1,9 @@
 # DAW 388
 
-<img width="2560" height="1650" alt="DAW 388: the vintage console with eight channel strips, the meter bridge and the tape transport" src="docs/images/screenshot.png" />
+<img width="2560" height="1440" alt="DAW 388: the vintage console with eight channel strips, the meter bridge and the tape transport" src="docs/images/screenshot.png" />
 
 
-A very simple 8-track DAW for macOS and Windows, modelled on the Tascam 388 (Studio 8): an 8:8:2 mixer combined with an 8-track tape recorder with tape character. Load or record eight tracks, mix them on a vintage console with EQ, AUX and EFF sends, a plate reverb and a tape echo, and export a stereo bounce or separate tracks. The interface is in English and uses the names of the 388 (TRK, PGM, AUX, REC, RTZ, CUE, ...).
+A very simple 8-track DAW for macOS and Windows, modelled on the Tascam 388 (Studio 8): an 8:8:2 mixer combined with an 8-track tape recorder with tape character. Load or record eight tracks, mix them on a vintage console with EQ, AUX and EFF sends, a plate reverb and a tape echo, link track pairs as stereo, bounce tracks together with their reverb and echo, and export a stereo bounce or separate tracks. The interface is in English and uses the names of the 388 (TRK, PGM, AUX, REC, RTZ, CUE, ...).
 
 A hobby project by Ton van der Kolk. Free and open source. Not affiliated with Tascam. The rest of the documentation is in Dutch.
 
@@ -51,7 +51,7 @@ De nieuwste versie staat bij [Releases](https://github.com/tonvanderkolk/daw-388
 
 ## Status
 
-Versie 0.31.0. Sinds 0.16.0 kwamen er de vintage console naar de 388 (VU-meters, bandrecorder, toetsen, vensters), de weergaven MIXER en SPOREN, opnemen op VARI, projectpakketten `.daw388`, downloadbare apps, een Help-menu met een korte gids, het importeren van stereobestanden over twee sporen en een compacte console voor lage schermen, een gebruikershandleiding als PDF, M, S en R in de sporen, het opruimen van ongebruikte opnames en een melding bij een nieuwe versie bij. Daarvoor al: 8 sporen laden (WAV, AIFF, FLAC en MP3) en afspelen, transport naar het voorbeeld van de 388, opnemen met REC FUNCTION, punch-in en AUTO PUNCH, een metronoom, een mixer met EQ, AUX- en EFF-sends, een plate reverb, een tape echo en het tape-karakter van de 388 met dbx bij afspelen in een eenvoudige stand (één strook per spoor) of met de volledige 388-routering (ASSIGN naar de PGM-bussen, DIRECT en een MONITOR-sectie), export van een stereo bounce en losse sporen als WAV of AIFF, projecten met autosave en backups, en keuze van audio-interface, samplerate en buffer. Hoe de routing werkt staat in [PROJECT.md](PROJECT.md#routing-in-de-praktijk). Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
+Versie 0.35.0. Sinds 0.16.0 kwamen er de vintage console naar de 388 (VU-meters, bandrecorder, toetsen, vensters), de weergaven MIXER en SPOREN, opnemen op VARI, projectpakketten `.daw388`, downloadbare apps, een Help-menu met een korte gids, het importeren van stereobestanden over twee sporen en een compacte console voor lage schermen, een gebruikershandleiding als PDF, M, S en R in de sporen, het opruimen van ongebruikte opnames een melding bij een nieuwe versie, authentiekere faders en knoppen, LINK voor stereoparen, Bounce Setup met galm en echo op de bounce (TO PGM) en een OL-lampje op de STEREO MASTER bij. Daarvoor al: 8 sporen laden (WAV, AIFF, FLAC en MP3) en afspelen, transport naar het voorbeeld van de 388, opnemen met REC FUNCTION, punch-in en AUTO PUNCH, een metronoom, een mixer met EQ, AUX- en EFF-sends, een plate reverb, een tape echo en het tape-karakter van de 388 met dbx bij afspelen in een eenvoudige stand (één strook per spoor) of met de volledige 388-routering (ASSIGN naar de PGM-bussen, DIRECT en een MONITOR-sectie), export van een stereo bounce en losse sporen als WAV of AIFF, projecten met autosave en backups, en keuze van audio-interface, samplerate en buffer. Hoe de routing werkt staat in [PROJECT.md](PROJECT.md#routing-in-de-praktijk). Zie [ROADMAP.md](ROADMAP.md) voor wat er volgt.
 
 ## Bouwen en starten
 
