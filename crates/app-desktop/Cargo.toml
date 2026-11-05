@@ -26,6 +26,8 @@ dirs = "7"
 trash = "5"
 # The update check asks GitHub for the latest release (HTTPS with rustls).
 ureq = "3"
+# MIDI controllers: CoreMIDI on macOS, WinMM on Windows.
+midir = "0.11"
 
 # Puts the icon into the Windows exe (build.rs); does nothing when building for macOS.
 [build-dependencies]

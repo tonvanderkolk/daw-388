@@ -39,6 +39,9 @@
 - [x] TO PGM: galm en echo op de band via de bussen (0.35.0)
 - [x] OL op de STEREO MASTER en de piek van een export (0.35.0)
 - [x] Mixdown deck: de eindmix live opnemen op 1/4", cassette of digitaal (0.36.0)
+- [x] MIDI learn met pickup en terugmelding: faders, PAN, MUTE, SOLO, STEREO MASTER en transport (0.37.0)
+- [ ] Mackie Control (X-Touch One, BCF2000 in MCU-stand), zonder leren (0.38.0)
+- [ ] MIDI learn voor AUX, EFF, EQ, TRIM, de effecten en de MONITOR-sectie
 - [ ] Knippen en plakken op de mastertape: de beste stukken van mixen aan elkaar, stiltes tussen nummers
 
 ## Fase 5: Bewerken

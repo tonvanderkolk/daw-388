@@ -48,14 +48,19 @@ fn paper_style(ui: &mut Ui) {
 
 /// A sheet without the window chrome: the dark bar with `title`, `note` on the right and a
 /// close cross, then the content on paper. `open` goes false when the cross is clicked.
-fn sheet(ui: &mut Ui, title: &str, note: &str, open: Option<&mut bool>, width: f32, add: impl FnOnce(&mut Ui)) {
+fn sheet(ui: &mut Ui, title: &str, note: &str, open: Option<&mut bool>, width: f32, fill: bool, add: impl FnOnce(&mut Ui)) {
     ui.set_width(width);
     ui.spacing_mut().item_spacing.y = 0.0;
     let (top, _) = ui.allocate_exact_size(vec2(width, BAR), Sense::hover());
-    Frame::new().inner_margin(Margin::symmetric(20, 16)).show(ui, |ui| {
-        ui.set_width(width - 40.0);
-        paper_style(ui);
-        add(ui);
+    // A sheet taller than the window scrolls, so its bottom stays within reach. One the user
+    // can make taller or lower (`fill`) scrolls within the height it was given.
+    let room = if fill { ui.available_height() } else { (ui.ctx().content_rect().height() - BAR - 60.0).max(160.0) };
+    egui::ScrollArea::vertical().id_salt("sheet").max_height(room).auto_shrink([false, !fill]).show(ui, |ui| {
+        Frame::new().inner_margin(Margin::symmetric(20, 16)).show(ui, |ui| {
+            ui.set_width(width - 40.0);
+            paper_style(ui);
+            add(ui);
+        });
     });
     // The bar is drawn after the content, so it spans the sheet even when the content made it wider.
     let bar = Rect::from_min_size(top.min, vec2(ui.min_rect().width().max(width), BAR));
@@ -103,13 +108,34 @@ pub fn paper_window(ctx: &egui::Context, id: &str, title: &str, note: &str, open
         .resizable(false)
         .collapsible(false)
         .frame(sheet_frame())
-        .show(ctx, |ui| sheet(ui, title, note, Some(&mut keep), width, add));
+        .show(ctx, |ui| sheet(ui, title, note, Some(&mut keep), width, false, add));
+    *open = keep;
+}
+
+/// A long paper window (Settings) whose height the user drags at its bottom edge; its content
+/// scrolls within it.
+pub fn tall_paper_window(ctx: &egui::Context, id: &str, title: &str, open: &mut bool, width: f32, add: impl FnOnce(&mut Ui)) {
+    if !*open {
+        return;
+    }
+    let mut keep = true;
+    let screen = ctx.content_rect().height();
+    egui::Window::new(title)
+        .id(Id::unique(id))
+        .title_bar(false)
+        .resizable([false, true])
+        .default_height((screen - 80.0).min(720.0))
+        .min_height(240.0)
+        .max_height((screen - 40.0).max(240.0))
+        .collapsible(false)
+        .frame(sheet_frame())
+        .show(ctx, |ui| sheet(ui, title, "", Some(&mut keep), width, true, add));
     *open = keep;
 }
 
 /// A modal question on paper; `should_close` of the result means a click outside or Escape.
 pub fn paper_modal(ctx: &egui::Context, id: &str, title: &str, width: f32, add: impl FnOnce(&mut Ui)) -> egui::ModalResponse<()> {
-    egui::Modal::new(Id::unique(id)).frame(sheet_frame()).show(ctx, |ui| sheet(ui, title, "", None, width, add))
+    egui::Modal::new(Id::unique(id)).frame(sheet_frame()).show(ctx, |ui| sheet(ui, title, "", None, width, false, add))
 }
 
 /// A section title in small capitals, as "MACHINE" and "TAPE SPEED" in the mockup.

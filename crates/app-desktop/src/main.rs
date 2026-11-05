@@ -6,11 +6,12 @@
 #[cfg(target_os = "macos")]
 mod app_delegate;
 mod audio;
+mod midi;
 
 use audio::{Output, SilentClock};
 use cpal::traits::HostTrait;
 use daw388_engine::EngineHandle;
-use daw388_ui::{DawApp, DeviceInfo, Fetch, OutputInfo, OutputRequest, Platform};
+use daw388_ui::{DawApp, DeviceInfo, Fetch, MidiMessage, OutputInfo, OutputRequest, Platform};
 use std::path::{Path, PathBuf};
 
 /// The PDF manual that comes with the app.
@@ -20,15 +21,28 @@ struct Desktop {
     host: cpal::Host,
     /// Kept alive while the output plays; dropping it closes the stream.
     output: Option<Output>,
+    midi: midi::MidiHub,
 }
 
 impl Desktop {
-    fn new() -> Self {
-        Self { host: cpal::default_host(), output: None }
+    fn new(ctx: &eframe::egui::Context) -> Self {
+        Self { host: cpal::default_host(), output: None, midi: midi::MidiHub::new(ctx.clone()) }
     }
 }
 
 impl Platform for Desktop {
+    fn midi_poll(&mut self) -> Vec<MidiMessage> {
+        self.midi.poll()
+    }
+
+    fn midi_inputs(&self) -> Vec<String> {
+        self.midi.inputs()
+    }
+
+    fn midi_send(&mut self, port: &str, bytes: &[u8]) {
+        self.midi.send(port, bytes);
+    }
+
     fn output_devices(&mut self) -> Vec<DeviceInfo> {
         self.host.output_devices().map(|ds| ds.filter_map(|d| audio::describe(&d, true)).collect()).unwrap_or_default()
     }
@@ -168,9 +182,17 @@ struct DesktopApp {
     /// macOS asked to quit (logging out, restarting) and waits for the answer.
     #[cfg(target_os = "macos")]
     awaiting_terminate: bool,
+    /// A Ctrl-click that became a right-click, until its release.
+    #[cfg(target_os = "macos")]
+    ctrl_click: bool,
 }
 
 impl eframe::App for DesktopApp {
+    #[cfg(target_os = "macos")]
+    fn raw_input_hook(&mut self, _ctx: &eframe::egui::Context, raw_input: &mut eframe::egui::RawInput) {
+        daw388_ui::ctrl_click_as_right_click(raw_input, &mut self.ctrl_click);
+    }
+
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "macos")]
         {
@@ -221,12 +243,14 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             #[cfg(target_os = "macos")]
             app_delegate::set_context(&cc.egui_ctx);
-            let mut app = DawApp::new(&cc.egui_ctx, Box::new(Desktop::new()));
+            let mut app = DawApp::new(&cc.egui_ctx, Box::new(Desktop::new(&cc.egui_ctx)));
             app.open_arguments(files);
             Ok(Box::new(DesktopApp {
                 app,
                 #[cfg(target_os = "macos")]
                 awaiting_terminate: false,
+                #[cfg(target_os = "macos")]
+                ctrl_click: false,
             }))
         }),
     )

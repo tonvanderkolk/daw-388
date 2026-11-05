@@ -4,6 +4,18 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-11-05
+
+### Toegevoegd
+- MIDI learn: rechtsklik op een kanaalfader, PAN, MUTE, SOLO, de STEREO MASTER, PITCH of PLAY, STOP, REC of RTZ, kies MIDI Learn en beweeg of druk iets op de controller. Een groen stipje toont de koppeling; Forget MIDI haalt hem weg. Werkt met elke controller die CC of noten stuurt, ook in TRACKS. De koppelingen horen bij de app, niet bij het project.
+- Toetsen die zichzelf aan- en uitzetten (zoals op een BCF2000: 127 bij de ene druk, 0 bij de volgende) zetten MUTE en SOLO met één druk weer uit; bij gewone toetsen telt het loslaten niet. De app herkent het verschil aan hoe snel de 0 na de 127 komt.
+- PITCH aan het modulatiewiel of een knop: 64 is de normale snelheid, 0 en 127 zijn min en plus 15%. Alleen in VARI en niet tijdens een opname, net als de knop op het scherm.
+- Pickup: een fader op de controller die ergens anders staat dan op het scherm doet niets tot hij de stand op het scherm passeert, zodat er niets springt.
+- Terugmelding: elke verandering op het scherm (muis, undo, een project openen) gaat terug naar de controller, zodat motorfaders (zoals op een BCF2000) en lampjes voor MUTE en SOLO meedoen. Wat van de controller zelf komt, gaat niet terug.
+- Op de Mac werkt Ctrl-klik als rechtsklik, voor wie geen rechtermuisknop heeft (een klik met twee vingers op het trackpad werkte al).
+- Het instellingenvenster is aan de onderrand hoger of lager te trekken, en lange vensters scrollen als ze niet op het scherm passen.
+- Settings, MIDI: de gevonden ingangen en alle koppelingen, met Forget en Forget all. De app luistert naar alle MIDI-ingangen en vindt een controller die later wordt ingeplugd vanzelf.
+
 ## [0.36.0] - 2026-11-05
 
 ### Toegevoegd

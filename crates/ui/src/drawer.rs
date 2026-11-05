@@ -243,6 +243,8 @@ impl DawApp {
                 self.send_channel(index);
                 self.mark_dirty();
             }
+            self.midi_target(&volume, crate::midi::Control::Fader(index));
+            self.midi_target(&turned, crate::midi::Control::Pan(index));
         }
     }
 
@@ -261,12 +263,20 @@ impl DawApp {
                 ("R", recording || (track.armed && blink), palette::LED, "REC FUNCTION: track ready to record"),
             ];
             let mut clicked = None;
+            let mut responses = Vec::new();
             for (i, (label, lit, colour, tip)) in keys.into_iter().enumerate() {
                 let x = head.right() - 6.0 - KEY.x / 2.0 - (2 - i) as f32 * (KEY.x + 3.0);
                 let rect = Rect::from_center_size(pos2(x, y), KEY);
-                if small_key(ui, rect, label, lit, colour).on_hover_text(tip).clicked() {
+                let key = small_key(ui, rect, label, lit, colour).on_hover_text(tip);
+                if key.clicked() {
                     clicked = Some(i);
                 }
+                if i < 2 {
+                    responses.push((key, if i == 0 { crate::midi::Control::Mute(index) } else { crate::midi::Control::Solo(index) }));
+                }
+            }
+            for (key, control) in responses.drain(..) {
+                self.midi_target(&key, control);
             }
             match clicked {
                 Some(0) => {

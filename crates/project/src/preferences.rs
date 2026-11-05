@@ -49,6 +49,51 @@ pub struct Preferences {
     /// A stereo file loaded on an odd track links that track and the next one.
     #[serde(default = "yes")]
     pub link_stereo_imports: bool,
+    /// What the MIDI controllers move (MIDI learn).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub midi: Vec<MidiBinding>,
+}
+
+/// What a MIDI controller can move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "track", rename_all = "snake_case")]
+pub enum MidiControl {
+    Fader(usize),
+    Pan(usize),
+    Mute(usize),
+    Solo(usize),
+    Master,
+    /// The PITCH knob of VARI.
+    Pitch,
+    Play,
+    Stop,
+    Rec,
+    Rtz,
+}
+
+/// Whether a source is a control change or a note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MidiKind {
+    Cc,
+    Note,
+}
+
+/// Where a MIDI message comes from: the input's name, the channel (1 to 16), CC or note, and
+/// its number.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct MidiSource {
+    pub port: String,
+    pub channel: u8,
+    pub kind: MidiKind,
+    pub number: u8,
+}
+
+/// One control moved by one source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MidiBinding {
+    pub control: MidiControl,
+    pub source: MidiSource,
 }
 
 /// How many projects File, Open Recent lists.
@@ -84,6 +129,7 @@ impl Default for Preferences {
             update_checked_at: None,
             latest_version: None,
             link_stereo_imports: true,
+            midi: Vec::new(),
         }
     }
 }
@@ -107,6 +153,24 @@ pub fn save(path: &Path, preferences: &Preferences) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn midi_bindings_round_trip_and_old_files_have_none() {
+        let old: Preferences = serde_json::from_str("{}").unwrap_or_else(|e| panic!("{e}"));
+        assert!(old.midi.is_empty());
+        let source = |number| MidiSource { port: "BCF2000".into(), channel: 1, kind: MidiKind::Cc, number };
+        let preferences = Preferences {
+            midi: vec![
+                MidiBinding { control: MidiControl::Fader(2), source: source(83) },
+                MidiBinding { control: MidiControl::Play, source: MidiSource { kind: MidiKind::Note, ..source(36) } },
+            ],
+            ..Preferences::default()
+        };
+        let json = serde_json::to_string(&preferences).unwrap_or_default();
+        assert!(json.contains(r#""kind":"fader","track":2"#), "{json}");
+        let back: Preferences = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(back.midi, preferences.midi);
+    }
 
     #[test]
     fn stereo_imports_link_unless_switched_off() {
@@ -135,6 +199,10 @@ mod tests {
             update_checked_at: Some(1_790_000_000),
             latest_version: Some("0.31.0".into()),
             link_stereo_imports: false,
+            midi: vec![MidiBinding {
+                control: MidiControl::Master,
+                source: MidiSource { port: "MK-225C".into(), channel: 1, kind: MidiKind::Cc, number: 7 },
+            }],
         };
         save(&path, &preferences).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(load(&path), preferences);

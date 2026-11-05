@@ -11,6 +11,7 @@ mod export;
 mod help;
 mod history;
 mod link;
+mod midi;
 mod recording;
 mod skin;
 mod sources;
@@ -43,6 +44,26 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 pub use daw388_project::AUDIO_EXTENSIONS;
+pub use midi::MidiMessage;
+
+/// On the Mac a Ctrl-click is a right-click (for the MIDI menu); egui only knows the secondary
+/// button. Turns a primary press with Ctrl (and without Cmd) into a secondary one, and its release
+/// too. `held` remembers a press that was turned, for its release.
+pub fn ctrl_click_as_right_click(raw: &mut egui::RawInput, held: &mut bool) {
+    for event in &mut raw.events {
+        if let egui::Event::PointerButton { button, pressed, modifiers, .. } = event
+            && *button == egui::PointerButton::Primary
+        {
+            if *pressed && modifiers.ctrl && !modifiers.mac_cmd {
+                *button = egui::PointerButton::Secondary;
+                *held = true;
+            } else if !*pressed && *held {
+                *button = egui::PointerButton::Secondary;
+                *held = false;
+            }
+        }
+    }
+}
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -179,6 +200,16 @@ pub trait Platform {
     fn pointer_in_window(&mut self) -> Option<[f32; 2]> {
         None
     }
+    /// MIDI that came in since the last call, from every input.
+    fn midi_poll(&mut self) -> Vec<midi::MidiMessage> {
+        Vec::new()
+    }
+    /// The MIDI inputs there are now, for Settings.
+    fn midi_inputs(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Send bytes to the MIDI output with this name, if there is one.
+    fn midi_send(&mut self, _port: &str, _bytes: &[u8]) {}
 }
 
 /// A source decoded (or resampled) in the background.
@@ -441,6 +472,8 @@ pub struct DawApp {
     mix_rename: Option<(usize, String)>,
     /// The deck's reels, as an angle.
     deck_angle: f32,
+    /// MIDI learn: the bindings, learning, pickup and feedback.
+    midi: midi::Midi,
     composed_tx: Sender<ComposeResult>,
     composed_rx: Receiver<ComposeResult>,
     /// Takes waiting for their track's previous take to be laid down.
@@ -805,6 +838,7 @@ impl DawApp {
             show_deck: false,
             mix_rename: None,
             deck_angle: 0.0,
+            midi: midi::Midi::default(),
             composed_tx,
             composed_rx,
             queued_takes: Default::default(),
@@ -814,6 +848,7 @@ impl DawApp {
             metronome: MetronomeSettings::default(),
             taps: Vec::new(),
         };
+        app.midi = midi::Midi::new(app.preferences.midi.clone());
         for (index, track) in app.tracks.iter_mut().enumerate() {
             track.trk_meter_db = MIN_DB;
             track.input = default_input(index);
@@ -1082,6 +1117,7 @@ impl DawApp {
         self.deck = session::DeckSettings::default();
         self.mixes.clear();
         self.mix_audio.clear();
+        self.midi.resend();
         self.mix_rename = None;
         self.send_deck();
         self.export.rate = None;
@@ -1187,6 +1223,7 @@ impl DawApp {
         self.editor.settings = editor;
         self.export_dir = opened.file.export_dir.clone();
         self.deck = opened.file.deck;
+        self.midi.resend();
         self.mixes = opened.file.mixes.clone();
         self.send_deck();
         let moved = self.fit_inputs();
@@ -2154,20 +2191,23 @@ impl DawApp {
                 self.fast_forward();
             }
             let stop = KeyCap::new("STOP", keys::LARGE).colour(KeyColour::Grey).symbol(Symbol::Stop);
-            if stop.show(ui).on_hover_text("Stop (space)").clicked() {
+            let stop = stop.show(ui).on_hover_text("Stop (space)");
+            self.midi_target(&stop, midi::Control::Stop);
+            if stop.clicked() {
                 self.stop();
             }
-            if big("PLAY", Symbol::Play, motion == Motion::Playing)
-                .show(ui)
-                .on_hover_text("Play; while recording: punch-out (space)")
-                .clicked()
-            {
+            let play =
+                big("PLAY", Symbol::Play, motion == Motion::Playing).show(ui).on_hover_text("Play; while recording: punch-out (space)");
+            self.midi_target(&play, midi::Control::Play);
+            if play.clicked() {
                 self.play();
             }
             // REC: blinks when record-ready, lit while recording.
             let lit = rec_mode == RecMode::Recording || (rec_mode == RecMode::Ready && blink);
             let rec = KeyCap::new("REC", keys::LARGE).colour(KeyColour::Grey).symbol(Symbol::Record).lamp(lit, palette::LED);
-            if rec.show(ui).on_hover_text("Record on the tracks with REC FUNCTION (R); while playing: punch-in").clicked() {
+            let rec = rec.show(ui).on_hover_text("Record on the tracks with REC FUNCTION (R); while playing: punch-in");
+            self.midi_target(&rec, midi::Control::Rec);
+            if rec.clicked() {
                 self.record();
             }
         });
@@ -2226,10 +2266,10 @@ impl DawApp {
             {
                 self.set_repeat(!repeat);
             }
-            if place(ui, col(4), top, key_box, |ui| KeyCap::new("RTZ", keys::SMALL).show(ui))
-                .on_hover_text("Back to the zero point (Home)")
-                .clicked()
-            {
+            let rtz = place(ui, col(4), top, key_box, |ui| KeyCap::new("RTZ", keys::SMALL).show(ui))
+                .on_hover_text("Back to the zero point (Home)");
+            self.midi_target(&rtz, midi::Control::Rtz);
+            if rtz.clicked() {
                 self.rtz();
             }
 
@@ -2283,6 +2323,7 @@ impl DawApp {
             if knob.changed() || knob.double_clicked() {
                 self.send_pitch();
             }
+            self.midi_target(&knob, midi::Control::Pitch);
             for (i, (is_vari, label, tip)) in
                 [(true, "VARI", "The PITCH knob works"), (false, "FIX", "Normal speed, the PITCH knob is fixed")].into_iter().enumerate()
             {
@@ -2832,10 +2873,12 @@ impl DawApp {
 
     fn settings_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_settings;
-        skin::paper::paper_window(ctx, "settings-window", "Settings", "", &mut open, 480.0, |ui| {
+        skin::paper::tall_paper_window(ctx, "settings-window", "Settings", &mut open, 480.0, |ui| {
             self.audio_settings(ui);
             ui.add_space(8.0);
             self.import_settings(ui);
+            ui.add_space(8.0);
+            self.midi_settings(ui);
             ui.add_space(8.0);
             self.metronome_settings(ui);
             ui.add_space(8.0);
@@ -3272,6 +3315,10 @@ impl DawApp {
         self.poll_renders();
         self.poll_export();
         self.follow_mix();
+        self.poll_midi();
+        if self.midi.learning.is_some() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.cancel_midi_learn();
+        }
         self.poll_update();
         self.sync_transport();
         self.update_meters(dt);
@@ -3344,6 +3391,7 @@ impl DawApp {
             });
         }
         self.sync_links();
+        self.midi_feedback();
         if self.may_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -3520,6 +3568,9 @@ mod tests {
         opened: std::rc::Rc<std::cell::RefCell<Vec<OutputRequest>>>,
         /// What GitHub answers to the update check; `None`: the platform cannot check.
         release: std::rc::Rc<std::cell::RefCell<Option<Result<String, String>>>>,
+        /// MIDI for the app to take, and what it sent back.
+        midi_in: MidiIn,
+        midi_out: MidiOut,
     }
 
     impl FakePlatform {
@@ -3531,6 +3582,8 @@ mod tests {
                 lost: std::rc::Rc::default(),
                 opened: std::rc::Rc::default(),
                 release: std::rc::Rc::default(),
+                midi_in: std::rc::Rc::default(),
+                midi_out: std::rc::Rc::default(),
             }
         }
     }
@@ -3607,6 +3660,15 @@ mod tests {
             let answer = self.release.borrow().clone()?;
             Some(Box::new(move |_| answer))
         }
+        fn midi_poll(&mut self) -> Vec<midi::MidiMessage> {
+            std::mem::take(&mut *self.midi_in.borrow_mut())
+        }
+        fn midi_inputs(&self) -> Vec<String> {
+            vec!["BCF2000".into()]
+        }
+        fn midi_send(&mut self, port: &str, bytes: &[u8]) {
+            self.midi_out.borrow_mut().push((port.to_string(), bytes.to_vec()));
+        }
         fn trash(&mut self, paths: &[PathBuf]) -> Result<(), String> {
             // The tests' projects are temporary: gone is as good as the Trash.
             paths.iter().try_for_each(std::fs::remove_file).map_err(|e| e.to_string())
@@ -3624,6 +3686,172 @@ mod tests {
         fn input_devices(&mut self) -> Vec<DeviceInfo> {
             Vec::new()
         }
+    }
+
+    type MidiIn = std::rc::Rc<std::cell::RefCell<Vec<midi::MidiMessage>>>;
+    type MidiOut = std::rc::Rc<std::cell::RefCell<Vec<(String, Vec<u8>)>>>;
+
+    /// An app with a fake MIDI controller "BCF2000": what to send it and what it got back.
+    type Engines = std::rc::Rc<std::cell::RefCell<Vec<daw388_engine::Engine>>>;
+
+    fn midi_app() -> (DawApp, MidiIn, MidiOut, Engines) {
+        let ctx = egui::Context::default();
+        let platform = FakePlatform::new(None);
+        let (input, output, engines) = (platform.midi_in.clone(), platform.midi_out.clone(), platform.engines.clone());
+        (DawApp::new(&ctx, Box::new(platform)), input, output, engines)
+    }
+
+    fn cc_message(number: u8, value: u8) -> midi::MidiMessage {
+        midi::MidiMessage { port: "BCF2000".into(), bytes: vec![0xB0, number, value] }
+    }
+
+    /// Bind `control` to CC `number` by learning it.
+    fn learn_cc(app: &mut DawApp, input: &MidiIn, control: midi::Control, number: u8, value: u8) {
+        app.midi.learning = Some(control);
+        input.borrow_mut().push(cc_message(number, value));
+        app.poll_midi();
+    }
+
+    #[test]
+    fn a_ctrl_click_is_a_right_click() {
+        let press = |pressed, ctrl, mac_cmd| egui::Event::PointerButton {
+            pos: egui::pos2(10.0, 10.0),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers { ctrl, mac_cmd, command: mac_cmd, ..Modifiers::NONE },
+        };
+        let buttons = |raw: &egui::RawInput| -> Vec<egui::PointerButton> {
+            raw.events.iter().filter_map(|e| if let egui::Event::PointerButton { button, .. } = e { Some(*button) } else { None }).collect()
+        };
+        let mut held = false;
+        let mut raw = egui::RawInput { events: vec![press(true, true, false), press(false, false, false)], ..Default::default() };
+        ctrl_click_as_right_click(&mut raw, &mut held);
+        assert_eq!(buttons(&raw), [egui::PointerButton::Secondary; 2], "press and release");
+        assert!(!held);
+        let mut raw = egui::RawInput { events: vec![press(true, false, false), press(true, true, true)], ..Default::default() };
+        ctrl_click_as_right_click(&mut raw, &mut held);
+        assert_eq!(buttons(&raw), [egui::PointerButton::Primary; 2], "a plain click, and Cmd stays Cmd");
+    }
+
+    #[test]
+    fn a_cc_moves_a_bound_fader_after_pickup() {
+        let (mut app, input, _, _) = midi_app();
+        learn_cc(&mut app, &input, midi::Control::Fader(2), 83, 0);
+        assert!(app.midi.bound(midi::Control::Fader(2)).is_some());
+        assert_eq!(app.preferences.midi.len(), 1, "kept in the settings");
+        assert_eq!(app.tracks[2].fader_db, 0.0, "learning moves nothing");
+        input.borrow_mut().push(cc_message(83, 10));
+        app.poll_midi();
+        assert_eq!(app.tracks[2].fader_db, 0.0, "far from 0 dB: pickup waits");
+        let zero = midi::to_cc(midi::Control::Fader(2), 0.0).round() as u8;
+        input.borrow_mut().extend([cc_message(83, zero), cc_message(83, 127)]);
+        app.poll_midi();
+        assert_eq!(app.tracks[2].fader_db, MAX_DB, "picked up, then it follows");
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn a_press_toggles_mute_and_a_release_does_not() {
+        let (mut app, input, _, _) = midi_app();
+        learn_cc(&mut app, &input, midi::Control::Mute(0), 16, 127);
+        assert!(!app.tracks[0].mute, "learning presses nothing");
+        input.borrow_mut().extend([cc_message(16, 0), cc_message(16, 127), cc_message(16, 0)]);
+        app.poll_midi();
+        assert!(app.tracks[0].mute);
+        // A note: on toggles, off does not.
+        app.midi.learning = Some(midi::Control::Solo(1));
+        input.borrow_mut().push(midi::MidiMessage { port: "BCF2000".into(), bytes: vec![0x90, 40, 100] });
+        app.poll_midi();
+        input.borrow_mut().extend([
+            midi::MidiMessage { port: "BCF2000".into(), bytes: vec![0x90, 40, 90] },
+            midi::MidiMessage { port: "BCF2000".into(), bytes: vec![0x80, 40, 0] },
+        ]);
+        app.poll_midi();
+        assert!(app.tracks[1].solo);
+    }
+
+    #[test]
+    fn a_key_that_toggles_itself_switches_mute_off_with_one_press() {
+        let (mut app, input, _, _) = midi_app();
+        learn_cc(&mut app, &input, midi::Control::Mute(3), 20, 127);
+        app.now = 10.0;
+        input.borrow_mut().push(cc_message(20, 127));
+        app.poll_midi();
+        assert!(app.tracks[3].mute);
+        app.now = 12.0;
+        input.borrow_mut().push(cc_message(20, 0));
+        app.poll_midi();
+        assert!(!app.tracks[3].mute, "the next press of a BCF2000 key sends 0: off");
+    }
+
+    #[test]
+    fn the_mod_wheel_turns_pitch_in_vari_only() {
+        let (mut app, input, _, _) = midi_app();
+        learn_cc(&mut app, &input, midi::Control::Pitch, 1, 64);
+        input.borrow_mut().extend([cc_message(1, 64), cc_message(1, 127)]);
+        app.poll_midi();
+        assert_eq!(app.pitch_percent, 0.0, "FIX: the knob is fixed");
+        app.vari = true;
+        input.borrow_mut().extend([cc_message(1, 64), cc_message(1, 127)]);
+        app.poll_midi();
+        assert_eq!(app.pitch_percent, PITCH_PERCENT);
+    }
+
+    #[test]
+    fn a_key_plays_the_transport() {
+        let (mut app, input, _, engines) = midi_app();
+        app.load_paths(Vec::new());
+        learn_cc(&mut app, &input, midi::Control::Play, 20, 127);
+        input.borrow_mut().push(cc_message(20, 127));
+        app.poll_midi();
+        render_latest(&engines);
+        assert_eq!(app.engine.as_ref().map(EngineHandle::motion), Some(Motion::Playing));
+    }
+
+    #[test]
+    fn a_cc_on_a_linked_pair_moves_both() {
+        let (mut app, input, _, _) = midi_app();
+        app.set_link(0, true);
+        app.sync_links();
+        let zero = midi::to_cc(midi::Control::Fader(0), 0.0).round() as u8;
+        learn_cc(&mut app, &input, midi::Control::Fader(0), 1, zero);
+        input.borrow_mut().extend([cc_message(1, zero), cc_message(1, zero - 30)]);
+        app.poll_midi();
+        app.sync_links();
+        assert_eq!(app.tracks[1].fader_db, app.tracks[0].fader_db);
+        assert!(app.tracks[0].fader_db < 0.0);
+    }
+
+    #[test]
+    fn feedback_follows_the_screen_but_does_not_echo() {
+        let (mut app, input, output, _) = midi_app();
+        learn_cc(&mut app, &input, midi::Control::Fader(0), 7, 0);
+        learn_cc(&mut app, &input, midi::Control::Mute(0), 8, 127);
+        app.midi_feedback();
+        let first: Vec<_> = output.borrow_mut().drain(..).collect();
+        let zero = midi::to_cc(midi::Control::Fader(0), 0.0).round() as u8;
+        assert!(first.contains(&("BCF2000".into(), vec![0xB0, 7, zero])), "{first:?}");
+        assert!(first.contains(&("BCF2000".into(), vec![0xB0, 8, 0])), "MUTE off is 0");
+        app.midi_feedback();
+        assert!(output.borrow().is_empty(), "nothing changed, nothing sent");
+        // The mouse moves the fader: one CC.
+        app.tracks[0].fader_db = -10.0;
+        app.tracks[0].mute = true;
+        app.midi_feedback();
+        app.midi_feedback();
+        let moved: Vec<_> = output.borrow_mut().drain(..).collect();
+        assert_eq!(moved.len(), 2, "{moved:?}");
+        assert!(moved.contains(&("BCF2000".into(), vec![0xB0, 8, 127])), "MUTE on is 127");
+        // The controller moves it (after pickup): not sent back.
+        let at = midi::to_cc(midi::Control::Fader(0), -10.0).round() as u8;
+        input.borrow_mut().extend([cc_message(7, at), cc_message(7, at + 5)]);
+        app.poll_midi();
+        app.midi_feedback();
+        assert!(output.borrow().is_empty(), "{:?}", output.borrow());
+        // A new project: everything goes out once more, so motor faders follow.
+        app.new_project();
+        app.midi_feedback();
+        assert_eq!(output.borrow().len(), 2);
     }
 
     /// Let the engine that feeds the current output process one block.

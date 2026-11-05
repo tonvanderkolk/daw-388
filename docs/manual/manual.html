@@ -70,6 +70,7 @@
     <li><a href="#metronome">Metronome</a></li>
     <li><a href="#export">Export</a></li>
     <li><a href="#deck">The mixdown deck</a></li>
+    <li><a href="#midi">MIDI controllers</a></li>
     <li><a href="#settings">Settings</a></li>
     <li><a href="#keys">Keyboard shortcuts</a></li>
     <li><a href="#trouble">When something does not work</a></li>
@@ -118,7 +119,7 @@
     <li><b>Input</b>: the device you record from. As long as this is "None", nothing can be recorded and no microphone permission is asked.</li>
     <li><b>Buffer</b>: smaller is less delay, larger is safer for a slow computer. 128 or 256 samples is a good start.</li>
   </ol>
-  <p>These are settings of the app, not of a project: they stay the same whichever song you open. All settings are described in <a href="#settings">chapter 18</a>.</p>
+  <p>These are settings of the app, not of a project: they stay the same whichever song you open. All settings are described in <a href="#settings">chapter 19</a>.</p>
   <div class="tip"><p>If the device you chose is not connected, DAW 388 plays through the default device and says so at the top right. As soon as your device returns, it switches back by itself.</p></div>
 </section>
 
@@ -430,8 +431,29 @@
   </ul>
 </section>
 
+<section id="midi">
+  <h2>18. MIDI controllers</h2>
+  <p>With a MIDI controller you have several faders under your fingers at once, which suits mixing live onto the <a href="#deck">mixdown deck</a>. Any controller that sends control changes (CC) or notes works: a keyboard with faders and knobs, a fader box such as a nanoKONTROL, or one with motor faders such as a BCF2000 in its CC mode. Plug it in; DAW 388 listens to every MIDI input and finds a controller you plug in later by itself.</p>
+  <h3>Learning</h3>
+  <ol>
+    <li>Right-click a channel fader, a PAN knob, a MUTE or SOLO key, the STEREO MASTER, the PITCH knob, or PLAY, STOP, REC or RTZ, and choose <b>MIDI Learn</b>. It blinks. On a Mac without a right mouse button: hold <kbd>Ctrl</kbd> and click, or click with two fingers on the trackpad.</li>
+    <li>Move a fader or knob, or press a key, on the controller. That is the binding; a small green dot shows it. <kbd>Esc</kbd> cancels.</li>
+  </ol>
+  <p>One control on the controller moves one thing: learning it again elsewhere moves the binding. <b>Forget MIDI</b> in the same menu removes it. The bindings belong to the app, not to a song: they stay when you open another project. The faders, PAN, MUTE and SOLO in TRACKS can be learnt too.</p>
+  <h3>How it behaves</h3>
+  <ul>
+    <li><b>Faders</b> follow the same curve as on screen, so 0 dB is in the same place. <b>PAN</b> has its middle at 64.</li>
+    <li><b>PITCH</b> on the mod wheel or a knob gives tape speed by hand: 64 is normal speed, 0 and 127 are minus and plus 15%. It works only in VARI and not while recording, as the knob on screen.</li>
+    <li><b>Pickup</b>: when the fader on the controller stands somewhere else than the one on screen, nothing happens until you move it past the screen's position. So nothing jumps.</li>
+    <li><b>Feedback</b>: every change on screen (the mouse, undo, opening a project) is sent back. Motor faders move along, and lamps for MUTE and SOLO light with them.</li>
+    <li><b>Keys</b>: a press toggles MUTE and SOLO and works PLAY, STOP, REC and RTZ; letting go does nothing. Keys that switch themselves on and off (as on a BCF2000, which sends 127 and then 0 on the next press) work with one press each way.</li>
+    <li>On a <a href="#link">linked pair</a> the other side moves along.</li>
+  </ul>
+  <p>Settings, MIDI lists the inputs found and every binding, with Forget for each one and <b>Forget all</b>.</p>
+</section>
+
 <section id="settings">
-  <h2>18. Settings</h2>
+  <h2>19. Settings</h2>
   <p>File, Settings... (<kbd>Cmd+,</kbd>). These belong to the app, except the REPEAT mode and the metronome, which are saved with the project.</p>
   <table>
     <tr><th>Setting</th><th>What it does</th></tr>
@@ -447,11 +469,13 @@
     <tr><td>AUTO PUNCH</td><td>A pre-roll of 1, 2 or 4 seconds before the zero point (<a href="#recording">chapter 11</a>).</td></tr>
     <tr><td>REPEAT, RTZ and STC</td><td>388 (the tape rewinds to the zero point in real time) or Cycle (jumps straight back).</td></tr>
     <tr><td>Updates</td><td>Check for updates at startup, at most once a day (<a href="#install">chapter 2</a>).</td></tr>
+    <tr><td>MIDI</td><td>The MIDI inputs found and the bindings, with Forget and Forget all (<a href="#midi">chapter 18</a>).</td></tr>
+    <tr><td colspan="2">The Settings window can be made taller or lower at its bottom edge; what does not fit scrolls.</td></tr>
   </table>
 </section>
 
 <section id="keys">
-  <h2>19. Keyboard shortcuts</h2>
+  <h2>20. Keyboard shortcuts</h2>
   <p>On Windows use <kbd>Ctrl</kbd> where the Mac uses <kbd>Cmd</kbd>.</p>
   <table>
     <tr><th>Key</th><th>Action</th></tr>
@@ -481,7 +505,7 @@
 </section>
 
 <section id="trouble">
-  <h2>20. When something does not work</h2>
+  <h2>21. When something does not work</h2>
   <h3>I hear nothing at all</h3>
   <ul>
     <li>Look at the status line at the top right: is the device you chose connected? Check Output in Settings.</li>
@@ -508,7 +532,7 @@
 </section>
 
 <section id="files">
-  <h2>21. Files and folders</h2>
+  <h2>22. Files and folders</h2>
   <ul>
     <li><b>A project</b>: <b>Song name.daw388</b> with <b>project.json</b> (the song), <b>audio</b> (the recordings and copied files), <b>mixes</b> (the mixdown deck's mixes) and <b>backups</b> (the last ten versions of project.json). On a Mac, right-click it and choose Show Package Contents to look inside.</li>
     <li><b>Exports</b>: the folder <b>Song name export</b> next to the project, unless you chose another.</li>

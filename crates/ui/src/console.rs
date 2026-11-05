@@ -130,6 +130,8 @@ impl DawApp {
         // Renaming under the fader shares the state with SPOREN: one name at a time.
         let mut renaming = self.editor.renaming.take();
         let mut renamed: Option<String> = None;
+        // The controls MIDI can be bound to, given their menu once `track` is free again.
+        let mut targets: Vec<(egui::Response, crate::midi::Control)> = Vec::new();
         let track = &mut self.tracks[index];
         let has_content = !track.regions.is_empty() || track.unresolved.is_some();
         column(ui, 112.0, |ui| {
@@ -330,6 +332,7 @@ impl DawApp {
                 let pan = place(ui, cx, top, vec2(30.0, 30.0), |ui| knob(ui, &mut track.pan, -1.0..=1.0, 0.0, palette::CREAM, 30.0, true))
                     .on_hover_text(pan_tip);
                 changed |= pan.changed() || pan.double_clicked();
+                targets.push((pan, crate::midi::Control::Pan(index)));
                 let (left, right) = if simple { ("L", "R") } else { ("ODD", "EVEN") };
                 tag(ui, pos2(cx - 18.0, top + 26.0), Align2::RIGHT_CENTER, left);
                 tag(ui, pos2(cx + 18.0, top + 26.0), Align2::LEFT_CENTER, right);
@@ -351,21 +354,25 @@ impl DawApp {
                     track.mute = !track.mute;
                     changed = true;
                 }
+                targets.push((mute, crate::midi::Control::Mute(index)));
                 // SOLO is a DAW habit, not a 388 control: it only changes what you hear.
                 let button = place(ui, cx + 34.0, top, vec2(34.0, KEY_NARROW_H), |ui| {
                     KeyCap::new("SOLO", keys::NARROW).lamp(track.solo, palette::LED_GREEN).show(ui)
                 });
-                if button.on_hover_text("SOLO: hear only the soloed tracks. Recordings and buses are not affected").clicked() {
+                let button = button.on_hover_text("SOLO: hear only the soloed tracks. Recordings and buses are not affected");
+                if button.clicked() {
                     track.solo = !track.solo;
                     solo = true;
                     self.link_touched = Some(index);
                 }
+                targets.push((button, crate::midi::Control::Solo(index)));
             });
             ui.add_space(FADER_GAP);
             let fader = fader(ui, &mut track.fader_db, palette::CREAM);
             if fader.changed() || fader.double_clicked() {
                 changed = true;
             }
+            targets.push((fader, crate::midi::Control::Fader(index)));
             ui.label(RichText::new(format_db(track.fader_db)).size(11.0).color(palette::TEXT_DIM));
             // The number and the name under the fader, as on the 388.
             self.strip_numbers[index] = ui.label(bold(format!("{}", index + 1)).size(20.0).color(palette::CREAM)).rect;
@@ -409,6 +416,9 @@ impl DawApp {
             }
         });
         self.editor.renaming = renaming;
+        for (response, control) in targets {
+            self.midi_target(&response, control);
+        }
         if let Some(name) = renamed {
             self.rename(index, name);
         }
@@ -800,6 +810,7 @@ impl DawApp {
             }
             ui.add_space(fader_top(classic, compact) - master_bands(compact) + FADER_GAP);
             let response = fader(ui, &mut self.master_db, palette::RED);
+            self.midi_target(&response, crate::midi::Control::Master);
             // OL beside the top of the scale: the mix went over 0 dBFS and clips.
             let lamp = pos2(response.rect.center().x + 30.0, response.rect.top() + FADER_MARGIN);
             let lit = self.now < self.master_ol_until;
