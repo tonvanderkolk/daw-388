@@ -2,7 +2,9 @@
 //! background thread. A stem "with mixer" is the mix with that track on SOLO; "tape only" runs
 //! the track through a neutral mixer; "dry" is the recording itself.
 
-use daw388_engine::{ChannelParams, Command, Meter, MixerParams, MonitorParams, Source, TRACKS, TapeParams, TrackAudio};
+use daw388_engine::{
+    ChannelParams, Command, Machine, Meter, MixdownDeck, MixerParams, MonitorParams, Source, TRACKS, TapeParams, TrackAudio,
+};
 use daw388_project::MonoClip;
 use daw388_project::export::{BitDepth, ExportFormat, export_name, resample_hq, unused_path, write_audio};
 use daw388_project::regions::{Region, SourceId};
@@ -55,6 +57,8 @@ pub(crate) struct ExportJob {
     pub project: String,
     pub format: ExportFormat,
     pub depth: BitDepth,
+    /// The mixdown deck's machine the stereo bounce goes through (stems never do).
+    pub through: Machine,
 }
 
 /// Shared with the UI while an export runs.
@@ -192,6 +196,17 @@ fn render_tracks(job: &ExportJob) -> [Option<Arc<TrackAudio>>; TRACKS] {
 }
 
 /// Run an export; returns the files written. On an error or a cancel, nothing is left behind.
+/// The stereo bounce through a mixdown deck's machine, as a live mix would go onto it.
+fn through(machine: Machine, rate: u32, left: Vec<f32>, right: Vec<f32>) -> [Vec<f32>; 2] {
+    if machine == Machine::Direct {
+        return [left, right];
+    }
+    let mut deck = MixdownDeck::new(rate);
+    deck.set(machine);
+    let (l, r): (Vec<f32>, Vec<f32>) = left.iter().zip(&right).map(|(&l, &r)| deck.process(l, r)).unzip();
+    [l, r]
+}
+
 /// What an export wrote: the files, and its highest sample with the name of the file it is in.
 #[derive(Debug)]
 pub(crate) struct Exported {
@@ -229,6 +244,7 @@ pub(crate) fn run(job: &ExportJob, progress: &Progress) -> Result<Exported, Stri
         };
         if let Some(tape) = job.stereo {
             let [l, r] = renderer.render(None, tape && job.tape.on, false)?;
+            let [l, r] = through(job.through, job.rate, l, r);
             let channels = renderer.place(vec![l, r]);
             save(export_name(&job.project, None, None), channels, &mut written)?;
         }
@@ -314,6 +330,7 @@ mod tests {
             project: "Demo".into(),
             format: ExportFormat::Wav,
             depth: BitDepth::Float32,
+            through: Machine::Direct,
         }
     }
 
@@ -356,6 +373,21 @@ mod tests {
         assert_eq!(dry.samples.len(), original.len());
         assert_eq!(dry.samples[144..original.len() - 144], original[144..original.len() - 144]);
         assert!(dry.samples[0] < original[0], "the first sample is faded in");
+    }
+
+    #[test]
+    fn the_bounce_goes_through_the_chosen_machine() {
+        let render = |through| {
+            let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+            let job = ExportJob { through, ..job(dir.path().to_path_buf()) };
+            let exported = run(&job, &Progress::default()).unwrap_or_else(|e| panic!("{e}"));
+            daw388_project::load_audio(&exported.files[0]).unwrap_or_else(|e| panic!("{e}")).samples
+        };
+        let (direct, again, cassette) = (render(Machine::Direct), render(Machine::Direct), render(Machine::Cassette));
+        assert_eq!(direct, again, "DIRECT changes nothing");
+        assert_eq!(direct.len(), cassette.len());
+        assert!(direct.iter().zip(&cassette).any(|(a, b)| (a - b).abs() > 1e-3), "the cassette colours the bounce");
+        assert!(through(Machine::Direct, 48_000, vec![0.5], vec![-0.5]) == [vec![0.5], vec![-0.5]]);
     }
 
     #[test]

@@ -22,6 +22,18 @@ pub enum RecItem {
     Stop,
 }
 
+/// What the audio thread hands the writer for the mixdown deck.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MixItem {
+    /// A mix starts; `clean` says whether the frames carry a clean copy.
+    Start {
+        clean: bool,
+    },
+    /// One frame: the deck's left and right, then the clean left and right (zero when not kept).
+    Frame([f32; 4]),
+    Stop,
+}
+
 /// The input side, owned by the engine.
 pub(crate) struct Input {
     pub(crate) rx: rtrb::Consumer<f32>,
@@ -85,6 +97,7 @@ pub fn input_ring(sample_rate: u32, channels: usize) -> (rtrb::Producer<f32>, rt
 /// The writer's side: recorded audio coming out of the audio thread.
 pub struct Recorder {
     pub(crate) tracks: Vec<rtrb::Consumer<RecItem>>,
+    pub(crate) mix: rtrb::Consumer<MixItem>,
 }
 
 impl Recorder {
@@ -99,22 +112,34 @@ impl Recorder {
         }
     }
 
+    /// Take everything the mixdown deck recorded since the last call.
+    pub fn drain_mix(&mut self, mut each: impl FnMut(MixItem)) {
+        let available = self.mix.slots();
+        if let Ok(chunk) = self.mix.read_chunk(available) {
+            for item in chunk.into_iter() {
+                each(item);
+            }
+        }
+    }
+
     /// The engine is gone (device change): nothing more will arrive once drained.
     pub fn is_abandoned(&self) -> bool {
-        self.tracks.iter().all(rtrb::Consumer::is_abandoned)
+        self.tracks.iter().all(rtrb::Consumer::is_abandoned) && self.mix.is_abandoned()
     }
 }
 
 /// The engine's side of [`Recorder`].
 pub(crate) struct RecordOut {
     pub(crate) tracks: Vec<rtrb::Producer<RecItem>>,
+    pub(crate) mix: rtrb::Producer<MixItem>,
 }
 
 pub(crate) fn recorder(sample_rate: u32) -> (RecordOut, Recorder) {
     // Two seconds per track give the writer plenty of time.
     let capacity = sample_rate.max(8_000) as usize * 2;
     let (tx, rx): (Vec<_>, Vec<_>) = (0..TRACKS).map(|_| rtrb::RingBuffer::new(capacity)).unzip();
-    (RecordOut { tracks: tx }, Recorder { tracks: rx })
+    let (mix_tx, mix_rx) = rtrb::RingBuffer::new(capacity);
+    (RecordOut { tracks: tx, mix: mix_tx }, Recorder { tracks: rx, mix: mix_rx })
 }
 
 /// What the record logic is doing, as the REC LED shows it.

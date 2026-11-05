@@ -488,13 +488,18 @@ impl DawApp {
             return;
         }
         let contents: Vec<TrackContent> = (0..TRACKS).map(|t| self.content(t)).collect();
-        let step = if again { self.history.redo(|t| contents[t].clone()) } else { self.history.undo(|t| contents[t].clone()) };
+        let mixes = self.mixes.clone();
+        let step =
+            if again { self.history.redo(|t| contents[t].clone(), &mixes) } else { self.history.undo(|t| contents[t].clone(), &mixes) };
         let Some(step) = step else {
             self.status = if again { "Nothing to redo" } else { "Nothing to undo" }.into();
             return;
         };
         for (track, content) in step.tracks {
             self.set_content(track, content);
+        }
+        if let Some(mixes) = step.mixes {
+            self.set_mixes(mixes);
         }
         self.status = format!("{} {}", step.name, if again { "redone" } else { "undone" });
         self.mark_dirty();

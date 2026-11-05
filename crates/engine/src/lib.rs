@@ -28,11 +28,11 @@ mod record;
 
 pub use click::Meter;
 pub use daw388_fx::{EchoParams, EchoSync, PlateParams};
-pub use daw388_tape::{Speed, TapeKind, TapeParams};
+pub use daw388_tape::{Machine, MixdownDeck, Speed, TapeKind, TapeParams};
 pub use eq::{EQ_DEFAULTS, EqBand};
 pub use mixer::{ChannelParams, Listen, MixerParams, RtnParams, Source};
 pub use monitor::{MonitorMode, MonitorParams};
-pub use record::{RecItem, RecMode, Recorder, input_ring};
+pub use record::{MixItem, RecItem, RecMode, Recorder, input_ring};
 
 use click::Click;
 use daw388_fx::{Echo, Plate};
@@ -154,9 +154,31 @@ pub enum Command {
     SetClickVolume(f32),
     /// Bars to count in before a recording from stop (0: none).
     SetCountIn(u8),
+    /// The mixdown deck after the STEREO MASTER: its machine, MIX REC (while on, LISTEN STEREO
+    /// hears the deck and a playing tape records a mix) and whether a clean copy comes along.
+    SetDeck {
+        machine: Machine,
+        rec: bool,
+        clean: bool,
+    },
+    /// Play a mix from the mixdown deck (left and right) on the main output, from its start, in
+    /// place of the console; the tape stops. `None` stops the mix.
+    PlayMix(Option<[Arc<TrackAudio>; 2]>),
 }
 
 const NO_CUE: u64 = u64::MAX;
+
+/// The mixdown deck's tail ends once the mix has been below this (-80 dBFS) for half a second ...
+const DECK_QUIET: f32 = 1.0e-4;
+/// ... or after this many seconds at most.
+const DECK_TAIL_MAX: usize = 15;
+
+/// Frames of tail so far, and how many of the last ones were quiet.
+#[derive(Debug, Clone, Copy, Default)]
+struct DeckTail {
+    frames: usize,
+    quiet: usize,
+}
 
 /// State the audio thread publishes for the UI.
 #[derive(Debug)]
@@ -194,6 +216,8 @@ struct Shared {
     compensation: AtomicU64,
     /// Seconds of count-in left, as `f64` bits.
     count_in: AtomicU64,
+    /// Where a playing mix is, in samples ([`NO_CUE`]: no mix plays).
+    mix_position: AtomicU64,
 }
 
 impl Default for Shared {
@@ -219,6 +243,7 @@ impl Default for Shared {
             overflow: AtomicBool::new(false),
             compensation: AtomicU64::new(0f64.to_bits()),
             count_in: AtomicU64::new(0f64.to_bits()),
+            mix_position: AtomicU64::new(NO_CUE),
         }
     }
 }
@@ -352,6 +377,14 @@ pub fn create(sample_rate: u32) -> (EngineHandle, Engine) {
         auto_punch: false,
         pre_roll: 0.0,
         rec_out,
+        deck: MixdownDeck::new(sample_rate),
+        deck_rec: false,
+        deck_clean: false,
+        deck_taking: false,
+        deck_tail: None,
+        deck_cut: false,
+        mix: None,
+        mix_at: 0,
         compensation: 0.0,
         click: Click::new(sample_rate),
         plate: Plate::new(sample_rate),
@@ -400,6 +433,12 @@ impl EngineHandle {
     }
 
     /// Seconds of count-in left (0 when not counting in).
+    /// Where the mix that plays is, in seconds; `None` when no mix plays.
+    pub fn mix_position_seconds(&self) -> Option<f64> {
+        let samples = self.shared.mix_position.load(Ordering::Relaxed);
+        (samples != NO_CUE).then(|| samples as f64 / f64::from(self.sample_rate))
+    }
+
     pub fn count_in_seconds(&self) -> f64 {
         f64::from_bits(self.shared.count_in.load(Ordering::Relaxed))
     }
@@ -615,6 +654,18 @@ pub struct Engine {
     /// Pre-roll before the zero point with AUTO PUNCH, in samples.
     pre_roll: f64,
     rec_out: RecordOut,
+    /// The mixdown deck, MIX REC, the clean copy and whether a mix is being taken.
+    deck: MixdownDeck,
+    deck_rec: bool,
+    deck_clean: bool,
+    deck_taking: bool,
+    /// The tail after the tape stopped, while the effects ring out; `deck_cut` ends the mix on
+    /// the next frame (a transport key, or the tail has died away).
+    deck_tail: Option<DeckTail>,
+    deck_cut: bool,
+    /// The mix that plays and where it is.
+    mix: Option<[Arc<TrackAudio>; 2]>,
+    mix_at: usize,
     /// Latency compensation in samples for this block.
     compensation: f64,
     click: Click,
@@ -696,6 +747,21 @@ impl Engine {
     }
 
     /// Leave record mode: punch out everything (STOP, PLAY, REW and the other transport keys).
+    /// Stop a playing mix and hand its audio back (room is checked for `PlayMix`; otherwise
+    /// the garbage ring is far from full, and a failed push only keeps the buffer alive here).
+    fn stop_mix(&mut self) {
+        if let Some(pair) = self.mix.take() {
+            for side in pair {
+                if let Err(rtrb::PushError::Full(side)) = self.garbage.push(side) {
+                    // Never free on the audio thread: keep it until there is room.
+                    self.mix = Some([Arc::clone(&side), side]);
+                    self.mix_at = usize::MAX;
+                    return;
+                }
+            }
+        }
+    }
+
     fn end_recording(&mut self) {
         self.punch_out_all();
         self.rec_mode = RecMode::Off;
@@ -768,7 +834,20 @@ impl Engine {
             if matches!(command, Command::SetTrack(..)) && self.garbage.slots() == 0 {
                 break;
             }
+            if matches!(command, Command::PlayMix(_)) && self.garbage.slots() < 2 {
+                break;
+            }
             let Ok(command) = self.commands.pop() else { break };
+            // The transport takes over from a playing mix, and ends a mix ringing out.
+            if matches!(
+                command,
+                Command::Play | Command::Record | Command::Rewind | Command::FastForward | Command::ReturnToZero | Command::SearchToCue
+            ) {
+                self.stop_mix();
+                if self.deck_tail.take().is_some() {
+                    self.deck_cut = true;
+                }
+            }
             match command {
                 Command::Play => {
                     // PLAY while recording punches out and plays on.
@@ -813,6 +892,23 @@ impl Engine {
                 Command::SetMeter(meter) => self.click.meter = meter,
                 Command::SetClickVolume(volume) => self.click.volume = volume.clamp(0.0, 2.0),
                 Command::SetCountIn(bars) => self.click.count_in = bars,
+                Command::PlayMix(mix) => {
+                    self.stop_mix();
+                    if mix.is_some() {
+                        self.end_recording();
+                        self.state = State::Stopped;
+                        self.mix = mix;
+                        self.mix_at = 0;
+                    }
+                }
+                Command::SetDeck { machine, rec, clean } => {
+                    self.deck.set(machine);
+                    self.deck_rec = rec;
+                    // A mix in progress keeps what it started with.
+                    if !self.deck_taking {
+                        self.deck_clean = clean;
+                    }
+                }
                 Command::ReturnToZero => {
                     self.end_recording();
                     // In cycle style RTZ keeps playing, as "go to start" does in a DAW.
@@ -1151,12 +1247,69 @@ impl Engine {
                 let mono = 0.5 * (left + right);
                 (left, right) = (mono, mono);
             }
+            // A playing mix is heard in place of the console, as it is: no master, no MONO.
+            let mix_frame = self.mix.as_ref().map(|[l, r]| {
+                let at = self.mix_at;
+                (l.samples.get(at).copied(), r.samples.get(at).copied())
+            });
+            match mix_frame {
+                Some((Some(l), r)) => {
+                    (left, right) = (l, r.unwrap_or(l));
+                    self.mix_at += 1;
+                }
+                Some(_) => {
+                    (left, right) = (0.0, 0.0);
+                    self.stop_mix();
+                }
+                None => {}
+            }
+            let mix_playing = mix_frame.is_some();
             master_peaks[0] = master_peaks[0].max(left.abs());
             master_peaks[1] = master_peaks[1].max(right.abs());
             master_energy[0] += f64::from(left * left);
             master_energy[1] += f64::from(right * right);
-            // The main output: STEREO, AUX or EFF, then MONITOR/PHONES.
-            let (left, right) = match self.mixer.listen {
+            // The mixdown deck: while MIX REC is on, STEREO is heard off its tape and a playing
+            // tape (a REPEAT search included) records a mix. The click comes later, so never on it.
+            let rolling = matches!(self.state, State::Playing | State::Winding { then_play: true, .. });
+            let clean = [left, right];
+            // After the tape stops the deck keeps running until the reverb and echo have died
+            // away; any transport key cuts that tail off.
+            if self.deck_taking && !rolling && self.deck_tail.is_none() && !self.deck_cut {
+                self.deck_tail = Some(DeckTail::default());
+            }
+            if rolling || !self.deck_rec || self.deck_cut {
+                self.deck_tail = None;
+            }
+            if let Some(tail) = &mut self.deck_tail {
+                let quiet = clean.iter().all(|v| v.abs() < DECK_QUIET);
+                tail.quiet = if quiet { tail.quiet + 1 } else { 0 };
+                tail.frames += 1;
+                let rate = self.sample_rate as usize;
+                if tail.quiet > rate / 2 || tail.frames > DECK_TAIL_MAX * rate {
+                    self.deck_tail = None;
+                    self.deck_cut = true;
+                }
+            }
+            let taking = self.deck_rec && !self.deck_cut && (rolling || self.deck_tail.is_some());
+            if self.deck_rec && !mix_playing {
+                (left, right) = self.deck.process(left, right);
+            }
+            if taking != self.deck_taking {
+                let item = if taking { MixItem::Start { clean: self.deck_clean } } else { MixItem::Stop };
+                if self.rec_out.mix.push(item).is_ok() {
+                    self.deck_taking = taking;
+                }
+            }
+            if !self.deck_taking {
+                self.deck_cut = false;
+            }
+            if taking && self.deck_taking {
+                let clean = if self.deck_clean { clean } else { [0.0; 2] };
+                let _ = self.rec_out.mix.push(MixItem::Frame([left, right, clean[0], clean[1]]));
+            }
+            // The main output: STEREO, AUX or EFF, then MONITOR/PHONES. A mix is always heard.
+            let listen = if mix_playing { Listen::Stereo } else { self.mixer.listen };
+            let (left, right) = match listen {
                 Listen::Stereo => (left, right),
                 Listen::Aux => (aux, aux),
                 Listen::Eff => (eff, eff),
@@ -1193,6 +1346,8 @@ impl Engine {
         self.shared.compensation.store((self.compensation / f64::from(self.sample_rate)).to_bits(), Ordering::Relaxed);
         let count_in = if let State::CountIn { left } = self.state { left / f64::from(self.sample_rate) } else { 0.0 };
         self.shared.count_in.store(count_in.to_bits(), Ordering::Relaxed);
+        let mix_position = if self.mix.is_some() { self.mix_at as u64 } else { NO_CUE };
+        self.shared.mix_position.store(mix_position, Ordering::Relaxed);
         for (cell, peak) in self.shared.track_peaks.iter().zip(track_peaks) {
             store_peak(cell, peak);
         }
@@ -2309,5 +2464,195 @@ mod tests {
         assert!(out.iter().all(|s| *s == 0.0), "nothing heard: not on L-R, not in the monitor");
         let samples = samples_of(&takes(&mut recorder, 0));
         assert!(samples.len() == 10 && samples.iter().all(|s| (s + 1.0).abs() < 1e-3), "but recorded");
+    }
+
+    fn mix_items(recorder: &mut Recorder) -> Vec<MixItem> {
+        let mut items = Vec::new();
+        recorder.drain_mix(|i| items.push(i));
+        items
+    }
+
+    fn frames_of(items: &[MixItem]) -> Vec<[f32; 4]> {
+        items.iter().filter_map(|i| if let MixItem::Frame(f) = i { Some(*f) } else { None }).collect()
+    }
+
+    fn deck_engine() -> (EngineHandle, Engine, Recorder) {
+        let (mut handle, mut engine) = create(48_000);
+        let recorder = handle.take_recorder().unwrap_or_else(|| unreachable!());
+        let ramp: Vec<f32> = (0..20_000).map(|i| (i as f32 * 0.01).sin() * 0.5).collect();
+        handle.send(Command::SetTrack(0, audio(ramp)));
+        handle.send(Command::SetMonitor(0, left()));
+        settle(&mut engine);
+        (handle, engine, recorder)
+    }
+
+    #[test]
+    fn mix_rec_records_from_play_to_stop() {
+        let (mut handle, mut engine, mut recorder) = deck_engine();
+        handle.send(Command::SetDeck { machine: Machine::Direct, rec: true, clean: false });
+        handle.send(Command::Play);
+        let out = run(&mut engine, 500);
+        handle.send(Command::Stop);
+        // The tail: silent here (no effects), so it ends after half a second.
+        run(&mut engine, 30_000);
+        let items = mix_items(&mut recorder);
+        assert_eq!(items.first(), Some(&MixItem::Start { clean: false }));
+        assert_eq!(items.last(), Some(&MixItem::Stop));
+        let frames = frames_of(&items);
+        assert!(frames.len() > 500 + 23_000 && frames.len() < 500 + 25_000, "{}", frames.len());
+        assert!(frames[500..].iter().all(|f| f[0].abs() < 1e-4), "the tail after the tape");
+        for (i, f) in frames.iter().take(500).enumerate() {
+            assert_eq!([f[0], f[1]], [out[2 * i], out[2 * i + 1]], "frame {i}: the deck is what STEREO plays");
+            assert_eq!([f[2], f[3]], [0.0, 0.0], "no clean copy asked");
+        }
+        assert!(frames.iter().any(|f| f[0] != 0.0), "the track is on it");
+    }
+
+    #[test]
+    fn without_mix_rec_nothing_streams() {
+        let (mut handle, mut engine, mut recorder) = deck_engine();
+        handle.send(Command::SetDeck { machine: Machine::Cassette, rec: false, clean: true });
+        handle.send(Command::Play);
+        run(&mut engine, 500);
+        assert!(mix_items(&mut recorder).is_empty());
+    }
+
+    #[test]
+    fn the_click_stays_out_of_the_mix() {
+        let (mut handle, mut engine) = create(48_000);
+        let mut recorder = handle.take_recorder().unwrap_or_else(|| unreachable!());
+        handle.send(Command::SetClick(true));
+        handle.send(Command::SetClickAlways(true));
+        handle.send(Command::SetDeck { machine: Machine::Direct, rec: true, clean: true });
+        handle.send(Command::SetTrack(0, audio(vec![0.0; 48_000])));
+        settle(&mut engine);
+        handle.send(Command::Play);
+        let out = run(&mut engine, 24_000);
+        assert!(out.iter().any(|v| v.abs() > 0.01), "the click is heard");
+        let frames = frames_of(&mix_items(&mut recorder));
+        assert!(!frames.is_empty());
+        assert!(frames.iter().all(|f| *f == [0.0; 4]), "but not recorded");
+    }
+
+    #[test]
+    fn a_clean_copy_is_the_master() {
+        let (mut handle, mut engine, mut recorder) = deck_engine();
+        // The master as STEREO plays it without the deck.
+        handle.send(Command::Play);
+        let plain = run(&mut engine, 2_000);
+        handle.send(Command::Stop);
+        handle.send(Command::Locate(0.0));
+        handle.send(Command::SetDeck { machine: Machine::Cassette, rec: true, clean: true });
+        settle_stopped(&mut engine);
+        handle.send(Command::Play);
+        run(&mut engine, 2_000);
+        let items = mix_items(&mut recorder);
+        assert_eq!(items.first(), Some(&MixItem::Start { clean: true }));
+        let frames = frames_of(&items);
+        assert_eq!(frames.len(), 2_000);
+        for (i, f) in frames.iter().enumerate() {
+            assert!((f[2] - plain[2 * i]).abs() < 1e-6 && (f[3] - plain[2 * i + 1]).abs() < 1e-6, "frame {i}");
+        }
+        assert!(frames.iter().any(|f| (f[0] - f[2]).abs() > 1e-4), "the deck colours the mix");
+    }
+
+    /// Render while stopped, so commands take effect without moving the tape.
+    fn settle_stopped(engine: &mut Engine) {
+        run(engine, 1);
+    }
+
+    #[test]
+    fn stopping_ends_the_mix_and_play_starts_another() {
+        let (mut handle, mut engine, mut recorder) = deck_engine();
+        handle.send(Command::SetDeck { machine: Machine::Quarter15, rec: true, clean: false });
+        for _ in 0..2 {
+            handle.send(Command::Play);
+            run(&mut engine, 100);
+            handle.send(Command::Stop);
+            run(&mut engine, 10);
+        }
+        // PLAY during the first tail cut it off; the second rings out to its end.
+        run(&mut engine, 30_000);
+        let items = mix_items(&mut recorder);
+        let starts = items.iter().filter(|i| matches!(i, MixItem::Start { .. })).count();
+        let stops = items.iter().filter(|i| matches!(i, MixItem::Stop)).count();
+        assert_eq!((starts, stops), (2, 2));
+        let first = items.iter().take_while(|i| !matches!(i, MixItem::Stop)).filter(|i| matches!(i, MixItem::Frame(_))).count();
+        assert_eq!(first, 110, "100 played and 10 of tail before PLAY cut it");
+    }
+
+    fn mix_pair(left: f32, right: f32, len: usize) -> [Arc<TrackAudio>; 2] {
+        [
+            Arc::new(TrackAudio { name: "L".into(), samples: vec![left; len] }),
+            Arc::new(TrackAudio { name: "R".into(), samples: vec![right; len] }),
+        ]
+    }
+
+    #[test]
+    fn a_mix_plays_on_the_output_and_stops_at_its_end() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::PlayMix(Some(mix_pair(0.25, -0.5, 100))));
+        let out = run(&mut engine, 150);
+        assert_eq!((out[0], out[1]), (0.25, -0.5));
+        assert_eq!((out[2 * 99], out[2 * 99 + 1]), (0.25, -0.5));
+        assert_eq!((out[2 * 120], out[2 * 120 + 1]), (0.0, 0.0), "silent after its end");
+        assert_eq!(handle.mix_position_seconds(), None, "and stopped");
+        let mut back = 0;
+        while handle.garbage.pop().is_ok() {
+            back += 1;
+        }
+        assert_eq!(back, 2, "both sides go back to the UI");
+    }
+
+    #[test]
+    fn a_playing_mix_reports_where_it_is() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::PlayMix(Some(mix_pair(0.1, 0.1, 48_000))));
+        run(&mut engine, 4_800);
+        let at = handle.mix_position_seconds().unwrap_or_default();
+        assert!((at - 0.1).abs() < 1e-6, "{at}");
+    }
+
+    #[test]
+    fn play_stops_a_mix_and_play_mix_stops_the_tape() {
+        let (mut handle, mut engine) = create(48_000);
+        handle.send(Command::SetTrack(0, audio(vec![0.1; 48_000])));
+        handle.send(Command::Play);
+        run(&mut engine, 100);
+        assert_eq!(handle.motion(), Motion::Playing);
+        handle.send(Command::PlayMix(Some(mix_pair(0.3, 0.3, 48_000))));
+        run(&mut engine, 100);
+        assert_eq!(handle.motion(), Motion::Stopped, "the tape stops");
+        assert!(handle.mix_position_seconds().is_some());
+        handle.send(Command::Play);
+        run(&mut engine, 100);
+        assert_eq!(handle.mix_position_seconds(), None, "PLAY stops the mix");
+        assert_eq!(handle.motion(), Motion::Playing);
+    }
+
+    #[test]
+    fn a_mix_rings_out_after_the_tape_stops() {
+        let (mut handle, mut engine, mut recorder) = deck_engine();
+        // Track 1 into the plate, loud, so the tail is long.
+        handle.send(Command::SetChannel(0, ChannelParams { lr: true, aux: 1.0, ..ChannelParams::default() }));
+        let mut mixer = MixerParams::default();
+        mixer.rtn[0] = RtnParams { gain: 1.0, pan: 0.0 };
+        handle.send(Command::SetMixer(mixer));
+        handle.send(Command::SetDeck { machine: Machine::Direct, rec: true, clean: false });
+        handle.send(Command::Play);
+        run(&mut engine, 20_000);
+        let mut items = mix_items(&mut recorder);
+        handle.send(Command::Stop);
+        // As the writer does: drain the ring while the tail runs.
+        for _ in 0..160 {
+            run(&mut engine, 4_800);
+            items.extend(mix_items(&mut recorder));
+        }
+        assert_eq!(items.last(), Some(&MixItem::Stop), "it ends by itself");
+        let frames = frames_of(&items);
+        let tail = &frames[20_000..];
+        assert!(tail.len() > 48_000, "a second of tail at least: {}", tail.len());
+        assert!(tail[..4_800].iter().any(|f| f[0].abs() > 1e-3), "the reverb rings on after the tape");
+        assert!(tail.len() <= 15 * 48_000 + 2, "never longer than 15 s");
     }
 }

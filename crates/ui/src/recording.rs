@@ -1,7 +1,7 @@
 //! Takes on their way to disk: a writer that turns the engine's recorded stream into temporary
 //! files, and the job that saves a finished take in the project.
 
-use daw388_engine::{RecItem, Recorder, TRACKS};
+use daw388_engine::{MixItem, RecItem, Recorder, TRACKS};
 use daw388_project::MonoClip;
 use daw388_project::peaks::Peaks;
 use std::fs::File;
@@ -24,6 +24,32 @@ pub struct TakeDone {
     pub speed: f64,
 }
 
+/// A finished mix from the mixdown deck: a stereo 32-bit float file, and its clean copy when
+/// one was kept.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MixDone {
+    pub path: PathBuf,
+    pub clean: Option<PathBuf>,
+    pub frames: usize,
+    pub rate: u32,
+}
+
+/// What the writer hands the app.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WriterEvent {
+    Take(TakeDone),
+    Mix(MixDone),
+}
+
+type StereoWriter = hound::WavWriter<BufWriter<File>>;
+
+struct OpenMix {
+    writer: StereoWriter,
+    path: PathBuf,
+    clean: Option<(StereoWriter, PathBuf)>,
+    frames: usize,
+}
+
 struct OpenTake {
     writer: hound::WavWriter<BufWriter<File>>,
     path: PathBuf,
@@ -37,12 +63,72 @@ pub struct TakeWriter {
     dir: PathBuf,
     rate: u32,
     open: Vec<Option<OpenTake>>,
+    mix: Option<OpenMix>,
     counter: u64,
 }
 
 impl TakeWriter {
     pub fn new(dir: PathBuf, rate: u32) -> Self {
-        Self { dir, rate, open: (0..TRACKS).map(|_| None).collect(), counter: 0 }
+        Self { dir, rate, open: (0..TRACKS).map(|_| None).collect(), mix: None, counter: 0 }
+    }
+
+    fn stereo(&self, path: &Path) -> Option<StereoWriter> {
+        let spec = hound::WavSpec { channels: 2, sample_rate: self.rate, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+        let opened = std::fs::create_dir_all(&self.dir).map_err(hound::Error::IoError).and_then(|()| hound::WavWriter::create(path, spec));
+        opened.map_err(|e| log::error!("cannot write mix {}: {e}", path.display())).ok()
+    }
+
+    fn start_mix(&mut self, clean: bool) {
+        self.counter += 1;
+        let name = format!("mix-{}-{}", std::process::id(), self.counter);
+        let path = self.dir.join(format!("{name}.wav"));
+        let Some(writer) = self.stereo(&path) else { return };
+        let clean = clean.then(|| self.dir.join(format!("{name}-clean.wav"))).and_then(|p| Some((self.stereo(&p)?, p)));
+        self.mix = Some(OpenMix { writer, path, clean, frames: 0 });
+    }
+
+    fn finish_mix(&mut self) -> Option<MixDone> {
+        let mix = self.mix.take()?;
+        let mut ok = mix.writer.finalize().map_err(|e| log::error!("cannot finish mix {}: {e}", mix.path.display())).is_ok();
+        let clean = mix.clean.and_then(|(writer, path)| match writer.finalize() {
+            Ok(()) => Some(path),
+            Err(e) => {
+                log::error!("cannot finish mix {}: {e}", path.display());
+                ok = false;
+                None
+            }
+        });
+        ok.then_some(MixDone { path: mix.path, clean, frames: mix.frames, rate: self.rate })
+    }
+
+    fn write_mix(&mut self, frame: [f32; 4]) {
+        let Some(mix) = &mut self.mix else { return };
+        let mut result = mix.writer.write_sample(frame[0]).and_then(|()| mix.writer.write_sample(frame[1]));
+        if let Some((clean, _)) = &mut mix.clean {
+            result = result.and_then(|()| clean.write_sample(frame[2])).and_then(|()| clean.write_sample(frame[3]));
+        }
+        if let Err(e) = result {
+            log::error!("mix {}: {e}", mix.path.display());
+        }
+        mix.frames += 1;
+    }
+
+    /// Write what the mixdown deck recorded so far; returns the mix that ended.
+    pub fn pump_mix(&mut self, recorder: &mut Recorder) -> Vec<MixDone> {
+        let mut items = Vec::new();
+        recorder.drain_mix(|item| items.push(item));
+        let mut done = Vec::new();
+        for item in items {
+            match item {
+                MixItem::Start { clean } => {
+                    done.extend(self.finish_mix());
+                    self.start_mix(clean);
+                }
+                MixItem::Frame(frame) => self.write_mix(frame),
+                MixItem::Stop => done.extend(self.finish_mix()),
+            }
+        }
+        done
     }
 
     fn start(&mut self, track: usize, start: f64, speed: f64) {
@@ -97,16 +183,23 @@ impl TakeWriter {
     pub fn finish_all(&mut self) -> Vec<TakeDone> {
         (0..TRACKS).filter_map(|track| self.finish(track)).collect()
     }
+
+    /// End an open mix (the engine went away mid-recording).
+    pub fn finish_open_mix(&mut self) -> Option<MixDone> {
+        self.finish_mix()
+    }
 }
 
 /// The writer loop for a background thread: runs until the engine is gone.
-pub fn run_writer(mut recorder: Recorder, dir: PathBuf, rate: u32, tx: Sender<TakeDone>, ctx: egui::Context) {
+pub fn run_writer(mut recorder: Recorder, dir: PathBuf, rate: u32, tx: Sender<WriterEvent>, ctx: egui::Context) {
     let mut writer = TakeWriter::new(dir, rate);
     loop {
         let gone = recorder.is_abandoned();
-        let mut done = writer.pump(&mut recorder);
+        let mut done: Vec<WriterEvent> = writer.pump(&mut recorder).into_iter().map(WriterEvent::Take).collect();
+        done.extend(writer.pump_mix(&mut recorder).into_iter().map(WriterEvent::Mix));
         if gone {
-            done.extend(writer.finish_all());
+            done.extend(writer.finish_all().into_iter().map(WriterEvent::Take));
+            done.extend(writer.finish_open_mix().map(WriterEvent::Mix));
         }
         if !done.is_empty() {
             for take in done {
@@ -166,6 +259,35 @@ pub fn store_take(take: &TakeDone, dest: &Path, engine_rate: u32) -> Result<Stor
 mod tests {
     use super::*;
     use daw388_engine::{ChannelParams, Command, Source, TrackAudio, input_ring};
+
+    #[test]
+    fn the_deck_writes_a_mix_and_its_clean_copy() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let (mut handle, mut engine) = daw388_engine::create(48_000);
+        let mut recorder = handle.take_recorder().unwrap_or_else(|| unreachable!());
+        handle.send(Command::SetTrack(0, Some(Arc::new(TrackAudio { name: "t".into(), samples: vec![0.2; 10_000] }))));
+        handle.send(Command::SetDeck { machine: daw388_engine::Machine::Direct, rec: true, clean: true });
+        handle.send(Command::Play);
+        let mut out = vec![0.0; 2 * 1_000];
+        engine.render(&mut out, 2);
+        handle.send(Command::Stop);
+        let mut writer = TakeWriter::new(dir.path().to_path_buf(), 48_000);
+        // Half a second of (silent) tail after the tape, drained as the writer thread does.
+        let mut done = Vec::new();
+        for _ in 0..10 {
+            engine.render(&mut vec![0.0; 2 * 4_800], 2);
+            done.extend(writer.pump_mix(&mut recorder));
+        }
+        assert_eq!(done.len(), 1);
+        let mix = &done[0];
+        assert!(mix.frames > 1_000 + 23_000, "{}", mix.frames);
+        let read = |path: &Path| -> Vec<f32> {
+            hound::WavReader::open(path).unwrap_or_else(|e| panic!("{e}")).into_samples::<f32>().map(|s| s.unwrap_or_default()).collect()
+        };
+        let played = |path: &Path| read(path)[..out.len()].to_vec();
+        assert_eq!(played(&mix.path), out, "the mix is what STEREO played");
+        assert_eq!(played(mix.clean.as_deref().unwrap_or_else(|| panic!("a clean copy"))), out, "on DIRECT the clean copy is the same");
+    }
 
     #[test]
     fn a_recorded_take_is_stored() {

@@ -4,6 +4,7 @@
 mod bounce;
 mod console;
 mod content;
+mod deck;
 mod drawer;
 mod edit;
 mod export;
@@ -34,11 +35,11 @@ use daw388_project::{
 use egui::{Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2};
 use export::{ExportJob, ExportTrack, Progress, StemKind};
 use history::History;
-use recording::{StoredTake, TakeDone};
+use recording::{StoredTake, TakeDone, WriterEvent};
 use skin::keys::{self, KeyCap, KeyColour, Symbol};
 pub(crate) use skin::palette;
 use sources::Sources;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 pub use daw388_project::AUDIO_EXTENSIONS;
@@ -423,8 +424,23 @@ pub struct DawApp {
     /// Seconds before the zero point that AUTO PUNCH starts from (0: none).
     pre_roll_seconds: f64,
     /// Finished takes from the writer, and the jobs that lay them over their tracks.
-    takes_tx: Sender<TakeDone>,
-    takes_rx: Receiver<TakeDone>,
+    written_tx: Sender<WriterEvent>,
+    written_rx: Receiver<WriterEvent>,
+    /// The mixdown deck: its machine and clean copy (saved), MIX REC (not saved), the mixes,
+    /// the audio of mixes played so far (at the rate it was loaded for), the mix that plays (its
+    /// file), whether that mix was just sent, a print in progress, the deck's window (compact
+    /// console) and a mix whose name is being edited.
+    deck: session::DeckSettings,
+    mix_rec: bool,
+    mixes: Vec<session::MixEntry>,
+    mix_audio: HashMap<String, (u32, [Arc<TrackAudio>; 2])>,
+    playing_mix: Option<String>,
+    mix_started: bool,
+    printing: Option<deck::Printing>,
+    show_deck: bool,
+    mix_rename: Option<(usize, String)>,
+    /// The deck's reels, as an angle.
+    deck_angle: f32,
     composed_tx: Sender<ComposeResult>,
     composed_rx: Receiver<ComposeResult>,
     /// Takes waiting for their track's previous take to be laid down.
@@ -465,6 +481,9 @@ fn trim_range(source: ChannelSource) -> std::ops::RangeInclusive<f32> {
 /// The sweep ranges of LOW, MID and HIGH, as on the 388.
 const EQ_RANGES: [std::ops::RangeInclusive<f32>; 3] = [50.0..=1000.0, 500.0..=5000.0, 2500.0..=15000.0];
 const EQ_NAMES: [&str; 3] = ["LOW", "MID", "HIGH"];
+/// The height the field under the transport needs to hold the mixdown deck.
+const DECK_PANEL_MIN: f32 = 200.0;
+
 /// How long OL stays lit after a peak, in seconds.
 const OL_HOLD: f64 = 0.5;
 
@@ -562,6 +581,8 @@ struct ExportChoices {
     rate: Option<u32>,
     /// The start of the file names; empty is the project's name.
     name: String,
+    /// The mixdown deck's machine for the stereo bounce.
+    through: daw388_engine::Machine,
 }
 
 impl ExportChoices {
@@ -586,6 +607,7 @@ impl Default for ExportChoices {
             depth: BitDepth::Int24,
             rate: None,
             name: String::new(),
+            through: daw388_engine::Machine::Direct,
         }
     }
 }
@@ -697,7 +719,7 @@ impl DawApp {
         let preferences = platform.preferences_path().map(|path| preferences::load(&path)).unwrap_or_default();
         let (loads_tx, loads_rx) = channel();
         let (renders_tx, renders_rx) = channel();
-        let (takes_tx, takes_rx) = channel();
+        let (written_tx, written_rx) = channel();
         let (composed_tx, composed_rx) = channel();
         let input_devices = platform.input_devices();
         let compact = preferences.compact_console;
@@ -771,8 +793,18 @@ impl DawApp {
             insert: false,
             auto_punch: false,
             pre_roll_seconds: 0.0,
-            takes_tx,
-            takes_rx,
+            written_tx,
+            written_rx,
+            deck: session::DeckSettings::default(),
+            mix_rec: false,
+            mixes: Vec::new(),
+            mix_audio: HashMap::new(),
+            playing_mix: None,
+            mix_started: false,
+            printing: None,
+            show_deck: false,
+            mix_rename: None,
+            deck_angle: 0.0,
             composed_tx,
             composed_rx,
             queued_takes: Default::default(),
@@ -839,10 +871,12 @@ impl DawApp {
         engine.locate_seconds(position);
         // The recorded audio leaves the engine through a writer of its own.
         if let Some(recorder) = engine.take_recorder() {
-            let (dir, rate, tx, ctx) = (self.platform.temp_dir(), engine.sample_rate(), self.takes_tx.clone(), self.ctx.clone());
+            let (dir, rate, tx, ctx) = (self.platform.temp_dir(), engine.sample_rate(), self.written_tx.clone(), self.ctx.clone());
             self.platform.spawn_service(Box::new(move || recording::run_writer(recorder, dir, rate, tx, ctx)));
         }
         self.engine = Some(engine);
+        self.playing_mix = None;
+        self.send_deck();
         if let Some(moved) = self.fit_inputs() {
             self.status = format!("{}; {moved}", self.status);
         }
@@ -1043,6 +1077,13 @@ impl DawApp {
         self.export.name.clear();
         self.export_dir = None;
         self.last_export_dir = None;
+        self.stop_mix();
+        self.mix_rec = false;
+        self.deck = session::DeckSettings::default();
+        self.mixes.clear();
+        self.mix_audio.clear();
+        self.mix_rename = None;
+        self.send_deck();
         self.export.rate = None;
         // A new project quietly takes the inputs the interface has.
         self.fit_inputs();
@@ -1145,6 +1186,9 @@ impl DawApp {
         editor.zoom = editor.zoom.map(|z| z.clamp(timeline::ZOOM_MIN, timeline::ZOOM_MAX));
         self.editor.settings = editor;
         self.export_dir = opened.file.export_dir.clone();
+        self.deck = opened.file.deck;
+        self.mixes = opened.file.mixes.clone();
+        self.send_deck();
         let moved = self.fit_inputs();
         self.send_mix();
         self.send_transport();
@@ -1287,6 +1331,8 @@ impl DawApp {
             tape: self.tape,
             editor: self.editor.settings,
             export_dir: self.export_dir.clone(),
+            deck: self.deck,
+            mixes: self.mixes.clone(),
         };
         match session::save(&dir, &settings, &tracks, backup) {
             Ok(saved) => {
@@ -1535,6 +1581,11 @@ impl DawApp {
 
     fn view_menu(&mut self, ui: &mut Ui) {
         ui.menu_button("View", |ui| {
+            if ui.button("Mixdown Deck...").on_hover_text("The second machine that records the STEREO MASTER").clicked() {
+                self.show_deck = true;
+                ui.close();
+            }
+            ui.separator();
             let mut compact = self.compact;
             let tip = "Leaves out EQ, AUX, the effects and the meter keys, so the console fits a low screen at a readable size. \
                        They keep working.";
@@ -1811,7 +1862,14 @@ impl DawApp {
 
     /// Pick up takes the writer finished and queue them for their tracks.
     fn poll_takes(&mut self) {
-        while let Ok(take) = self.takes_rx.try_recv() {
+        while let Ok(event) = self.written_rx.try_recv() {
+            let take = match event {
+                WriterEvent::Take(take) => take,
+                WriterEvent::Mix(mix) => {
+                    self.mix_done(mix);
+                    continue;
+                }
+            };
             if take.frames == 0 {
                 let _ = std::fs::remove_file(&take.path);
                 continue;
@@ -2483,6 +2541,7 @@ impl DawApp {
             project: choices.base(&self.project_name()),
             format: choices.format,
             depth: choices.depth,
+            through: choices.through,
         })
     }
 
@@ -2550,6 +2609,16 @@ impl DawApp {
                 toggle_cards(ui, &mut [("Stereo bounce", &mut choices.stereo), ("Separate tracks", &mut choices.stems)]);
                 ui.add_enabled_ui(choices.stereo && machine, |ui| {
                     check(ui, &mut choices.stereo_tape, "Stereo bounce with tape character");
+                });
+                ui.add_enabled_ui(choices.stereo, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Through:").size(11.5).color(paper::INK_SOFT));
+                        for machine in daw388_engine::Machine::ALL {
+                            if radio(ui, choices.through == machine, machine.label()).on_hover_text(deck::machine_tip(machine)).clicked() {
+                                choices.through = machine;
+                            }
+                        }
+                    });
                 });
                 ui.add_enabled_ui(choices.stems, |ui| {
                     section_title(ui, "Tracks");
@@ -3202,6 +3271,7 @@ impl DawApp {
         self.poll_composed();
         self.poll_renders();
         self.poll_export();
+        self.follow_mix();
         self.poll_update();
         self.sync_transport();
         self.update_meters(dt);
@@ -3261,6 +3331,7 @@ impl DawApp {
         self.help_window(&ctx);
         self.export_window(&ctx);
         self.bounce_window(&ctx);
+        self.deck_window(&ctx);
         self.unsaved_dialog(&ctx);
         self.confirm_simple_dialog(&ctx);
         // egui moves the focus to the next widget on Tab; after a switch nothing should keep it,
@@ -3331,7 +3402,10 @@ impl DawApp {
                             .inner_margin(Margin::same(14))
                             .stroke(Stroke::new(2.0, palette::EDGE))
                             .show(ui, |ui| {
+                                // A console stands still under the mouse wheel (the deck's list scrolls on
+                                // its own); a window too small for it still has its scroll bars.
                                 console = egui::ScrollArea::both()
+                                    .scroll_source(egui::scroll_area::ScrollSource { mouse_wheel: false, ..Default::default() })
                                     .show(ui, |ui| {
                                         let top = ui.cursor().min.y;
                                         let bridge = self.meter_bridge(ui);
@@ -3372,7 +3446,12 @@ impl DawApp {
                                                     egui::pos2(below.left(), below.bottom() + 12.0),
                                                     egui::pos2(below.right(), end),
                                                 );
-                                                keys::blank_plate(ui.painter(), field);
+                                                // The mixdown deck where there is room for it; View has it too.
+                                                if field.height() >= DECK_PANEL_MIN {
+                                                    self.deck_panel(ui, field);
+                                                } else {
+                                                    keys::blank_plate(ui.painter(), field);
+                                                }
                                             }
                                             if let Some(start) = self.return_plate.take() {
                                                 let field = egui::Rect::from_min_max(
@@ -4030,8 +4109,94 @@ mod tests {
     fn send_take(app: &DawApp, files: &Path, track: usize, start: f64, frames: usize, rate: u32) -> PathBuf {
         let take = files.join(format!("take-{track}-{start}.wav"));
         write_take(&take, 0.5, frames);
-        let _ = app.takes_tx.send(TakeDone { track, start, path: take.clone(), frames, rate, speed: 1.0 });
+        let _ = app.written_tx.send(WriterEvent::Take(TakeDone { track, start, path: take.clone(), frames, rate, speed: 1.0 }));
         take
+    }
+
+    /// A mix from the writer: a stereo float file (and its clean copy) of `frames` frames.
+    fn send_mix(app: &DawApp, files: &Path, name: &str, frames: usize, clean: bool) -> (PathBuf, Option<PathBuf>) {
+        let write = |path: &Path| {
+            let spec = hound::WavSpec { channels: 2, sample_rate: 48_000, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+            let mut writer = hound::WavWriter::create(path, spec).unwrap_or_else(|e| panic!("{e}"));
+            for i in 0..frames {
+                let v = (i as f32 * 0.01).sin() * 0.3;
+                writer.write_sample(v).unwrap_or_else(|e| panic!("{e}"));
+                writer.write_sample(-v).unwrap_or_else(|e| panic!("{e}"));
+            }
+            writer.finalize().unwrap_or_else(|e| panic!("{e}"));
+        };
+        let path = files.join(format!("{name}.wav"));
+        write(&path);
+        let clean = clean.then(|| files.join(format!("{name}-clean.wav")));
+        if let Some(clean) = &clean {
+            write(clean);
+        }
+        let done = recording::MixDone { path: path.clone(), clean: clean.clone(), frames, rate: 48_000 };
+        let _ = app.written_tx.send(WriterEvent::Mix(done));
+        (path, clean)
+    }
+
+    #[test]
+    fn mix_rec_needs_a_saved_project() {
+        let ctx = egui::Context::default();
+        let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        app.set_mix_rec(true);
+        assert!(!app.mix_rec);
+        assert!(app.status.contains("Save the project first"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_finished_mix_lands_in_the_project_and_its_removal_is_undone() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let dir = root.path().join("Demo");
+        let mut app = project_with_kick(files.path(), &dir);
+        app.set_mix_rec(true);
+        assert!(app.mix_rec);
+        app.set_deck_machine(daw388_engine::Machine::Cassette);
+        let (temp, clean) = send_mix(&app, files.path(), "mix-1", 48_000, true);
+        settle(&mut app);
+        assert_eq!(app.mixes.len(), 1);
+        let mix = app.mixes[0].clone();
+        assert_eq!((mix.name.as_str(), mix.file.as_str()), ("Mix 1", "mixes/Mix 1.wav"));
+        assert_eq!(mix.clean.as_deref(), Some("mixes/Mix 1 clean.wav"));
+        assert_eq!(mix.machine, session::MachineEntry::Cassette);
+        assert!((mix.seconds - 1.0).abs() < 1e-9);
+        assert!(dir.join(&mix.file).exists() && !temp.exists() && clean.is_some_and(|c| !c.exists()));
+        assert!(app.status.contains("Mix 1 recorded (0:01, CASSETTE)"), "{}", app.status);
+
+        send_mix(&app, files.path(), "mix-2", 24_000, false);
+        settle(&mut app);
+        assert_eq!(app.mixes.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["Mix 2", "Mix 1"], "the newest first");
+        app.remove_mix(1);
+        assert_eq!(app.mixes.len(), 1);
+        app.undo();
+        assert_eq!(app.mixes.len(), 2, "undo brings it back");
+        app.redo();
+        assert_eq!(app.mixes.len(), 1);
+
+        // Saved and opened again, with the deck's settings.
+        assert!(app.save(Backup::Always));
+        let ctx = egui::Context::default();
+        let mut again = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
+        again.open_project(&dir);
+        assert_eq!(again.mixes, app.mixes);
+        assert_eq!(again.deck.machine, session::MachineEntry::Cassette);
+        assert!(!again.mix_rec, "MIX REC is never saved");
+        // Mix 1 is off the list: its files are unused.
+        let unused = session::unused_audio(&dir);
+        assert!(unused.contains(&dir.join("mixes/Mix 1.wav")) && unused.contains(&dir.join("mixes/Mix 1 clean.wav")), "{unused:?}");
+    }
+
+    #[test]
+    fn a_too_short_mix_is_dropped() {
+        let files = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let root = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut app = project_with_kick(files.path(), &root.path().join("Demo"));
+        let (temp, _) = send_mix(&app, files.path(), "mix-1", 4_800, false);
+        settle(&mut app);
+        assert!(app.mixes.is_empty() && !temp.exists());
+        assert!(app.status.contains("too short"), "{}", app.status);
     }
 
     #[test]

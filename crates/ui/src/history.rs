@@ -2,6 +2,7 @@
 //! A step keeps the tracks it touched as they were; sources are shared, so a step is cheap.
 
 use daw388_project::regions::{Region, SourceId, Unresolved, fit_to_source};
+use daw388_project::session::MixEntry;
 
 /// How many steps can be undone.
 pub(crate) const STEPS: usize = 50;
@@ -19,6 +20,8 @@ pub(crate) struct TrackContent {
 pub(crate) struct Step {
     pub name: String,
     pub tracks: Vec<(usize, TrackContent)>,
+    /// The mixdown deck's list as it was, for a step that changed it.
+    pub mixes: Option<Vec<MixEntry>>,
     /// Steps of one group, such as files dropped together, are one step.
     group: Option<u64>,
 }
@@ -32,7 +35,16 @@ pub(crate) struct History {
 impl History {
     /// Remember a change; `tracks` holds the touched tracks as they were before it.
     pub fn push(&mut self, name: impl Into<String>, tracks: Vec<(usize, TrackContent)>) {
-        self.undo.push(Step { name: name.into(), tracks, group: None });
+        self.push_step(Step { name: name.into(), tracks, mixes: None, group: None });
+    }
+
+    /// Remember a change to the mixdown deck's list; `before` is the list as it was.
+    pub fn push_mixes(&mut self, name: impl Into<String>, before: Vec<MixEntry>) {
+        self.push_step(Step { name: name.into(), tracks: Vec::new(), mixes: Some(before), group: None });
+    }
+
+    fn push_step(&mut self, step: Step) {
+        self.undo.push(step);
         if self.undo.len() > STEPS {
             self.undo.remove(0);
         }
@@ -59,18 +71,20 @@ impl History {
 
     /// Take back the last change. `current` gives a track's content now, which redo will need.
     /// Returns the step's name and what to put on the tracks.
-    pub fn undo(&mut self, current: impl Fn(usize) -> TrackContent) -> Option<Step> {
+    pub fn undo(&mut self, current: impl Fn(usize) -> TrackContent, mixes: &[MixEntry]) -> Option<Step> {
         let step = self.undo.pop()?;
         let tracks = step.tracks.iter().map(|(t, _)| (*t, current(*t))).collect();
-        self.redo.push(Step { name: step.name.clone(), tracks, group: step.group });
+        let now = step.mixes.as_ref().map(|_| mixes.to_vec());
+        self.redo.push(Step { name: step.name.clone(), tracks, mixes: now, group: step.group });
         Some(step)
     }
 
     /// Do the last undone change again.
-    pub fn redo(&mut self, current: impl Fn(usize) -> TrackContent) -> Option<Step> {
+    pub fn redo(&mut self, current: impl Fn(usize) -> TrackContent, mixes: &[MixEntry]) -> Option<Step> {
         let step = self.redo.pop()?;
         let tracks = step.tracks.iter().map(|(t, _)| (*t, current(*t))).collect();
-        self.undo.push(Step { name: step.name.clone(), tracks, group: step.group });
+        let now = step.mixes.as_ref().map(|_| mixes.to_vec());
+        self.undo.push(Step { name: step.name.clone(), tracks, mixes: now, group: step.group });
         Some(step)
     }
 
@@ -147,9 +161,9 @@ mod tests {
         }
         assert_eq!(history.len(), STEPS);
         for _ in 0..STEPS {
-            assert!(history.undo(|_| TrackContent::default()).is_some());
+            assert!(history.undo(|_| TrackContent::default(), &[]).is_some());
         }
-        assert!(history.undo(|_| TrackContent::default()).is_none());
+        assert!(history.undo(|_| TrackContent::default(), &[]).is_none());
     }
 
     #[test]
@@ -158,10 +172,10 @@ mod tests {
         let mut history = History::default();
         history.push("Clear", vec![(0, a.clone())]);
         assert_eq!(history.undo_name(), Some("Clear"));
-        let step = history.undo(|_| b.clone()).unwrap_or_else(|| panic!("a step"));
+        let step = history.undo(|_| b.clone(), &[]).unwrap_or_else(|| panic!("a step"));
         assert_eq!(step.tracks, vec![(0, a.clone())]);
         assert_eq!((history.undo_name(), history.redo_name()), (None, Some("Clear")));
-        let step = history.redo(|_| a.clone()).unwrap_or_else(|| panic!("a step"));
+        let step = history.redo(|_| a.clone(), &[]).unwrap_or_else(|| panic!("a step"));
         assert_eq!(step.tracks, vec![(0, b)]);
         assert_eq!(history.undo_name(), Some("Clear"));
     }
@@ -170,7 +184,7 @@ mod tests {
     fn a_new_step_drops_redo() {
         let mut history = History::default();
         history.push("Clear", vec![(0, TrackContent::default())]);
-        let _ = history.undo(|_| TrackContent::default());
+        let _ = history.undo(|_| TrackContent::default(), &[]);
         history.push("Import", vec![(0, TrackContent::default())]);
         assert_eq!(history.redo_name(), None);
     }
@@ -184,8 +198,8 @@ mod tests {
         assert_eq!(history.len(), 1);
         history.push_grouped("Import", 8, vec![(2, b.clone())]);
         assert_eq!(history.len(), 2);
-        let _ = history.undo(|_| TrackContent::default());
-        let step = history.undo(|_| TrackContent::default()).unwrap_or_else(|| panic!("a step"));
+        let _ = history.undo(|_| TrackContent::default(), &[]);
+        let step = history.undo(|_| TrackContent::default(), &[]).unwrap_or_else(|| panic!("a step"));
         assert_eq!(step.tracks, vec![(0, a), (1, b)]);
     }
 
@@ -202,7 +216,7 @@ mod tests {
         let waiting = TrackContent { unresolved: Some(Unresolved { source: 4, name: "Kick".into() }), ..TrackContent::default() };
         history.push("Load", vec![(0, waiting)]);
         history.resolve(4, 12.5);
-        let step = history.undo(|_| TrackContent::default()).unwrap_or_else(|| panic!("a step"));
+        let step = history.undo(|_| TrackContent::default(), &[]).unwrap_or_else(|| panic!("a step"));
         let resolved = &step.tracks[0].1;
         assert!(resolved.unresolved.is_none());
         assert_eq!(resolved.regions.len(), 1);

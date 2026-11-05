@@ -14,6 +14,8 @@ use std::time::{Duration, SystemTime};
 
 pub const PROJECT_FILE: &str = "project.json";
 pub const AUDIO_DIR: &str = "audio";
+/// Where the mixdown deck keeps its mixes, next to `audio/`.
+pub const MIXES_DIR: &str = "mixes";
 pub const BACKUP_DIR: &str = "backups";
 /// Number of backups kept; older ones are removed.
 pub const MAX_BACKUPS: usize = 10;
@@ -50,6 +52,42 @@ pub struct ProjectFile {
     pub export_dir: Option<PathBuf>,
     #[serde(default)]
     pub tracks: Vec<TrackEntry>,
+    #[serde(default)]
+    pub deck: DeckSettings,
+    /// The mixdown deck's mixes, the newest first.
+    #[serde(default)]
+    pub mixes: Vec<MixEntry>,
+}
+
+/// The machine of the mixdown deck.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineEntry {
+    #[default]
+    Direct,
+    Quarter15,
+    Cassette,
+}
+
+/// The mixdown deck's settings (MIX REC itself is never saved).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeckSettings {
+    pub machine: MachineEntry,
+    pub keep_clean: bool,
+}
+
+/// One mix of the mixdown deck: a stereo file in `mixes/`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MixEntry {
+    pub name: String,
+    /// Relative to the project folder, such as "mixes/Mix 3.wav".
+    pub file: String,
+    /// The mix before the deck, when it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clean: Option<String>,
+    pub machine: MachineEntry,
+    pub seconds: f64,
 }
 
 /// The drawer with the tracks, saved with the project (optional in format 3; missing: closed,
@@ -484,6 +522,8 @@ pub struct ProjectSettings {
     pub editor: EditorSettings,
     /// Where exports go, when chosen in the Export window.
     pub export_dir: Option<PathBuf>,
+    pub deck: DeckSettings,
+    pub mixes: Vec<MixEntry>,
 }
 
 /// What the UI hands over for one track when saving.
@@ -617,20 +657,22 @@ pub fn open(path: &Path) -> Result<OpenedProject, ProjectError> {
     Ok(OpenedProject { dir, file: project, warnings })
 }
 
-/// The files in the project's `audio/` that the saved project does not use: takes that were
-/// undone or recorded over, and recordings of a session that was not saved. Empty when the
-/// project cannot be read or a region had to be left out, so nothing is ever wrongly called unused.
+/// The files in the project's `audio/` and `mixes/` that the saved project does not use: takes
+/// that were undone or recorded over, mixes taken off the deck's list, and recordings of a
+/// session that was not saved. Empty when the project cannot be read or a region had to be left
+/// out, so nothing is ever wrongly called unused.
 pub fn unused_audio(dir: &Path) -> Vec<PathBuf> {
     let Ok(opened) = open(dir) else { return Vec::new() };
     if !opened.warnings.is_empty() {
         return Vec::new();
     }
-    let used: std::collections::HashSet<PathBuf> =
-        opened.file.tracks.iter().flat_map(|t| &t.regions).filter_map(|r| fs::canonicalize(opened.region_path(r)).ok()).collect();
-    let Ok(entries) = fs::read_dir(dir.join(AUDIO_DIR)) else { return Vec::new() };
-    let mut unused: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
+    let regions = opened.file.tracks.iter().flat_map(|t| &t.regions).map(|r| opened.region_path(r));
+    let mixes = opened.file.mixes.iter().flat_map(|m| std::iter::once(&m.file).chain(&m.clean)).map(|f| dir.join(f));
+    let used: std::collections::HashSet<PathBuf> = regions.chain(mixes).filter_map(|p| fs::canonicalize(p).ok()).collect();
+    let mut unused: Vec<PathBuf> = [AUDIO_DIR, MIXES_DIR]
+        .into_iter()
+        .filter_map(|sub| fs::read_dir(dir.join(sub)).ok())
+        .flat_map(|entries| entries.flatten().map(|e| e.path()))
         .filter(|p| p.is_file() && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
         .filter(|p| fs::canonicalize(p).is_ok_and(|c| !used.contains(&c)))
         .collect();
@@ -743,6 +785,8 @@ pub fn save(dir: &Path, settings: &ProjectSettings, tracks: &[TrackToSave], back
         editor: settings.editor,
         export_dir: settings.export_dir.clone(),
         tracks: entries,
+        deck: settings.deck,
+        mixes: settings.mixes.clone(),
     };
     let path = dir.join(PROJECT_FILE);
     let backup = if path.exists() { make_backup(dir, &path, backup)? } else { None };
@@ -975,6 +1019,23 @@ mod tests {
                     },
                     links: [false, true, false, false],
                 },
+                deck: DeckSettings { machine: MachineEntry::Cassette, keep_clean: true },
+                mixes: vec![
+                    MixEntry {
+                        name: "Mix 2".into(),
+                        file: "mixes/Mix 2.wav".into(),
+                        clean: Some("mixes/Mix 2 clean.wav".into()),
+                        machine: MachineEntry::Cassette,
+                        seconds: 3.5,
+                    },
+                    MixEntry {
+                        name: "Eerste".into(),
+                        file: "mixes/Mix 1.wav".into(),
+                        clean: None,
+                        machine: MachineEntry::Quarter15,
+                        seconds: 200.0,
+                    },
+                ],
             },
             &tracks([Some(kick.clone()), None]),
             Backup::Always,
@@ -987,6 +1048,10 @@ mod tests {
 
         let opened = open(&dir).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(opened.file.master_db, -1.5);
+        assert_eq!(opened.file.deck, DeckSettings { machine: MachineEntry::Cassette, keep_clean: true });
+        assert_eq!(opened.file.mixes.len(), 2);
+        assert_eq!(opened.file.mixes[0].clean.as_deref(), Some("mixes/Mix 2 clean.wav"));
+        assert_eq!(opened.file.mixes[1].name, "Eerste");
         assert!(opened.file.meter_post);
         let transport = opened.file.transport;
         assert_eq!(transport.zero_seconds, 1.25);
@@ -1105,6 +1170,22 @@ mod tests {
         write_wav(&left);
         fs::write(dir.join(AUDIO_DIR).join(".DS_Store"), "").unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(unused_audio(&dir), vec![left.clone()], "a take nothing uses; hidden files stay out of it");
+        // A mix on the list is used; one taken off it is not.
+        let mixes = dir.join(MIXES_DIR);
+        fs::create_dir_all(&mixes).unwrap_or_else(|e| panic!("{e}"));
+        write_wav(&mixes.join("Mix 1.wav"));
+        write_wav(&mixes.join("Mix 2.wav"));
+        let mut file: ProjectFile =
+            serde_json::from_str(&fs::read_to_string(dir.join(PROJECT_FILE)).unwrap_or_default()).unwrap_or_else(|e| panic!("{e}"));
+        file.mixes = vec![MixEntry {
+            name: "Mix 1".into(),
+            file: "mixes/Mix 1.wav".into(),
+            clean: None,
+            machine: MachineEntry::Direct,
+            seconds: 1.0,
+        }];
+        fs::write(dir.join(PROJECT_FILE), serde_json::to_string(&file).unwrap_or_default()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(unused_audio(&dir), vec![left.clone(), mixes.join("Mix 2.wav")]);
         // A project that cannot be read calls nothing unused.
         fs::write(dir.join(PROJECT_FILE), "{ kapot").unwrap_or_else(|e| panic!("{e}"));
         assert!(unused_audio(&dir).is_empty());
@@ -1230,6 +1311,8 @@ mod tests {
         assert_eq!(one.channel, ChannelEntry::simple(ChannelSource::Line));
         assert_eq!(two.channel, ChannelEntry::simple(ChannelSource::Line));
         assert_eq!(two.input, Some(2));
+        assert_eq!(file.deck, DeckSettings::default(), "older projects: no deck settings");
+        assert!(file.mixes.is_empty(), "and no mixes");
     }
 
     #[test]

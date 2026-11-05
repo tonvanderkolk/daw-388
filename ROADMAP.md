@@ -38,6 +38,8 @@
 - [x] Bounce Setup: de routing voor pingpong in één keer (0.35.0)
 - [x] TO PGM: galm en echo op de band via de bussen (0.35.0)
 - [x] OL op de STEREO MASTER en de piek van een export (0.35.0)
+- [x] Mixdown deck: de eindmix live opnemen op 1/4", cassette of digitaal (0.36.0)
+- [ ] Knippen en plakken op de mastertape: de beste stukken van mixen aan elkaar, stiltes tussen nummers
 
 ## Fase 5: Bewerken
 - [x] Niet-destructieve regio's: verschuiven, knippen, kopiëren, plakken, splitsen (0.17.0 en 0.18.0)

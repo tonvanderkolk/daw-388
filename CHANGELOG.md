@@ -4,6 +4,19 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-11-05
+
+### Toegevoegd
+- Mixdown deck: een tweede machine onder het transport (in de compacte console View, Mixdown Deck...) die de STEREO MASTER live opneemt, met alle faderbewegingen, MUTE en galm en echo erin, zonder een spoor te kosten. Zoals vroeger de mix van de 388 naar een tweesporenrecorder ging.
+- Drie machines: 1/4" 15 IPS (warm en vrij transparant), CASSETTE (meer ruis, minder hoog, meer wow en flutter) en DIRECT (schoon). Met MIX REC aan hoor je de mix door het deck, dus zoals hij erop komt; het deck neemt op zolang de band speelt en elke keer van PLAY tot STOP wordt een mix. Na STOP of het einde van het nummer loopt het deck door tot galm en echo zijn uitgeklonken (hooguit 15 seconden); PLAY of spoelen breekt dat af. De metronoom komt er nooit op. De ruis is bescheiden: bij 1/4" ongeveer die van de 388-band op 20%, bij CASSETTE iets meer.
+- CLEAN bewaart naast elke mix een schone kopie; zo'n mix kan later met PRINT door een andere machine.
+- De lijst met mixen (Mix 1, Mix 2 en verder, de nieuwste bovenaan) met afspelen, een andere naam (dubbelklik), SAVE als bestand in de exportmap met het formaat van het exportvenster en de piek erbij, PRINT en weghalen. Weghalen is één undo-stap; de bestanden gaan bij het verlaten naar de prullenbak.
+- Het exportvenster heeft bij de stereomix de keuze Through: dezelfde machines, standaard DIRECT.
+
+### Gewijzigd
+- Het muiswiel scrolt de console niet meer, alleen de lijst met mixen; een te klein venster houdt zijn schuifbalken.
+- De handleiding legt uit dat Bounce Setup voor pingpongen is en het mixdown deck voor de eindmix.
+
 ## [0.35.0] - 2026-11-04
 
 ### Toegevoegd

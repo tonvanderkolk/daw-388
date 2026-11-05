@@ -5,7 +5,10 @@
 //!
 //! Nothing here allocates after [`TapeMachine::new`].
 
+mod deck;
 mod filters;
+
+pub use deck::{Machine, MixdownDeck};
 
 use filters::{Biquad, Emphasis};
 use std::f32::consts::TAU;

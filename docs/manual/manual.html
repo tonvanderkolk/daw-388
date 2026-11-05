@@ -69,6 +69,7 @@
     <li><a href="#tape">Tape settings</a></li>
     <li><a href="#metronome">Metronome</a></li>
     <li><a href="#export">Export</a></li>
+    <li><a href="#deck">The mixdown deck</a></li>
     <li><a href="#settings">Settings</a></li>
     <li><a href="#keys">Keyboard shortcuts</a></li>
     <li><a href="#trouble">When something does not work</a></li>
@@ -117,7 +118,7 @@
     <li><b>Input</b>: the device you record from. As long as this is "None", nothing can be recorded and no microphone permission is asked.</li>
     <li><b>Buffer</b>: smaller is less delay, larger is safer for a slow computer. 128 or 256 samples is a good start.</li>
   </ol>
-  <p>These are settings of the app, not of a project: they stay the same whichever song you open. All settings are described in <a href="#settings">chapter 17</a>.</p>
+  <p>These are settings of the app, not of a project: they stay the same whichever song you open. All settings are described in <a href="#settings">chapter 18</a>.</p>
   <div class="tip"><p>If the device you chose is not connected, DAW 388 plays through the default device and says so at the top right. As soon as your device returns, it switches back by itself.</p></div>
 </section>
 
@@ -325,6 +326,7 @@
   <p>Above the buttons one line says what Apply will set up, for example "Tracks 1 to 6 onto 7 and 8 (stereo)".</p>
   <p><b>Apply</b> switches the console to 388 if needed and sets the recipe: the sources on RMX with only the target's ASSIGN key, L-R, DIRECT and REC off; for one target track their PAN goes to its side (odd tracks left, even tracks right), for a pair PAN stays the place between left and right. The target is armed and heard in MONITOR (a pair left and right). Every channel comes off L-R, so you hear everything through MONITOR; the other tracks stay as they are otherwise. Then press REC and PLAY yourself and mix live with the faders while the tape runs.</p>
   <p>The window warns when the target already has audio (recording replaces it where you record), when a PGM MASTER is closed and when both effect returns are closed. A mono target on a linked pair unlinks that pair.</p>
+  <p>Bounce Setup is for ping-ponging: combining tracks to free them up for new recordings. The final mix goes onto the <a href="#deck">mixdown deck</a>, which needs no track.</p>
 </section>
 
 <section id="tracks">
@@ -395,11 +397,41 @@
   <h3>Name and folder</h3>
   <p>The files are called <b>Name_mix</b> and <b>Name_01_Trackname</b>. Name is the project name, unless you type another in the Name field. They go into a folder <b>Song name export</b> next to the project; <b>Choose folder...</b> picks another one, which the project remembers. After the export, <b>Show in Finder</b> (on Windows: Show in Explorer) opens the folder.</p>
   <p>The window then shows the <b>peak</b> of the export in dBFS. When it is over 0 dBFS, it says in which file, and how many dB to turn the STEREO MASTER down before you export again. A 16-bit or 24-bit file is clipped there; a 32-bit float file keeps the peak, but most players clip it.</p>
+  <p><b>Through</b> sends the stereo bounce through one of the machines of the <a href="#deck">mixdown deck</a>: <b>1/4" 15 IPS</b>, <b>CASSETTE</b> or <b>DIRECT</b> (clean, the default). Separate tracks never go through it.</p>
   <p>The export runs in the background and sounds exactly like the app. Reverb and echo ring out at the end.</p>
 </section>
 
+<section id="deck">
+  <h2>17. The mixdown deck</h2>
+  <p>On the 388 the final mix did not go back onto its own tape: all eight tracks were needed to play it. The STEREO output went to a second machine, a 1/4" two-track or a cassette deck. The <b>mixdown deck</b> is that second machine. It records the STEREO MASTER live, with every fader ride, MUTE and turn of the reverb and echo, and it costs no track. (Bounce Setup in <a href="#classic">chapter 12</a> is for ping-ponging: combining tracks onto others to free them up.)</p>
+  <p>The deck sits under the transport. When the console is too low for it (the compact console), <b>View, Mixdown Deck...</b> opens it as a window.</p>
+  <h3>The machine</h3>
+  <ul>
+    <li><b>1/4" 15 IPS</b>: a two-track at 15 inches per second. Warm and fairly transparent, a little hiss and soft saturation.</li>
+    <li><b>CASSETTE</b>: more hiss (with noise reduction on the highs), fewer highs, more wow and flutter, and it saturates sooner. The demo sound.</li>
+    <li><b>DIRECT</b>: straight to digital, clean.</li>
+  </ul>
+  <h3>Recording a mix</h3>
+  <ol>
+    <li>Save the project: the mixes go into it.</li>
+    <li>Choose the machine and press <b class="k">MIX REC</b>. Its lamp lights dimly: the deck is ready. From now on LISTEN STEREO plays the mix through the deck, so you hear what will be on it.</li>
+    <li>Press PLAY and mix. The lamp lights fully while the deck records.</li>
+    <li>After STOP, or when the song ends, the deck keeps running until the reverb and echo have died away (at most 15 seconds), so their tail is on the mix. PLAY or a winding key ends it at once. The mix then appears at the top of the list as <b>Mix 1</b>, <b>Mix 2</b> and so on, with its length and machine. A mix shorter than half a second is not kept.</li>
+  </ol>
+  <p>The deck records only while the tape plays: not during a count-in or while winding. A REPEAT pass stays one mix. The metronome is never on it. Press MIX REC again to switch the deck off.</p>
+  <p><b class="k">CLEAN</b> keeps a clean copy of each mix as well, the mix before the deck. It takes twice the space, but such a mix can be printed through another machine later.</p>
+  <h3>The list</h3>
+  <ul>
+    <li><b>Play</b> (the small key) plays the mix on the main output; the tape stops. PLAY, REC and winding stop the mix again.</li>
+    <li><b>Double-click the name</b> to rename it.</li>
+    <li><b>SAVE</b> saves it as a file in the export folder, in the format, bit depth and sample rate of the Export window, as <b>Name_Mix 3</b>. The status line shows its peak.</li>
+    <li><b>PRINT</b> (only with a clean copy) sends the clean copy through another machine: a new mix, such as "Mix 3 CASSETTE".</li>
+    <li><b>&times;</b> takes the mix off the list. Cmd+Z brings it back. Its files go to the trash when you leave the project.</li>
+  </ul>
+</section>
+
 <section id="settings">
-  <h2>17. Settings</h2>
+  <h2>18. Settings</h2>
   <p>File, Settings... (<kbd>Cmd+,</kbd>). These belong to the app, except the REPEAT mode and the metronome, which are saved with the project.</p>
   <table>
     <tr><th>Setting</th><th>What it does</th></tr>
@@ -419,7 +451,7 @@
 </section>
 
 <section id="keys">
-  <h2>18. Keyboard shortcuts</h2>
+  <h2>19. Keyboard shortcuts</h2>
   <p>On Windows use <kbd>Ctrl</kbd> where the Mac uses <kbd>Cmd</kbd>.</p>
   <table>
     <tr><th>Key</th><th>Action</th></tr>
@@ -449,7 +481,7 @@
 </section>
 
 <section id="trouble">
-  <h2>19. When something does not work</h2>
+  <h2>20. When something does not work</h2>
   <h3>I hear nothing at all</h3>
   <ul>
     <li>Look at the status line at the top right: is the device you chose connected? Check Output in Settings.</li>
@@ -476,9 +508,9 @@
 </section>
 
 <section id="files">
-  <h2>20. Files and folders</h2>
+  <h2>21. Files and folders</h2>
   <ul>
-    <li><b>A project</b>: <b>Song name.daw388</b> with <b>project.json</b> (the song), <b>audio</b> (the recordings and copied files) and <b>backups</b> (the last ten versions of project.json). On a Mac, right-click it and choose Show Package Contents to look inside.</li>
+    <li><b>A project</b>: <b>Song name.daw388</b> with <b>project.json</b> (the song), <b>audio</b> (the recordings and copied files), <b>mixes</b> (the mixdown deck's mixes) and <b>backups</b> (the last ten versions of project.json). On a Mac, right-click it and choose Show Package Contents to look inside.</li>
     <li><b>Exports</b>: the folder <b>Song name export</b> next to the project, unless you chose another.</li>
     <li><b>The app settings</b>: settings.json in <b>~/Library/Application Support/DAW 388</b> (Mac) or <b>%APPDATA%\DAW 388</b> (Windows). Delete it to start with the default settings.</li>
   </ul>
