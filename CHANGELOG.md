@@ -14,6 +14,7 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 - De console groeit in stappen van 2% in plaats van 5%, zodat hij het scherm beter vult. Na een zoomwijziging wacht de app twee beelden voordat hij opnieuw meet, zodat het beeld bij het wisselen naar de compacte console niet meer even schudt.
 - De vensters op papier (Tape settings, Export, Bounce Setup en de andere) zijn zo hoog als hun inhoud; eerst hielden ze een vaste hoogte en moest je scrollen.
 - SAVE, PRINT en × in de mixlijst van het mixdown deck zijn gelijke donkere toetsen die niet meer verschuiven onder de muis; PRINT was licht.
+- De schermafbeelding in de README toont de tapestrook.
 
 ## [0.37.1] - 2026-11-11
 
