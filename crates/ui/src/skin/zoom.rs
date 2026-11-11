@@ -4,8 +4,9 @@ use egui::Vec2;
 
 pub const MIN: f32 = 0.5;
 pub const MAX: f32 = 1.25;
-/// The zoom moves in steps, so dragging the window edge does not make the text shimmer.
-const STEP: f32 = 0.05;
+/// The zoom moves in steps, so dragging the window edge does not make the text shimmer. Small
+/// ones, so the console comes close to filling a screen.
+const STEP: f32 = 0.02;
 
 /// The zoom for a window of `window` points at zoom 1 that has to show `needed` points: the
 /// largest step at which it all fits.
@@ -41,22 +42,22 @@ mod tests {
     fn fits_what_is_needed_in_the_window() {
         let console = Vec2::new(1800.0, 1360.0);
         assert!(close(zoom_for(Vec2::new(1800.0, 1360.0), console), 1.0));
-        assert!(close(zoom_for(Vec2::new(1680.0, 950.0), console), 0.65), "a step down, so it fits");
+        assert!(close(zoom_for(Vec2::new(1680.0, 950.0), console), 0.68), "a step down, so it fits");
         assert!(close(zoom_for(Vec2::new(2880.0, 1800.0), console), 1.25));
         assert!(close(zoom_for(Vec2::new(400.0, 300.0), console), 0.5), "scrolls below the minimum");
     }
 
     #[test]
     fn the_zoom_holds_at_a_step() {
-        // Measured at 0.90 and at 0.85: the fit lands on either side of 0.90 in turn.
+        // Measured at 0.90 the fit falls just under it, measured at 0.88 just over 0.90.
         let window = Vec2::new(1500.0, 779.0);
-        let (at_90, at_85) = (Vec2::new(1668.6, 859.4), Vec2::new(1666.1, 859.1));
-        assert!(close(zoom_for(window, at_90), 0.85) && close(zoom_for(window, at_85), 0.9), "zoom_for alone flips");
+        let (at_90, at_88) = (Vec2::new(1668.6, 779.0 / 0.899), Vec2::new(1666.1, 779.0 / 0.901));
+        assert!(close(zoom_for(window, at_90), 0.88) && close(zoom_for(window, at_88), 0.9), "zoom_for alone flips");
         assert!(close(next_zoom(0.9, window, at_90), 0.9));
-        assert!(close(next_zoom(0.85, window, at_85), 0.85));
+        assert!(close(next_zoom(0.88, window, at_88), 0.88));
         // A real change of the window still moves it.
-        assert!(close(next_zoom(0.9, Vec2::new(1400.0, 779.0), at_90), 0.8));
-        assert!(close(next_zoom(0.85, Vec2::new(1700.0, 900.0), at_85), 1.0));
+        assert!(close(next_zoom(0.9, Vec2::new(1500.0, 779.0 * 0.8 / 0.9), at_90), 0.8));
+        assert!(close(next_zoom(0.88, Vec2::new(1700.0, 900.0), at_88), 1.02));
     }
 
     #[test]
@@ -64,6 +65,6 @@ mod tests {
         let window = Vec2::new(1800.0, 1360.0);
         let closed = zoom_for(window, Vec2::new(1800.0, 1360.0));
         let open = zoom_for(window, Vec2::new(1800.0, 1360.0 + 400.0));
-        assert!(open < closed && close(open, 0.75), "{open}");
+        assert!(open < closed && close(open, 0.76), "{open}");
     }
 }

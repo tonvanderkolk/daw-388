@@ -405,8 +405,27 @@ fn small_reel(painter: &egui::Painter, centre: egui::Pos2, radius: f32, angle: f
 
 /// A small flat text key for the rows of the list.
 fn row_key(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    let text = egui::RichText::new(label).size(9.5).color(palette::TEXT);
-    ui.add(egui::Button::new(text).small().fill(palette::PANEL_DARK).stroke(egui::Stroke::new(1.0, palette::EDGE)))
+    // Drawn by hand at a fixed size, so it never moves under the mouse; it only lightens.
+    let font = egui::FontId::proportional(9.5);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font, palette::TEXT);
+    let size = egui::vec2(galley.size().x + 16.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let enabled = ui.is_enabled();
+    let fill = if !enabled {
+        palette::PANEL_DARK
+    } else if response.is_pointer_button_down_on() {
+        palette::EDGE
+    } else if response.hovered() {
+        palette::PANEL
+    } else {
+        palette::PANEL_DARK
+    };
+    let edge = if enabled && response.hovered() { palette::KEY_BEIGE_SHADE } else { palette::EDGE };
+    let painter = ui.painter();
+    painter.rect(rect, egui::CornerRadius::same(4), fill, egui::Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+    let colour = if enabled { palette::TEXT } else { palette::TEXT_DIM };
+    painter.galley_with_override_text_color(rect.center() - galley.size() / 2.0, galley, colour);
+    if enabled { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response }
 }
 
 impl DawApp {
@@ -577,16 +596,16 @@ impl DawApp {
                             } else {
                                 "Only a mix with a clean copy (CLEAN) can be printed again"
                             };
-                            ui.menu_button(RichText::new("PRINT").size(9.5).color(palette::TEXT), |ui| {
+                            // The same key as SAVE and ×, with the other machines in a menu under it.
+                            let print = row_key(ui, "PRINT").on_hover_text(tip);
+                            egui::Popup::menu(&print).show(|ui| {
                                 for option in Machine::ALL.into_iter().filter(|m| *m != machine_of(mix.machine)) {
                                     if ui.button(option.label()).on_hover_text(machine_tip(option)).clicked() {
                                         actions.push(RowAction::Print(index, option));
                                         ui.close();
                                     }
                                 }
-                            })
-                            .response
-                            .on_hover_text(tip);
+                            });
                         });
                         if row_key(ui, "SAVE").on_hover_text("Save as a file in the export folder, in the Export window's format").clicked()
                         {

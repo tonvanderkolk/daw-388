@@ -4,6 +4,17 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-11-11
+
+### Toegevoegd
+- Een strook schilderstape onder de acht kanalen, zoals engineers die op een 388 plakten: de spoornamen staan erop in stifthandschrift (Permanent Marker, Apache License 2.0). Eén lange strook, een fractie scheef en aan beide uiteinden afgescheurd. Lange namen worden kleiner geschreven of ingekort; een spoor zonder naam houdt lege tape. Hernoemen gaat met een dubbelklik op de tape.
+
+### Gewijzigd
+- De console staat in het midden van het venster en eindigt vlak onder de tapestrook; de scheidingslijnen lopen niet meer door tot de onderkant van het venster.
+- De console groeit in stappen van 2% in plaats van 5%, zodat hij het scherm beter vult. Na een zoomwijziging wacht de app twee beelden voordat hij opnieuw meet, zodat het beeld bij het wisselen naar de compacte console niet meer even schudt.
+- De vensters op papier (Tape settings, Export, Bounce Setup en de andere) zijn zo hoog als hun inhoud; eerst hielden ze een vaste hoogte en moest je scrollen.
+- SAVE, PRINT en × in de mixlijst van het mixdown deck zijn gelijke donkere toetsen die niet meer verschuiven onder de muis; PRINT was licht.
+
 ## [0.37.1] - 2026-11-11
 
 ### Gewijzigd

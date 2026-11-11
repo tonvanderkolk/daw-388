@@ -41,8 +41,9 @@
 - [x] Mixdown deck: de eindmix live opnemen op 1/4", cassette of digitaal (0.36.0)
 - [x] MIDI learn met pickup en terugmelding: faders, PAN, MUTE, SOLO, STEREO MASTER en transport (0.37.0)
 - [x] Menu's op 13 punt, de maat van macOS, los van de zoom; de vensters iets groter (0.37.1)
+- [x] Schilderstape met de spoornamen in stifthandschrift, de console gecentreerd en zoomstappen van 2% (0.38.0)
 - [ ] Grotere labels op de console zelf: lastig op het vaste raster, eventueel als keuze in View
-- [ ] Mackie Control (X-Touch One, BCF2000 in MCU-stand), zonder leren (0.38.0)
+- [ ] Mackie Control (X-Touch One, BCF2000 in MCU-stand), zonder leren
 - [ ] MIDI learn voor AUX, EFF, EQ, TRIM, de effecten en de MONITOR-sectie
 - [ ] Knippen en plakken op de mastertape: de beste stukken van mixen aan elkaar, stiltes tussen nummers
 

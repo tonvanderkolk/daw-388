@@ -105,7 +105,8 @@ pub fn paper_window(ctx: &egui::Context, id: &str, title: &str, note: &str, open
     egui::Window::new(title)
         .id(Id::unique(id))
         .title_bar(false)
-        .resizable(false)
+        // As tall as its content, up to the window; egui otherwise keeps a fixed default height.
+        .auto_sized()
         .collapsible(false)
         .frame(sheet_frame())
         .show(ctx, |ui| sheet(ui, title, note, Some(&mut keep), width, false, add));

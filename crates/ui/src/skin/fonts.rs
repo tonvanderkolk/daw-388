@@ -1,4 +1,6 @@
-//! IBM Plex Sans Condensed and IBM Plex Mono (SIL Open Font License, see `assets/fonts/OFL.txt`).
+//! IBM Plex Sans Condensed and IBM Plex Mono (SIL Open Font License, see `assets/fonts/OFL.txt`),
+//! and Permanent Marker for the names on the tape strip (Apache License 2.0, see
+//! `assets/fonts/PermanentMarker-LICENSE.txt`).
 
 use egui::{FontData, FontDefinitions, FontFamily, RichText};
 use std::sync::Arc;
@@ -6,6 +8,7 @@ use std::sync::Arc;
 const SANS: &str = "plex-sans";
 const BOLD: &str = "plex-bold";
 const MONO: &str = "plex-mono";
+const MARKER: &str = "marker";
 
 /// egui's fonts with Plex in front: Proportional is Plex Sans Condensed, Monospace Plex Mono
 /// (the LED counter) and the family [`BOLD`] Plex Sans Condensed SemiBold. egui's own fonts stay
@@ -16,6 +19,7 @@ pub fn definitions() -> FontDefinitions {
         (SANS, &include_bytes!("../../assets/fonts/IBMPlexSansCondensed-Regular.ttf")[..]),
         (BOLD, &include_bytes!("../../assets/fonts/IBMPlexSansCondensed-SemiBold.ttf")[..]),
         (MONO, &include_bytes!("../../assets/fonts/IBMPlexMono-Medium.ttf")[..]),
+        (MARKER, &include_bytes!("../../assets/fonts/PermanentMarker-Regular.ttf")[..]),
     ] {
         fonts.font_data.insert(name.into(), Arc::new(FontData::from_static(bytes)));
     }
@@ -23,7 +27,8 @@ pub fn definitions() -> FontDefinitions {
     let mono_fallback = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
     let family = |front: &str, base: Vec<String>| [vec![front.to_string()], base].concat();
     fonts.families.insert(FontFamily::Proportional, family(SANS, fallback.clone()));
-    fonts.families.insert(FontFamily::Name(BOLD.into()), family(BOLD, fallback));
+    fonts.families.insert(FontFamily::Name(BOLD.into()), family(BOLD, fallback.clone()));
+    fonts.families.insert(FontFamily::Name(MARKER.into()), family(MARKER, fallback));
     fonts.families.insert(FontFamily::Monospace, family(MONO, mono_fallback));
     fonts
 }
@@ -41,6 +46,11 @@ pub fn bold(text: impl Into<String>) -> RichText {
 /// Plex SemiBold at `size`, for text the painter draws.
 pub fn bold_font(size: f32) -> egui::FontId {
     egui::FontId::new(size, FontFamily::Name(BOLD.into()))
+}
+
+/// Permanent Marker at `size`: a felt pen on the tape strip.
+pub fn marker_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, FontFamily::Name(MARKER.into()))
 }
 
 #[cfg(test)]

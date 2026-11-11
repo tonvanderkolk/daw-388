@@ -110,6 +110,22 @@ pub(crate) fn section<R>(ui: &mut Ui, label: &str, height: f32, add: impl FnOnce
 }
 
 impl DawApp {
+    /// Where the tape strip starts, for its tilt: the left edge of strip 1 last frame.
+    fn tape_origin(&self) -> f32 {
+        self.tape_rows[0].left()
+    }
+
+    /// The tape between the strips, over the separators, so it reads as one strip.
+    pub(crate) fn paint_tape_gaps(&self, ui: &Ui) {
+        let origin = self.tape_origin();
+        for pair in self.tape_rows.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if a.is_positive() && b.is_positive() {
+                skin::tape::paint(ui.painter(), a.right() - 0.5, b.left() + 0.5, a, origin, false, false);
+            }
+        }
+    }
+
     pub(crate) fn channel_strip(&mut self, ui: &mut Ui, index: usize) {
         let mut load = false;
         let mut clear = false;
@@ -132,6 +148,7 @@ impl DawApp {
         let mut renamed: Option<String> = None;
         // The controls MIDI can be bound to, given their menu once `track` is free again.
         let mut targets: Vec<(egui::Response, crate::midi::Control)> = Vec::new();
+        let origin = self.tape_origin();
         let track = &mut self.tracks[index];
         let has_content = !track.regions.is_empty() || track.unresolved.is_some();
         column(ui, 112.0, |ui| {
@@ -378,17 +395,21 @@ impl DawApp {
             self.strip_numbers[index] = ui.label(bold(format!("{}", index + 1)).size(20.0).color(palette::CREAM)).rect;
             let (name, colour) = match missing.first() {
                 _ if loading => ("loading...".to_string(), palette::ORANGE),
-                Some(path) => (format!("missing: {}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), palette::LED),
-                None if has_content => (track.name.clone(), palette::TEXT_DIM),
-                // A name typed on an empty track, as in TRACKS.
-                None if !track.name.is_empty() => (track.name.clone(), palette::TEXT_DIM.gamma_multiply(0.6)),
-                // A dash, not a word: eight empty strips stay quiet.
-                None => ("–".to_string(), palette::TEXT_DIM.gamma_multiply(0.6)),
+                Some(path) => (format!("missing: {}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), palette::KEY_RED),
+                None if has_content => (track.name.clone(), skin::tape::INK),
+                // A name typed on an empty track, as in TRACKS: in pencil, as it were.
+                None if !track.name.is_empty() => (track.name.clone(), skin::tape::INK.gamma_multiply(0.55)),
+                // Empty tape: nothing written on it yet.
+                None => (String::new(), skin::tape::INK),
             };
+            // The name in felt pen on the strip of masking tape, as on a 388 in a studio.
+            let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), skin::tape::HEIGHT), Sense::hover());
+            self.tape_rows[index] = row;
+            self.name_line = row.center().y;
+            skin::tape::paint(ui.painter(), row.left(), row.right(), row, origin, index == 0, index == TRACKS - 1);
             match &mut renaming {
                 Some((track_index, text, focus)) if *track_index == index => {
-                    let field = ui.add(egui::TextEdit::singleline(text).desired_width(100.0).font(FontId::proportional(11.0)));
-                    self.name_line = field.rect.center().y;
+                    let field = ui.put(row.shrink2(vec2(6.0, 1.0)), egui::TextEdit::singleline(text).font(FontId::proportional(11.0)));
                     if *focus {
                         field.request_focus();
                         *focus = false;
@@ -401,8 +422,8 @@ impl DawApp {
                     }
                 }
                 _ => {
-                    let label = ui.add(egui::Label::new(RichText::new(name).size(11.0).color(colour)).truncate().sense(Sense::click()));
-                    self.name_line = label.rect.center().y;
+                    skin::tape::write(ui.painter(), row, origin, &name, colour);
+                    let label = ui.interact(row, egui::Id::unique(("tape-name", index)), Sense::click());
                     let label = if missing.is_empty() {
                         label.on_hover_text("Double-click: rename")
                     } else {

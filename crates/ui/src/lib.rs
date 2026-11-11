@@ -373,8 +373,15 @@ pub struct DawApp {
     strip_centres: [f32; TRACKS],
     /// Where each strip's number under the fader was in the last frame: LINK joins them.
     strip_numbers: [egui::Rect; TRACKS],
+    /// Where each strip wrote its name on the tape, for the pieces between the strips.
+    tape_rows: [egui::Rect; TRACKS],
     /// The height of the track names under the faders in the last frame: the master faders' names stand on it.
     name_line: f32,
+    /// The height of the console's sections last frame: the separators between them stop there,
+    /// so the console ends just under the tape strip instead of at the bottom of the window.
+    console_height: f32,
+    /// Frames to wait after a change of zoom before judging the fit again.
+    zoom_wait: u8,
     /// What each track's linked settings were after the last `sync_links`; `None` after a reset
     /// or a LINK switch, so the next frame is taken as it is.
     link_seen: Option<[link::Linked; TRACKS]>,
@@ -773,7 +780,10 @@ impl DawApp {
             reels: Default::default(),
             strip_centres: [0.0; TRACKS],
             strip_numbers: [egui::Rect::NOTHING; TRACKS],
+            tape_rows: [egui::Rect::NOTHING; TRACKS],
             name_line: 0.0,
+            console_height: 0.0,
+            zoom_wait: 0,
             link_seen: None,
             link_touched: None,
             needed: egui::Vec2::ZERO,
@@ -2955,6 +2965,16 @@ fn toggle_fullscreen(ctx: &egui::Context) {
     ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!on));
 }
 
+/// A vertical line between console sections, `height` tall (all the room there is when it is
+/// not known yet).
+fn column_separator(ui: &mut Ui, height: f32) {
+    let height = if height > 0.0 { height } else { ui.available_height() };
+    ui.allocate_ui(vec2(ui.spacing().item_spacing.x * 2.0 + 1.0, height), |ui| {
+        ui.set_height(height);
+        ui.separator();
+    });
+}
+
 fn column(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
     ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Center), |ui| {
         ui.set_width(width);
@@ -3313,10 +3333,16 @@ impl DawApp {
         // The window's size at zoom 1, whatever the zoom is now.
         let ctx = ui.ctx().clone();
         let window = ui.input(|i| i.viewport_rect().size()) * ctx.zoom_factor();
-        if self.needed.y > 0.0 {
+        // After a change of zoom the layout takes a frame or two to settle at the new size (some
+        // parts size from last frame): judge what it needs only then, or the zoom swings about.
+        if self.zoom_wait > 0 {
+            self.zoom_wait -= 1;
+            ctx.request_repaint();
+        } else if self.needed.y > 0.0 {
             let zoom = skin::zoom::next_zoom(ctx.zoom_factor(), window, self.needed);
             if (zoom - ctx.zoom_factor()).abs() > 1e-3 {
                 ctx.set_zoom_factor(zoom);
+                self.zoom_wait = 2;
             }
         }
         self.choose_compact(&ctx);
@@ -3452,8 +3478,15 @@ impl DawApp {
     fn mixer_view(&mut self, ui: &mut Ui, chrome: f32) {
         let mut console = egui::Vec2::ZERO;
         egui::CentralPanel::default().frame(Frame::new().fill(palette::BACKGROUND).inner_margin(Margin::same(16))).show(ui, |ui| {
-            // Centred, so space the console does not need stays even on both sides (full screen).
-            ui.vertical_centered(|ui| {
+            // Centred both ways, so space the console does not need stays even all round. Its size
+            // is what it needed last frame, without the 16 points of this panel and the chrome.
+            let room = ui.available_rect_before_wrap();
+            let outer = self.needed - egui::vec2(32.0, 32.0 + chrome);
+            let pad = ((room.size() - outer) / 2.0).max(egui::Vec2::ZERO);
+            // As much room as the panel has: the offset must not squeeze the console, or what it
+            // needs would be measured smaller and the zoom would chase it.
+            let place = egui::Rect::from_min_size(room.min + pad, room.size());
+            ui.scope_builder(egui::UiBuilder::new().max_rect(place).layout(Layout::top_down(Align::Min)), |ui| {
                 Frame::new().fill(palette::WOOD).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(18, 18)).show(
                     ui,
                     |ui| {
@@ -3481,17 +3514,18 @@ impl DawApp {
                                                 let left = ui.cursor().min.x;
                                                 bottom = bottom.max(ui.scope(|ui| self.channel_strip(ui, index)).response.rect.bottom());
                                                 self.strip_centres[index] = (left + ui.cursor().min.x - ui.spacing().item_spacing.x) / 2.0;
-                                                ui.separator();
+                                                column_separator(ui, self.console_height);
                                             }
+                                            self.paint_tape_gaps(ui);
                                             self.paint_links(ui);
                                             // The master section in two columns, as on the 388.
                                             // Compact and SIMPLE, the column would hold nothing: it goes.
                                             if !(self.compact && self.mixer.mode == Routing::Simple) {
                                                 bottom = bottom.max(ui.scope(|ui| self.return_monitor_column(ui)).response.rect.bottom());
-                                                ui.separator();
+                                                column_separator(ui, self.console_height);
                                             }
                                             bottom = bottom.max(ui.scope(|ui| self.master_column(ui)).response.rect.bottom());
-                                            ui.separator();
+                                            column_separator(ui, self.console_height);
                                             ui.add_space(16.0);
                                             let deck = ui.vertical(|ui| {
                                                 self.tape_deck(ui);
@@ -3527,6 +3561,7 @@ impl DawApp {
                                         // takes its width from this, so it must not feed back into it.
                                         // At least as wide as the bridge needs, so its name plate stays in view
                                         // when the row is narrow (compact SIMPLE).
+                                        self.console_height = bottom - row.response.rect.top();
                                         egui::vec2(row.response.rect.width().max(bridge), bottom - top)
                                     })
                                     .inner;
@@ -5018,7 +5053,8 @@ mod tests {
     #[test]
     fn the_zoom_settles_at_every_window_size() {
         // Run frames as eframe does (the window in points shrinks as the zoom grows) and check
-        // that the zoom stops moving: at some heights it used to flip every frame (0.32.0).
+        // that the zoom stops moving: at some heights it used to flip every frame (0.32.0), and
+        // with the console centred it swung for some twenty frames before it waited after a change.
         for (compact, drawer) in [(false, false), (true, false), (false, true)] {
             for height in (560..1300).step_by(37).chain([644, 779, 806]) {
                 let (ctx, size) = (egui::Context::default(), egui::vec2(1500.0, height as f32));
@@ -5031,7 +5067,7 @@ mod tests {
                     out.textures_delta.clear();
                     zooms.push(ctx.zoom_factor());
                 }
-                assert!(zooms[15..].windows(2).all(|p| p[0] == p[1]), "compact {compact}, drawer {drawer}, height {height}: {zooms:?}");
+                assert!(zooms[8..].windows(2).all(|p| p[0] == p[1]), "compact {compact}, drawer {drawer}, height {height}: {zooms:?}");
             }
         }
     }
