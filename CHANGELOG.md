@@ -4,6 +4,12 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-11-11
+
+### Gewijzigd
+- De menu's (File, Edit, View, Help en Open Recent) hebben de gewone maat van macOS, 13 punt, en blijven zo groot bij elke venstergrootte; eerst schaalden ze mee met de console.
+- De tekst in de vensters (Settings, Export, Tape, Bounce Setup en de andere) is iets groter: 13 punt voor de gewone tekst, de vinkjes en de veldlabels, 12 punt voor de toelichtingen.
+
 ## [0.37.0] - 2026-11-05
 
 ### Toegevoegd

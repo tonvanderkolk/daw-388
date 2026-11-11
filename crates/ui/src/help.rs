@@ -64,6 +64,7 @@ const GUIDE: [(&str, &[&str]); 5] = [
 impl DawApp {
     pub(crate) fn help_menu(&mut self, ui: &mut Ui) {
         ui.menu_button("Help", |ui| {
+            crate::mac_text(ui);
             if ui.button("Quick guide").clicked() {
                 self.help = Some(Help::Guide);
             }

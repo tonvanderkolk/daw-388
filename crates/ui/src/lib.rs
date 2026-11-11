@@ -1598,6 +1598,7 @@ impl DawApp {
         let undo = ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z));
         let redo = ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z));
         ui.menu_button("Edit", |ui| {
+            mac_text(ui);
             let undo_name = self.history.undo_name().map(str::to_string);
             let label = undo_name.as_ref().map_or_else(|| "Undo".to_string(), |n| format!("Undo {n}"));
             if ui.add_enabled(undo_name.is_some(), egui::Button::new(label).shortcut_text(undo)).clicked() {
@@ -1618,6 +1619,7 @@ impl DawApp {
 
     fn view_menu(&mut self, ui: &mut Ui) {
         ui.menu_button("View", |ui| {
+            mac_text(ui);
             if ui.button("Mixdown Deck...").on_hover_text("The second machine that records the STEREO MASTER").clicked() {
                 self.show_deck = true;
                 ui.close();
@@ -1660,6 +1662,7 @@ impl DawApp {
     fn file_menu(&mut self, ui: &mut Ui) {
         let command = |ui: &Ui, key| ui.ctx().format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key));
         ui.menu_button("File", |ui| {
+            mac_text(ui);
             if ui.add(egui::Button::new("New").shortcut_text(command(ui, Key::N))).clicked() {
                 self.request(Pending::New);
             }
@@ -1670,6 +1673,7 @@ impl DawApp {
             let recent: Vec<PathBuf> = self.preferences.recent.iter().filter(|p| p.exists()).cloned().collect();
             ui.add_enabled_ui(!recent.is_empty(), |ui| {
                 ui.menu_button("Open Recent", |ui| {
+                    mac_text(ui);
                     for dir in &recent {
                         let shown = ui.button(session::project_name(dir)).on_hover_text(dir.display().to_string());
                         if shown.clicked() {
@@ -2120,6 +2124,7 @@ impl DawApp {
                 }
                 widgets.inactive.fg_stroke = Stroke::new(1.0, palette::TEXT);
                 widgets.hovered.fg_stroke = Stroke::new(1.0, palette::CREAM);
+                mac_text(ui);
                 self.file_menu(ui);
                 self.edit_menu(ui);
                 self.view_menu(ui);
@@ -3262,6 +3267,14 @@ fn fader(ui: &mut Ui, db: &mut f32, cap: Color32) -> egui::Response {
         Stroke::new(1.5, Color32::from_rgb(0x2a, 0x26, 0x22)),
     );
     response.on_hover_text("Drag: level, shift: fine, double-click: 0 dB")
+}
+
+/// Menu text at the size macOS uses (13 pt) on screen, whatever the console's zoom is.
+pub(crate) fn mac_text(ui: &mut Ui) {
+    let size = 13.0 / ui.ctx().zoom_factor();
+    let styles = &mut ui.style_mut().text_styles;
+    styles.insert(egui::TextStyle::Body, egui::FontId::proportional(size));
+    styles.insert(egui::TextStyle::Button, egui::FontId::proportional(size));
 }
 
 fn apply_style(ctx: &egui::Context) {

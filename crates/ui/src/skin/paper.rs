@@ -41,8 +41,8 @@ fn paper_style(ui: &mut Ui) {
         widget.corner_radius = CornerRadius::same(3);
     }
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, INK);
-    style.text_styles.insert(TextStyle::Body, FontId::proportional(12.5));
-    style.text_styles.insert(TextStyle::Button, FontId::proportional(12.5));
+    style.text_styles.insert(TextStyle::Body, FontId::proportional(13.0));
+    style.text_styles.insert(TextStyle::Button, FontId::proportional(13.0));
     style.spacing.item_spacing = vec2(8.0, 6.0);
 }
 
@@ -229,7 +229,7 @@ pub fn switch_pair<T: PartialEq + Copy>(ui: &mut Ui, options: [(T, &str); 2], va
 
 /// A check box: a square that fills rust with a white tick when on.
 pub fn check(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
-    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(12.5), INK);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(13.0), INK);
     let (rect, mut response) = ui.allocate_exact_size(vec2(22.0 + galley.size().x, 20.0_f32.max(galley.size().y)), Sense::click());
     if response.clicked() {
         *on = !*on;
@@ -259,7 +259,7 @@ pub fn check(ui: &mut Ui, on: &mut bool, label: &str) -> Response {
 
 /// A radio button: a ring with a rust dot when chosen. Returns a response that is clicked when chosen now.
 pub fn radio(ui: &mut Ui, chosen: bool, label: &str) -> Response {
-    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(12.5), INK);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(13.0), INK);
     let (rect, response) = ui.allocate_exact_size(vec2(24.0 + galley.size().x, 20.0_f32.max(galley.size().y)), Sense::click());
     let enabled = ui.is_enabled();
     let painter = ui.painter();
@@ -287,7 +287,7 @@ pub fn slider_row(
 ) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new(label).size(12.5)));
+        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new(label).size(13.0)));
         ui.spacing_mut().slider_width = ui.available_width() - 60.0;
         let response = ui.add(egui::Slider::new(value, range).show_value(false).trailing_fill(true)).on_hover_text(tip);
         if response.double_clicked() {
@@ -319,5 +319,5 @@ pub fn plain_button(ui: &mut Ui, text: &str) -> Response {
 
 /// A small note under a choice, in soft ink.
 pub fn note(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(11.5).color(INK_SOFT));
+    ui.label(RichText::new(text).size(12.0).color(INK_SOFT));
 }
