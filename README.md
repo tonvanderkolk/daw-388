@@ -5,6 +5,10 @@
 
 A very simple 8-track DAW for macOS and Windows, modelled on the Tascam 388 (Studio 8): an 8:8:2 mixer combined with an 8-track tape recorder with tape character. Load or record eight tracks, mix them on a vintage console with EQ, AUX and EFF sends, a plate reverb and a tape echo, link track pairs as stereo, bounce tracks together with their reverb and echo, record the final mix live onto a mixdown deck (1/4" tape, cassette or direct), move the faders with a MIDI controller (MIDI learn, motor faders follow) and export a stereo bounce or separate tracks. The interface is in English and uses the names of the 388 (TRK, PGM, AUX, REC, RTZ, CUE, ...).
 
+**Watch the introduction** (2 minutes):
+
+[![Introduction to DAW 388 on YouTube](https://img.youtube.com/vi/MU5z2pcvEaM/hqdefault.jpg)](https://youtu.be/MU5z2pcvEaM)
+
 A hobby project by Ton van der Kolk. Free and open source. Not affiliated with Tascam. The rest of the documentation is in Dutch.
 
 Like DAW 388? You can [support it with a coffee](https://buymeacoffee.com/tvdk71).
