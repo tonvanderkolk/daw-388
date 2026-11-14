@@ -292,7 +292,7 @@ impl DawApp {
                 ui.label(RichText::new(bounce_summary(&draft.sources, target)).strong().size(12.5).color(paper::INK));
                 ui.add_space(8.0);
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 34.0), Layout::right_to_left(Align::Center), |ui| {
                 ui.add_enabled_ui(ready, |ui| apply = primary_button(ui, "Apply").clicked());
                 cancel = plain_button(ui, "Cancel").clicked();
             });

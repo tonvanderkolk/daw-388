@@ -125,6 +125,17 @@ impl DawApp {
         }
     }
 
+    /// The Tooltips part of Settings.
+    pub(crate) fn tooltip_settings(&mut self, ui: &mut Ui) {
+        skin::paper::section_title(ui, "Tooltips");
+        let mut show = self.preferences.tooltips;
+        skin::paper::check(ui, &mut show, "Explain controls when the mouse rests on them");
+        if show != self.preferences.tooltips {
+            self.preferences.tooltips = show;
+            self.store_preferences();
+        }
+    }
+
     /// The Updates part of Settings.
     pub(crate) fn update_settings(&mut self, ui: &mut Ui) {
         skin::paper::section_title(ui, "Updates");

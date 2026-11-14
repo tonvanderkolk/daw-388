@@ -41,6 +41,9 @@ pub struct Preferences {
     /// Ask GitHub for a newer version at startup, at most once a day.
     #[serde(default = "yes")]
     pub check_updates: bool,
+    /// Show the explanations that appear when the mouse rests on a control.
+    #[serde(default = "yes")]
+    pub tooltips: bool,
     /// When the last check was (seconds since 1970) and the latest version it found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_checked_at: Option<u64>,
@@ -126,6 +129,7 @@ impl Default for Preferences {
             recent: Vec::new(),
             compact_console: None,
             check_updates: true,
+            tooltips: true,
             update_checked_at: None,
             latest_version: None,
             link_stereo_imports: true,
@@ -196,6 +200,7 @@ mod tests {
             recent: vec!["/music/Song.daw388".into()],
             compact_console: Some(true),
             check_updates: false,
+            tooltips: false,
             update_checked_at: Some(1_790_000_000),
             latest_version: Some("0.31.0".into()),
             link_stereo_imports: false,

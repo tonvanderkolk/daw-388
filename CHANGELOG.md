@@ -4,6 +4,14 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.38.1] - 2026-11-14
+
+### Toegevoegd
+- Tooltips uit te zetten in Settings (Tooltips): standaard aan voor nieuwe gebruikers, de keuze hoort bij de app.
+
+### Opgelost
+- Bounce Setup en Export (en de vragen Switch to Simple en Save changes) werden zo hoog als het scherm: de knoppenrij onderaan nam alle hoogte die er was. Ze zijn nu zo hoog als hun inhoud.
+
 ## [0.38.0] - 2026-11-11
 
 ### Toegevoegd

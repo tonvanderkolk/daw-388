@@ -382,6 +382,8 @@ pub struct DawApp {
     console_height: f32,
     /// Frames to wait after a change of zoom before judging the fit again.
     zoom_wait: u8,
+    /// The tooltip setting last put into egui's style.
+    tooltips_shown: Option<bool>,
     /// What each track's linked settings were after the last `sync_links`; `None` after a reset
     /// or a LINK switch, so the next frame is taken as it is.
     link_seen: Option<[link::Linked; TRACKS]>,
@@ -784,6 +786,7 @@ impl DawApp {
             name_line: 0.0,
             console_height: 0.0,
             zoom_wait: 0,
+            tooltips_shown: None,
             link_seen: None,
             link_touched: None,
             needed: egui::Vec2::ZERO,
@@ -1509,7 +1512,7 @@ impl DawApp {
         let response = skin::paper::paper_modal(ctx, "confirm-simple", "Switch to Simple?", 400.0, |ui| {
             ui.label("The buses, ASSIGN and the MONITOR settings go back to the simple setup. Fader, PAN, EQ, TRIM and the input stay as they are.");
             ui.add_space(14.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 34.0), Layout::right_to_left(Align::Center), |ui| {
                 if skin::paper::primary_button(ui, "Continue").clicked() {
                     answer = Some(true);
                 }
@@ -1533,7 +1536,7 @@ impl DawApp {
         let response = skin::paper::paper_modal(ctx, "unsaved-changes", &title, 400.0, |ui| {
             ui.label("If you don't save, the changes since the last save are lost.");
             ui.add_space(14.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 34.0), Layout::right_to_left(Align::Center), |ui| {
                 if skin::paper::primary_button(ui, "Save").clicked() {
                     answer = Some(true);
                 }
@@ -2785,7 +2788,7 @@ impl DawApp {
                 ui.add(egui::ProgressBar::new(done).show_percentage().fill(paper::RUST));
                 ctx.request_repaint();
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 34.0), Layout::right_to_left(Align::Center), |ui| {
                 if running.is_none() {
                     if primary_button(ui, "Export").clicked() {
                         start = true;
@@ -2898,6 +2901,8 @@ impl DawApp {
             self.metronome_settings(ui);
             ui.add_space(8.0);
             self.update_settings(ui);
+            ui.add_space(8.0);
+            self.tooltip_settings(ui);
             ui.add_space(8.0);
             self.punch_settings(ui);
             ui.add_space(8.0);
@@ -3289,6 +3294,17 @@ fn fader(ui: &mut Ui, db: &mut f32, cap: Color32) -> egui::Response {
     response.on_hover_text("Drag: level, shift: fine, double-click: 0 dB")
 }
 
+impl DawApp {
+    /// Tooltips on or off (Settings): off, egui waits for ever before it shows one.
+    fn apply_tooltips(&mut self, ctx: &egui::Context) {
+        let show = self.preferences.tooltips;
+        if self.tooltips_shown != Some(show) {
+            self.tooltips_shown = Some(show);
+            ctx.all_styles_mut(|style| style.interaction.tooltip_delay = if show { 0.5 } else { f32::INFINITY });
+        }
+    }
+}
+
 /// Menu text at the size macOS uses (13 pt) on screen, whatever the console's zoom is.
 pub(crate) fn mac_text(ui: &mut Ui) {
     let size = 13.0 / ui.ctx().zoom_factor();
@@ -3345,6 +3361,7 @@ impl DawApp {
                 self.zoom_wait = 2;
             }
         }
+        self.apply_tooltips(&ctx);
         self.choose_compact(&ctx);
         self.fit_window(&ctx, window);
         self.watch_output();
