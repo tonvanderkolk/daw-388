@@ -19,7 +19,7 @@ Get the latest version from [Releases](https://github.com/tonvanderkolk/daw-388/
 
 - **macOS** (Apple Silicon and Intel, macOS 11 or later): open the DMG, drag DAW 388 to Applications and start it. The app is signed with an Apple Developer ID and notarized by Apple, so it opens without a warning.
 
-   Version 0.38 and earlier are not signed. macOS then says it could not verify the app: click **Done** (not "Move to Trash"), then open System Settings, Privacy & Security and click **Open Anyway** next to DAW 388.
+   Version 0.38.0 and earlier are not signed. macOS then says it could not verify the app: click **Done** (not "Move to Trash"), then open System Settings, Privacy & Security and click **Open Anyway** next to DAW 388.
 
 - **Windows** (64-bit): unzip and start `DAW 388.exe`. If SmartScreen warns about an unknown publisher, choose "More info", then "Run anyway".
 
@@ -43,7 +43,7 @@ Vind je DAW 388 fijn? Je kunt het [steunen met een koffie](https://buymeacoffee.
 
 ## Downloaden
 
-De nieuwste versie staat bij [Releases](https://github.com/tonvanderkolk/daw-388/releases): een DMG voor macOS (Apple Silicon en Intel) en een ZIP voor Windows. De macOS-app is ondertekend met een Apple Developer ID en genotariseerd (vanaf de release na 0.38); de Windows-app is niet ondertekend.
+De nieuwste versie staat bij [Releases](https://github.com/tonvanderkolk/daw-388/releases): een DMG voor macOS (Apple Silicon en Intel) en een ZIP voor Windows. De macOS-app is ondertekend met een Apple Developer ID en genotariseerd (vanaf 0.38.1); de Windows-app is niet ondertekend.
 
 ## Status
 
