@@ -1,25 +1,25 @@
-# DAW 388: introductievideo (script, concept 1)
+# DAW 388: introductievideo (script, concept 2)
 
-Lengte: ongeveer 2:15. Voice-over in het Engels, ongeveer 330 woorden.
-Beeld: 1920x1080, opgenomen in de app met de multitrack van Ton.
+Lengte: ongeveer 2:20, gelijk met Intro Video_Mix 2 (2:18). Stem: Jamie (Premium), Engels.
+Beeld: Schermopname 11.48.38 (2:38) plus de schermafbeeldingen, montage in FilmCraft.
 
-| # | Tijd | Beeld | Voice-over |
-|---|------|-------|-----------|
-| 1 | 0:00 | Zwart, dan het icoon en de titel "DAW 388". Zachte fade-in van de mix. | *(alleen muziek, 3 sec)* |
-| 2 | 0:04 | MIXER-weergave in zijn geheel, de band loopt, VU-meters bewegen. | Remember the eight-track cassette studios of the eighties? One machine, one mixer, eight tracks of tape. DAW 388 brings that way of working to your computer. |
-| 3 | 0:15 | Langzaam inzoomen op de kanalen: faders, EQ, AUX, de tapestrook met spoornamen. | It's a simple standalone recorder and mixer, modelled on a classic eight-track console. Eight inputs, eight tape tracks and a stereo mix. No plugins, no endless menus. Just record, mix and finish your song. |
-| 4 | 0:30 | Tab: wissel naar TRACKS. Golfvormen, M/S/R per spoor. | Press Tab to switch between two views. MIXER shows the whole console at once. TRACKS shows your recordings on the timeline, where you can edit, move and undo. |
-| 5 | 0:43 | Een spoor armen (R), REC, AUTO PUNCH met pre-roll, teller loopt. | Recording works like on tape: arm a track, hit record, or set up an auto punch-in with pre-roll to fix a single line. |
-| 6 | 0:53 | Terug naar MIXER. Faders bewegen, PAN, MUTE en SOLO op de muziek. | Then you mix. Ride the faders, pan, mute and solo, and shape every channel with the EQ. |
-| 7 | 1:03 | AUX-sends en EFFECT RTN, galm en echo hoorbaar. | Send channels to the built-in reverb and echo through the aux sends. |
-| 8 | 1:10 | Close-up van PITCH/VARI en het tape-karakter. | And the tape is part of the sound: gentle saturation, a little wow and flutter, and VARI speed to change the pitch, even while you record. |
-| 9 | 1:22 | LINK op een sporenpaar, dan Bounce Setup venster. | Link pairs of tracks for stereo. And when you run out of tracks, Bounce Setup sets up the routing to bounce several tracks down to one, effects included. |
-| 10 | 1:36 | Mixdown deck: MIX REC, keuze 1/4" 15 IPS, CASSETTE, DIRECT. Mix verschijnt in de lijst. | When the mix is right, record it live on the mixdown deck: a quarter-inch reel, a cassette, or straight to disk. Play it back, keep the best take and export it. |
-| 11 | 1:50 | Rechtsklik op een fader: MIDI Learn, dan een controller die de fader beweegt. | Got a MIDI controller? Right-click any fader or transport button and choose MIDI Learn. |
-| 12 | 1:57 | Compacte console (View), daarna weer de volle mixer. | There's also a compact console for smaller screens. DAW 388 runs on macOS and Windows. |
-| 13 | 2:03 | Eindkaart: icoon, GitHub-link, Buy Me a Coffee (tvdk71). Muziek speelt uit. | And the best part: it's completely free and open source. Download it from GitHub, and if you enjoy it, you can buy me a coffee. Happy recording! |
+| # | Beeld | Voice-over |
+|---|-------|-----------|
+| 1 | Titelkaart, de mix komt op. | *(alleen muziek)* |
+| 2 | De volledige console in de stand 388, de band loopt. | Remember the eight-track cassette studios of the eighties? One machine, one mixer, eight tracks of tape. DAW 388 brings that way of working to your computer. |
+| 3 | Rustig langs de kanalen: INPUT, EQ, AUX, ASSIGN, de tapestrook. | Eight channels with input trim, three-band EQ, aux sends and bus assign. No plugins, no endless menus. Just record, mix and finish your song. |
+| 4 | ROUTING van 388 naar SIMPLE (of de schermafbeelding van de eenvoudige console). | Set the routing to 388 for the full console, with direct outs, a monitor section and two program masters. Or choose Simple when you just want to get going. |
+| 5 | Tab naar TRACKS: golfvormen, M, S en R. | Press Tab for the tracks view. Here you see your recordings on the timeline, where you can edit, move and undo. |
+| 6 | Een spoor armen, REC, AUTO PUNCH. | Recording works like on tape: arm a track, hit record, or punch in automatically with pre-roll. |
+| 7 | Terug naar MIXER: faders, PAN, MUTE op drums of bas, SOLO. | Then you mix. Ride the faders, pan, mute and solo. |
+| 8 | Plate reverb en tape echo, AUX- en EFF-sends. | Send channels to the built-in plate reverb and tape echo. |
+| 9 | Schermafbeeldingen Tape Settings (machine, snelheid, dbx). | The tape is part of the sound. Choose the machine, the tape speed and noise reduction, and hear gentle saturation and a little wow and flutter. |
+| 10 | PITCH en VARI. | Use VARI speed to change the pitch, even while you record. |
+| 11 | LINK en Bounce Setup. | Link pairs of tracks for stereo. And when you run out of tracks, Bounce Setup routes several tracks down to one, effects included. |
+| 12 | Mixdown deck: MIX REC, de lijst met mixen. | Record your mix live on the mixdown deck: a quarter-inch reel, a cassette or straight to disk. |
+| 13 | Schermafbeelding Export. | Or export it: bounce a stereo mix, or bounce every track as a separate stem for another studio. |
+| 14 | midi-learn.mov (de eerste 7 seconden). | Got a MIDI controller? Right-click any fader or button, choose MIDI Learn and move a control. |
+| 15 | Compacte console. | There's a compact console for smaller screens. DAW 388 runs on macOS and Windows. |
+| 16 | Eindkaart: GitHub, Buy Me a Coffee, disclaimer. | And the best part: it's free and open source. Download it from GitHub, and if you enjoy it, buy me a coffee. Happy recording! |
 
 Kleine tekst op de eindkaart: *DAW 388 is an independent project, inspired by the TASCAM 388. Not affiliated with or endorsed by TASCAM.*
-
-## Muziek
-De mix in beeld en onder de voice-over is de eigen multitrack van Ton. Onder de gesproken stukken staat de muziek zachter (ducking), tussen de scènes even vol.
