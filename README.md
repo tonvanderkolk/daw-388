@@ -17,17 +17,9 @@ Like DAW 388? You can [support it with a coffee](https://buymeacoffee.com/tvdk71
 
 Get the latest version from [Releases](https://github.com/tonvanderkolk/daw-388/releases).
 
-- **macOS** (Apple Silicon and Intel, macOS 11 or later): the first time takes one extra step.
-   1. Open the DMG and drag DAW 388 to Applications.
-   2. Start DAW 388. The app is not signed with an Apple Developer ID, so macOS says it could not verify it. Click **Done**, not "Move to Trash".
-   3. Open System Settings, Privacy & Security, scroll down and click **Open Anyway** next to DAW 388. Confirm with your password.
-   4. From then on DAW 388 opens normally.
+- **macOS** (Apple Silicon and Intel, macOS 11 or later): open the DMG, drag DAW 388 to Applications and start it. The app is signed with an Apple Developer ID and notarized by Apple, so it opens without a warning.
 
-   Comfortable with Terminal? This one command does the same and skips the warning:
-
-   ```bash
-   xattr -dr com.apple.quarantine "/Applications/DAW 388.app"
-   ```
+   Version 0.38 and earlier are not signed. macOS then says it could not verify the app: click **Done** (not "Move to Trash"), then open System Settings, Privacy & Security and click **Open Anyway** next to DAW 388.
 
 - **Windows** (64-bit): unzip and start `DAW 388.exe`. If SmartScreen warns about an unknown publisher, choose "More info", then "Run anyway".
 
@@ -51,7 +43,7 @@ Vind je DAW 388 fijn? Je kunt het [steunen met een koffie](https://buymeacoffee.
 
 ## Downloaden
 
-De nieuwste versie staat bij [Releases](https://github.com/tonvanderkolk/daw-388/releases): een DMG voor macOS (Apple Silicon en Intel) en een ZIP voor Windows. De apps zijn niet ondertekend met een Apple Developer ID; zie hierboven (Download) hoe je ze de eerste keer opent.
+De nieuwste versie staat bij [Releases](https://github.com/tonvanderkolk/daw-388/releases): een DMG voor macOS (Apple Silicon en Intel) en een ZIP voor Windows. De macOS-app is ondertekend met een Apple Developer ID en genotariseerd (vanaf de release na 0.38); de Windows-app is niet ondertekend.
 
 ## Status
 

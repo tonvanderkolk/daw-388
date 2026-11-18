@@ -1,6 +1,5 @@
 //! Checking GitHub for a newer release: at startup at most once a day (Settings), or from the
-//! Help menu. Only a notice and a link to the release page: the app is not signed, so it does
-//! not install anything itself.
+//! Help menu. Only a notice and a link to the release page: the app does not install anything itself.
 
 use super::*;
 

@@ -4,6 +4,12 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+### Toegevoegd
+- De macOS-app is ondertekend met een Apple Developer ID en genotariseerd: hij opent zonder waarschuwing en zonder de omweg via Privacy en beveiliging. GitHub Actions doet het bij elke release met de certificaten als secrets (`packaging/macos/SIGNING.md`).
+
+### Gewijzigd
+- De installatie-uitleg in de README, bij de release en in de handleiding is ingekort.
+
 ## [0.38.1] - 2026-11-14
 
 ### Toegevoegd
