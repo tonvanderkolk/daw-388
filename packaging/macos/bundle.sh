@@ -5,8 +5,15 @@
 #
 # Several binaries (Apple Silicon and Intel) are joined into one universal binary with lipo.
 # With MANUAL set to a PDF, the manual goes into the app (Help, User manual) and into the DMG.
-# The app is signed ad hoc (no Apple Developer account): it runs, but on first opening macOS
-# asks the user to allow it in System Settings, Privacy & Security.
+#
+# Signing:
+#   SIGN_IDENTITY  a "Developer ID Application: ..." identity in the keychain. The app is signed
+#                  with the hardened runtime and entitlements.plist, the DMG is signed as well.
+#                  Without it the app is signed ad hoc: it runs, but on first opening macOS asks
+#                  the user to allow it in System Settings, Privacy & Security.
+#   NOTARY_KEY, NOTARY_KEY_ID, NOTARY_ISSUER
+#                  an App Store Connect API key (the .p8 file, its key ID and the issuer ID).
+#                  With these and SIGN_IDENTITY the DMG is notarized and the ticket stapled.
 set -eu
 version=$1
 out=$2
@@ -26,7 +33,13 @@ if [ -n "${MANUAL:-}" ]; then
     cp "$MANUAL" "$app/Contents/Resources/DAW 388 Manual.pdf"
 fi
 printf 'APPL????' >"$app/Contents/PkgInfo"
-codesign --force --deep --sign - "$app"
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+    codesign --force --timestamp --options runtime \
+        --entitlements "$here/entitlements.plist" --sign "$SIGN_IDENTITY" "$app"
+    codesign --verify --strict --verbose=2 "$app"
+else
+    codesign --force --deep --sign - "$app"
+fi
 
 # The DMG: the app and a link to Applications to drag it onto.
 staging=$(mktemp -d)
@@ -39,4 +52,14 @@ dmg="$out/DAW-388-$version-macos.dmg"
 rm -f "$dmg"
 hdiutil create -volname "DAW 388" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null
 rm -rf "$staging"
+if [ -n "${SIGN_IDENTITY:-}" ]; then
+    codesign --force --timestamp --sign "$SIGN_IDENTITY" "$dmg"
+    if [ -n "${NOTARY_KEY:-}" ]; then
+        xcrun notarytool submit "$dmg" --wait \
+            --key "$NOTARY_KEY" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER"
+        xcrun stapler staple "$dmg"
+        xcrun stapler validate "$dmg"
+        spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+    fi
+fi
 echo "$dmg"

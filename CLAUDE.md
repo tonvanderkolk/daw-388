@@ -34,7 +34,7 @@ Een eenvoudige standalone 8-sporen DAW naar het model van de Tascam 388 (Studio 
 - Opnemen op VARI mag; de snelheid ligt vast per opname
 - Een project is een pakket `Naam.daw388`; oudere mappen blijven werken. Ongebruikte opnames gaan bij het verlaten naar de prullenbak, nooit direct weg
 - Geen productnamen van TASCAM als eigen naam (dus 8-TRACK, niet STUDIO 8); de 388 noemen als voorbeeld mag, met de disclaimer
-- Niet ondertekend: geen Apple Developer-account. De installatie-uitleg vangt dat op
+- Ondertekenen en notariseren: er is nu een Apple Developer-account, maar de releases zijn nog niet ondertekend (staat op de roadmap, Fase 10). Tot dat klaar is vangt de installatie-uitleg het op
 - Fase 9 (browserversie) is uitgesteld
 
 ## Huidige status
