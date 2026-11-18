@@ -47,6 +47,6 @@ main
 14-11-2026 11:36
 
 ## Bekende issues / openstaande punten
-- Nog niet getest op een andere Mac en op Windows
+- Nog niet getest op een andere Mac. Windows is in gebruik met een Volt 2 (opnames voor een koor), de opnames zijn nog niet beluisterd
 - Windows: geen ASIO, geen eigen ARM-build
 - Windows: afmelden of afsluiten van Windows slaat de opslaan-vraag over, en gesleepte bestanden gaan naar het laatst aangeklikte spoor (staat op de roadmap)
