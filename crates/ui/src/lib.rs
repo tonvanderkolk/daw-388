@@ -5246,12 +5246,12 @@ mod tests {
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
         app.bounce_setup(sources(&[2, 3, 4]), Target::Pair(3), BounceOptions::default());
         assert_eq!(app.mixer.mode, Routing::Classic);
-        for t in 2..5 {
-            let c = &app.tracks[t].channel;
+        for (t, track) in app.tracks.iter().enumerate().take(5).skip(2) {
+            let c = &track.channel;
             assert_eq!(c.source, ChannelSource::Rmx, "track {}", t + 1);
             assert_eq!(c.assign, [false, false, false, true]);
             assert!(!c.lr && !c.direct);
-            assert!(app.tracks[t].monitor.mute, "silenced in MONITOR");
+            assert!(track.monitor.mute, "silenced in MONITOR");
         }
         for (t, pan) in [(6, -1.0), (7, 1.0)] {
             let track = &app.tracks[t];
@@ -5270,9 +5270,9 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = DawApp::new(&ctx, Box::new(FakePlatform::new(None)));
         app.bounce_setup(sources(&[0, 1, 2]), Target::Track(3), BounceOptions::default());
-        for t in 0..3 {
-            assert_eq!(app.tracks[t].pan, 1.0, "track 4 is an even bus: right");
-            assert_eq!(app.tracks[t].channel.assign, [false, true, false, false]);
+        for track in &app.tracks[..3] {
+            assert_eq!(track.pan, 1.0, "track 4 is an even bus: right");
+            assert_eq!(track.channel.assign, [false, true, false, false]);
         }
         assert!(app.tracks[3].armed);
         assert_eq!(app.tracks[3].monitor.pan, 0.0, "a mono target in the middle");
