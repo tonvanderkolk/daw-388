@@ -4,6 +4,12 @@ Alle noemenswaardige wijzigingen in DAW 388. Versienummers volgen [Semantic Vers
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-11-19
+
+### Toegevoegd
+- MP3-export voor de stereo bounce (Format, MP3 320): 320 kbps, met de naam als titel in het bestand. Hooguit 48 kHz; 96 kHz wordt 48, 88,2 wordt 44,1. Niet voor losse sporen. SAVE in het mixdown deck volgt het formaat van het exportvenster en kan dus ook MP3 bewaren. De codering doet LAME (LGPL), mee gebouwd in de app; About vermeldt het.
+- Op de Mac installeert de app een nieuwe versie zelf: Help, Install DAW 388 ... downloadt de DMG, controleert dat hij door de maker is ondertekend, door Apple is genotariseerd en de gevraagde versie is, zet hem op de plek van de oude (die naar de prullenbak gaat) en vraagt of hij opnieuw mag starten. Lukt dat niet, of staat de app op een plek waar hij niet mag schrijven, dan blijft Download over. Op Windows blijft het de releasepagina. Werkt vanaf deze versie: wie 0.38.x heeft, installeert 0.39.0 nog zelf.
+
 ## [0.38.1] - 2026-11-18
 
 ### Toegevoegd

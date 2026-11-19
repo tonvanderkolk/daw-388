@@ -102,7 +102,7 @@
   <p>Windows 10 or 11, 64-bit. Unzip the ZIP somewhere you like (for example in your Documents) and start <b>DAW 388.exe</b>. If SmartScreen warns about an unknown publisher, choose "More info", then "Run anyway".</p>
   <p>DAW 388 uses WASAPI, the standard audio system of Windows. ASIO is not supported yet, so the delay while recording can be a little longer than in programs that use ASIO.</p>
   <h3>Updates</h3>
-  <p>At startup, at most once a day, DAW 388 asks GitHub which version is the latest. When there is a newer one, the status line says so and the Help menu shows <b>Download DAW 388 ...</b>, which opens the release page. You download and install the new version yourself, the same way as the first time; your projects and settings stay. <b>Help, Check for Updates...</b> checks straight away. Nothing else is sent, and you can switch the check off in Settings, Updates.</p>
+  <p>At startup, at most once a day, DAW 388 asks GitHub which version is the latest. When there is a newer one, the status line says so. On a Mac, <b>Help, Install DAW 388 ...</b> downloads it, checks that it is signed by its maker and notarized by Apple, puts it in place of the old version (which goes to the Trash) and offers to restart; your projects and settings stay. If DAW 388 may not write in the folder it is in, or on Windows, <b>Help, Download DAW 388 ...</b> opens the release page and you install it yourself, the same way as the first time. <b>Help, Check for Updates...</b> checks straight away. Nothing else is sent, and you can switch the check off in Settings, Updates.</p>
   <p>Want an e-mail for every new version? On the project page on GitHub, choose Watch, Custom, Releases.</p>
 </section>
 
@@ -390,6 +390,7 @@
   <p>The whole song, or only from the zero point to the CUE point. Every file starts at 0:00, or with silence before it so that it lines up with the song (handy for importing into another program).</p>
   <h3>Format</h3>
   <p>WAV or AIFF, 16 bit (with dither), 24 bit or 32 bit float, 44.1, 48 or 96 kHz. The sample rate starts on the rate of the audio in the project.</p>
+  <p>A stereo bounce can also be <b>MP3 320</b>: 320 kbps, to share a mix, with its name as the title in the file. MP3 goes up to 48 kHz (96 kHz becomes 48, 88.2 becomes 44.1) and has no bit depth. Separate tracks are always WAV or AIFF.</p>
   <h3>Name and folder</h3>
   <p>The files are called <b>Name_mix</b> and <b>Name_01_Trackname</b>. Name is the project name, unless you type another in the Name field. They go into a folder <b>Song name export</b> next to the project; <b>Choose folder...</b> picks another one, which the project remembers. After the export, <b>Show in Finder</b> (on Windows: Show in Explorer) opens the folder.</p>
   <p>The window then shows the <b>peak</b> of the export in dBFS. When it is over 0 dBFS, it says in which file, and how many dB to turn the STEREO MASTER down before you export again. A 16-bit or 24-bit file is clipped there; a 32-bit float file keeps the peak, but most players clip it.</p>

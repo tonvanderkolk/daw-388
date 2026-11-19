@@ -6,6 +6,8 @@
 #[cfg(target_os = "macos")]
 mod app_delegate;
 mod audio;
+#[cfg(target_os = "macos")]
+mod install;
 mod midi;
 
 use audio::{Output, SilentClock};
@@ -13,6 +15,10 @@ use cpal::traits::HostTrait;
 use daw388_engine::EngineHandle;
 use daw388_ui::{DawApp, DeviceInfo, Fetch, MidiMessage, OutputInfo, OutputRequest, Platform};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// The new version to start once this one has quit (after an install).
+type Relaunch = Arc<Mutex<Option<PathBuf>>>;
 
 /// The PDF manual that comes with the app.
 const MANUAL: &str = "DAW 388 Manual.pdf";
@@ -22,12 +28,29 @@ struct Desktop {
     /// Kept alive while the output plays; dropping it closes the stream.
     output: Option<Output>,
     midi: midi::MidiHub,
+    relaunch: Relaunch,
 }
 
 impl Desktop {
-    fn new(ctx: &eframe::egui::Context) -> Self {
-        Self { host: cpal::default_host(), output: None, midi: midi::MidiHub::new(ctx.clone()) }
+    fn new(ctx: &eframe::egui::Context, relaunch: Relaunch) -> Self {
+        Self { host: cpal::default_host(), output: None, midi: midi::MidiHub::new(ctx.clone()), relaunch }
     }
+}
+
+/// Move files to the Trash (Recycle Bin on Windows).
+fn move_to_trash(paths: &[PathBuf]) -> Result<(), String> {
+    // On macOS through its own file manager: the Finder way asks the user to let DAW 388
+    // control the Finder.
+    #[cfg(target_os = "macos")]
+    let context = {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        let mut context = trash::TrashContext::default();
+        context.set_delete_method(DeleteMethod::NsFileManager);
+        context
+    };
+    #[cfg(not(target_os = "macos"))]
+    let context = trash::TrashContext::default();
+    context.delete_all(paths).map_err(|e| e.to_string())
 }
 
 impl Platform for Desktop {
@@ -118,18 +141,22 @@ impl Platform for Desktop {
     }
 
     fn trash(&mut self, paths: &[PathBuf]) -> Result<(), String> {
-        // On macOS through its own file manager: the Finder way asks the user to let DAW 388
-        // control the Finder.
-        #[cfg(target_os = "macos")]
-        let context = {
-            use trash::macos::{DeleteMethod, TrashContextExtMacos};
-            let mut context = trash::TrashContext::default();
-            context.set_delete_method(DeleteMethod::NsFileManager);
-            context
-        };
-        #[cfg(not(target_os = "macos"))]
-        let context = trash::TrashContext::default();
-        context.delete_all(paths).map_err(|e| e.to_string())
+        move_to_trash(paths)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn installer(&self) -> Option<daw388_ui::Install> {
+        install::can_install().then(|| {
+            Box::new(|version: &str, progress: &std::sync::atomic::AtomicU32| {
+                install::install(version, progress, |old| move_to_trash(&[old.to_path_buf()]))
+            }) as daw388_ui::Install
+        })
+    }
+
+    fn relaunch_on_exit(&mut self, app: Option<PathBuf>) {
+        if let Ok(mut slot) = self.relaunch.lock() {
+            *slot = app;
+        }
     }
 
     fn fetcher(&self) -> Option<Fetch> {
@@ -237,13 +264,15 @@ fn main() -> eframe::Result {
     // event. Logging out or restarting asks the app delegate whether the app may quit.
     #[cfg(target_os = "macos")]
     app_delegate::install();
-    eframe::run_native(
+    let relaunch: Relaunch = Arc::default();
+    let for_app = Arc::clone(&relaunch);
+    let result = eframe::run_native(
         "DAW 388",
         options,
         Box::new(move |cc| {
             #[cfg(target_os = "macos")]
             app_delegate::set_context(&cc.egui_ctx);
-            let mut app = DawApp::new(&cc.egui_ctx, Box::new(Desktop::new(&cc.egui_ctx)));
+            let mut app = DawApp::new(&cc.egui_ctx, Box::new(Desktop::new(&cc.egui_ctx, for_app)));
             app.open_arguments(files);
             Ok(Box::new(DesktopApp {
                 app,
@@ -253,5 +282,11 @@ fn main() -> eframe::Result {
                 ctrl_click: false,
             }))
         }),
-    )
+    );
+    // After an install: start the new version now that this one is gone.
+    #[cfg(target_os = "macos")]
+    if let Some(app) = relaunch.lock().ok().and_then(|mut slot| slot.take()) {
+        install::launch(&app);
+    }
+    result
 }

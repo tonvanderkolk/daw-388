@@ -1,5 +1,7 @@
 //! Checking GitHub for a newer release: at startup at most once a day (Settings), or from the
-//! Help menu. Only a notice and a link to the release page: the app does not install anything itself.
+//! Help menu. On macOS a signed app installs it itself (Help, Install DAW 388 ...): the platform
+//! downloads the DMG, checks that Apple notarized it for this developer, and puts it in place;
+//! elsewhere the app links to the release page.
 
 use super::*;
 
@@ -94,7 +96,8 @@ impl DawApp {
                 self.preferences.latest_version = Some(latest.clone());
                 self.store_preferences();
                 if is_newer(&latest, current_version()) {
-                    self.status = format!("DAW 388 {latest} is available: Help, Download DAW 388 {latest}...");
+                    let item = if self.platform.installer().is_some() { "Install" } else { "Download" };
+                    self.status = format!("DAW 388 {latest} is available: Help, {item} DAW 388 {latest}...");
                     self.update_available = Some(latest);
                 } else {
                     self.update_available = None;
@@ -112,12 +115,103 @@ impl DawApp {
         }
     }
 
+    /// Download, check and install `version` on a background thread.
+    pub(crate) fn install_update(&mut self, version: String) {
+        let Some(install) = self.platform.installer() else {
+            self.platform.open_url(RELEASES_PAGE);
+            return;
+        };
+        if self.install_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = channel();
+        self.install_rx = Some(rx);
+        self.install_progress.store(0, std::sync::atomic::Ordering::Relaxed);
+        let progress = Arc::clone(&self.install_progress);
+        let wanted = version.clone();
+        self.installing = Some(version);
+        self.platform.spawn(Box::new(move || {
+            let _ = tx.send(install(&wanted, &progress));
+        }));
+    }
+
+    /// Show how far an install is, and take its answer when it is there.
+    pub(crate) fn poll_install(&mut self) {
+        if self.restarting && self.quit_answer() == Some(false) {
+            self.restarting = false;
+            self.platform.relaunch_on_exit(None);
+        }
+        let Some(rx) = &self.install_rx else { return };
+        let version = self.installing.clone().unwrap_or_default();
+        match rx.try_recv() {
+            Ok(Ok(app)) => {
+                self.install_rx = None;
+                self.installing = None;
+                self.update_available = None;
+                self.status = format!("DAW 388 {version} is installed");
+                self.installed = Some((version, app));
+            }
+            Ok(Err(e)) => {
+                self.install_rx = None;
+                self.installing = None;
+                log::warn!("install of {version} failed: {e}");
+                self.status = format!("Cannot install DAW 388 {version}: {e}. Help, Download... opens the release page");
+            }
+            Err(_) => {
+                let done = self.install_progress.load(std::sync::atomic::Ordering::Relaxed);
+                self.status = if done < 900 {
+                    format!("Downloading DAW 388 {version}: {}%", done / 9)
+                } else {
+                    format!("Checking and installing DAW 388 {version}...")
+                };
+            }
+        }
+    }
+
+    /// The new version is in place: restart now (asking about unsaved work first) or later.
+    pub(crate) fn installed_dialog(&mut self, ctx: &egui::Context) {
+        let Some((version, app)) = self.installed.clone() else { return };
+        let mut answer = None;
+        let title = format!("DAW 388 {version} is installed");
+        let response = skin::paper::paper_modal(ctx, "update-installed", &title, 400.0, |ui| {
+            ui.label("Restart to use the new version. If there are unsaved changes, DAW 388 asks about them first.");
+            ui.add_space(14.0);
+            ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 34.0), Layout::right_to_left(Align::Center), |ui| {
+                if skin::paper::primary_button(ui, "Restart").clicked() {
+                    answer = Some(true);
+                }
+                if skin::paper::plain_button(ui, "Later").clicked() {
+                    answer = Some(false);
+                }
+            });
+        });
+        if answer == Some(true) {
+            self.installed = None;
+            self.restarting = true;
+            self.platform.relaunch_on_exit(Some(app));
+            self.request_quit();
+        } else if answer == Some(false) || response.should_close() {
+            self.installed = None;
+            self.status = format!("DAW 388 {version} starts the next time you open it");
+        }
+    }
+
     /// The update items of the Help menu.
     pub(crate) fn update_menu_items(&mut self, ui: &mut Ui) {
-        if let Some(latest) = self.update_available.clone()
-            && ui.button(format!("Download DAW 388 {latest}...")).on_hover_text(RELEASES_PAGE).clicked()
-        {
-            self.platform.open_url(RELEASES_PAGE);
+        if let Some(latest) = self.update_available.clone() {
+            if self.platform.installer().is_some() {
+                let busy = self.install_rx.is_some();
+                if ui
+                    .add_enabled(!busy, egui::Button::new(format!("Install DAW 388 {latest}...")))
+                    .on_hover_text("Download it, check it and put it in place of this version")
+                    .clicked()
+                {
+                    self.install_update(latest.clone());
+                }
+            }
+            if ui.button(format!("Download DAW 388 {latest}...")).on_hover_text(RELEASES_PAGE).clicked() {
+                self.platform.open_url(RELEASES_PAGE);
+            }
         }
         if ui.button("Check for Updates...").clicked() {
             self.check_for_updates(true);

@@ -98,6 +98,7 @@ impl DawApp {
                 ui.label("Made by Ton van der Kolk.");
                 ui.add_space(4.0);
                 ui.label("Free and open source, under the MIT or Apache-2.0 licence.");
+                note(ui, "MP3 export uses the LAME encoder (LGPL); the source of DAW 388 and LAME is on GitHub.");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label("Like DAW 388?");

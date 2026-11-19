@@ -43,6 +43,9 @@
 - [x] Menu's op 13 punt, de maat van macOS, los van de zoom; de vensters iets groter (0.37.1)
 - [x] Schilderstape met de spoornamen in stifthandschrift, de console gecentreerd en zoomstappen van 2% (0.38.0)
 - [x] Tooltips uit te zetten in Settings; Bounce Setup en Export op de hoogte van hun inhoud (0.38.1)
+- [x] MP3-export voor de stereo bounce en SAVE (LAME, 320 kbps) (0.39.0)
+- [x] Automatisch installeren van een nieuwe versie op de Mac, met controle van handtekening en notarisatie (0.39.0)
+- [ ] Automatisch installeren op Windows: vraagt een eigen handtekening op de releases (de app is daar niet ondertekend) en eerst meer gebruik van de Windows-versie
 - [ ] Grotere labels op de console zelf: lastig op het vaste raster, eventueel als keuze in View
 - [ ] Mackie Control (X-Touch One, BCF2000 in MCU-stand), zonder leren
 - [ ] MIDI learn voor AUX, EFF, EQ, TRIM, de effecten en de MONITOR-sectie

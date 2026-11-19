@@ -1,4 +1,5 @@
-//! Export: a high-quality resampler, WAV and AIFF writers with dither, and file names.
+//! Export: a high-quality resampler, WAV and AIFF writers with dither, an MP3 writer (LAME) and
+//! file names.
 
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
@@ -12,6 +13,8 @@ pub enum ExportFormat {
     #[default]
     Wav,
     Aiff,
+    /// MP3 at 320 kbps, for sharing a mix; the bit depth does not apply.
+    Mp3,
 }
 
 impl ExportFormat {
@@ -19,9 +22,13 @@ impl ExportFormat {
         match self {
             Self::Wav => "wav",
             Self::Aiff => "aif",
+            Self::Mp3 => "mp3",
         }
     }
 }
+
+/// The bit rate of an MP3 export: the highest MP3 has.
+pub const MP3_KBPS: u32 = 320;
 
 /// Sample format of an export.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -96,6 +103,10 @@ pub fn write_audio(path: &Path, channels: &[Vec<f32>], rate: u32, format: Export
     let written = match format {
         ExportFormat::Wav => write_wav(&temporary, channels, rate, depth),
         ExportFormat::Aiff => write_aiff(&temporary, channels, rate, depth),
+        ExportFormat::Mp3 => {
+            let title = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            write_mp3(&temporary, channels, rate, &title)
+        }
     };
     match written {
         Ok(()) => fs::rename(&temporary, path),
@@ -129,6 +140,51 @@ fn write_wav(path: &Path, channels: &[Vec<f32>], rate: u32, depth: BitDepth) -> 
         }
     }
     writer.finalize().map_err(io::Error::other)
+}
+
+/// MP3 at [`MP3_KBPS`], with `title` as its ID3 title. MP3 goes up to 48 kHz: a higher rate is
+/// resampled to 48 or 44.1 kHz, whichever it is a multiple of.
+fn write_mp3(path: &Path, channels: &[Vec<f32>], rate: u32, title: &str) -> io::Result<()> {
+    use mp3lame_encoder::{Bitrate, Builder, DualPcm, FlushNoGap, Id3Tag, MonoPcm, Quality};
+    let fail = |what: &str| io::Error::other(format!("MP3 encoder: {what}"));
+    let out_rate = match rate {
+        r if r <= 48_000 => r,
+        r if r % 44_100 == 0 => 44_100,
+        _ => 48_000,
+    };
+    let channels: Vec<Vec<f32>> = channels.iter().map(|c| resample_hq(c, rate, out_rate)).collect();
+    let frames = channels.iter().map(Vec::len).min().unwrap_or(0);
+    let stereo = channels.len() >= 2;
+    let mut builder = Builder::new().ok_or_else(|| fail("cannot start"))?;
+    builder.set_num_channels(if stereo { 2 } else { 1 }).map_err(|e| fail(&format!("{e:?}")))?;
+    builder.set_sample_rate(out_rate).map_err(|e| fail(&format!("{e:?}")))?;
+    builder.set_brate(Bitrate::Kbps320).map_err(|e| fail(&format!("{e:?}")))?;
+    builder.set_quality(Quality::Best).map_err(|e| fail(&format!("{e:?}")))?;
+    let tag = Id3Tag { title: title.as_bytes(), artist: &[], album: &[], album_art: &[], year: &[], comment: b"DAW 388" };
+    builder.set_id3_tag(tag).map_err(|e| fail(&format!("{e:?}")))?;
+    let mut encoder = builder.build().map_err(|e| fail(&format!("{e:?}")))?;
+    let mut file = BufWriter::new(fs::File::create(path)?);
+    let mut buffer = Vec::new();
+    const CHUNK: usize = 1152 * 32;
+    let mut start = 0;
+    while start < frames {
+        let end = (start + CHUNK).min(frames);
+        buffer.clear();
+        buffer.reserve(mp3lame_encoder::max_required_buffer_size(end - start));
+        if stereo {
+            let input = DualPcm { left: &channels[0][start..end], right: &channels[1][start..end] };
+            encoder.encode_to_vec(input, &mut buffer).map_err(|e| fail(&format!("{e:?}")))?;
+        } else {
+            encoder.encode_to_vec(MonoPcm(&channels[0][start..end]), &mut buffer).map_err(|e| fail(&format!("{e:?}")))?;
+        }
+        file.write_all(&buffer)?;
+        start = end;
+    }
+    buffer.clear();
+    buffer.reserve(mp3lame_encoder::max_required_buffer_size(1152));
+    encoder.flush_to_vec::<FlushNoGap>(&mut buffer).map_err(|e| fail(&format!("{e:?}")))?;
+    file.write_all(&buffer)?;
+    file.flush()
 }
 
 /// An IEEE 754 80-bit extended number, as AIFF stores its sample rate.
@@ -269,6 +325,28 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{e}"))
                 .all(|e| { e.map(|e| e.path().extension().is_none_or(|x| x != "part")).unwrap_or(false) })
         );
+    }
+
+    #[test]
+    fn mp3_reads_back_with_its_title_and_at_most_48_khz() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let tone =
+            |rate: u32| -> Vec<f32> { (0..rate).map(|i| 0.5 * (i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin()).collect() };
+        for (rate, expected) in [(44_100, 44_100), (48_000, 48_000), (96_000, 48_000), (88_200, 44_100)] {
+            let path = dir.path().join(format!("Song {rate}.mp3"));
+            write_audio(&path, &[tone(rate), tone(rate)], rate, ExportFormat::Mp3, BitDepth::Int24).unwrap_or_else(|e| panic!("{e}"));
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{e}"));
+            assert_eq!(&bytes[..3], b"ID3", "{rate}: an ID3 tag first");
+            let title = format!("Song {rate}");
+            assert!(bytes.windows(title.len()).any(|w| w == title.as_bytes()), "{rate}: the title in the tag");
+            assert!(bytes.len() < 60_000, "{rate}: about 40 kB for a second at 320 kbps, not {}", bytes.len());
+            let clip = crate::load_audio(&path).unwrap_or_else(|e| panic!("{rate}: {e}"));
+            assert_eq!(clip.sample_rate, expected);
+            let frames = clip.samples.len() as f64;
+            assert!((frames / f64::from(expected) - 1.0).abs() < 0.05, "{rate}: {frames} frames");
+            let rms = (clip.samples.iter().map(|x| x * x).sum::<f32>() / clip.samples.len() as f32).sqrt();
+            assert!((rms - 0.5 / 2f32.sqrt()).abs() < 0.05, "{rate}: level {rms}");
+        }
     }
 
     #[test]

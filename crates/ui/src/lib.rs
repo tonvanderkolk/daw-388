@@ -151,6 +151,9 @@ const SILENT_RATE: u32 = 48_000;
 
 /// Fetches a web address and gives its text, or why it could not.
 pub type Fetch = Box<dyn FnOnce(&str) -> Result<String, String> + Send>;
+/// Downloads, checks and installs the given version in place of this app, on a background
+/// thread, counting its progress from 0 to 1000; gives the path of the installed app.
+pub type Install = Box<dyn FnOnce(&str, &std::sync::atomic::AtomicU32) -> Result<PathBuf, String> + Send>;
 
 /// What the UI needs from the platform it runs on.
 pub trait Platform {
@@ -186,6 +189,13 @@ pub trait Platform {
     /// Something that fetches a web address and gives its text, to run on a background thread;
     /// `None` where the platform cannot (the update check then does nothing).
     fn fetcher(&self) -> Option<Fetch>;
+    /// Something that installs a new version in place of this app (macOS, signed builds in an
+    /// app bundle); `None` where the user downloads it from the release page.
+    fn installer(&self) -> Option<Install> {
+        None
+    }
+    /// Start this app (the new version) once this one has quit; `None` forgets it again.
+    fn relaunch_on_exit(&mut self, _app: Option<PathBuf>) {}
     /// Move files to the Trash (Recycle Bin on Windows), so they can still be brought back.
     fn trash(&mut self, paths: &[PathBuf]) -> Result<(), String>;
     /// Run slow work (decoding and resampling audio) away from the UI thread.
@@ -405,6 +415,14 @@ pub struct DawApp {
     update_rx: Option<Receiver<Result<String, String>>>,
     update_manual: bool,
     update_available: Option<String>,
+    /// An install running on its own thread: its answer and its progress (0 to 1000).
+    install_rx: Option<Receiver<Result<PathBuf, String>>>,
+    install_progress: Arc<std::sync::atomic::AtomicU32>,
+    /// The version being installed, and once it is in place the question to restart.
+    installing: Option<String>,
+    installed: Option<(String, PathBuf)>,
+    /// Quitting to start the new version: a cancelled quit forgets the restart.
+    restarting: bool,
     /// Where the blanking plate in the EFFECT RTN column starts (Simple), for the mixer view to draw.
     return_plate: Option<egui::Rect>,
     status: String,
@@ -798,6 +816,11 @@ impl DawApp {
             update_rx: None,
             update_manual: false,
             update_available: None,
+            install_rx: None,
+            install_progress: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            installing: None,
+            installed: None,
+            restarting: false,
             return_plate: None,
             status: String::new(),
             project_dir: None,
@@ -2367,7 +2390,7 @@ impl DawApp {
             }
             let running = self.running_export.is_some();
             if place(ui, col(4), row, key_box, |ui| KeyCap::new("EXPORT", keys::SMALL).lamp(running, palette::LED_GREEN).show(ui))
-                .on_hover_text("Stereo bounce and separate tracks as WAV or AIFF")
+                .on_hover_text("Stereo bounce (WAV, AIFF or MP3) and separate tracks (WAV or AIFF)")
                 .clicked()
             {
                 self.show_export = true;
@@ -2666,6 +2689,9 @@ impl DawApp {
             ui.add_enabled_ui(running.is_none(), |ui| {
                 section_title(ui, "What");
                 toggle_cards(ui, &mut [("Stereo bounce", &mut choices.stereo), ("Separate tracks", &mut choices.stems)]);
+                if choices.stems && choices.format == ExportFormat::Mp3 {
+                    choices.format = ExportFormat::Wav;
+                }
                 ui.add_enabled_ui(choices.stereo && machine, |ui| {
                     check(ui, &mut choices.stereo_tape, "Stereo bounce with tape character");
                 });
@@ -2717,11 +2743,20 @@ impl DawApp {
                     let rate_text = |rate: u32| format!("{}.{} kHz", rate / 1000, (rate % 1000) / 100);
                     columns[0].label(RichText::new("Format").size(11.5).color(paper::INK_SOFT));
                     egui::ComboBox::from_id_salt("export-format")
-                        .selected_text(if choices.format == ExportFormat::Wav { "WAV" } else { "AIFF" })
+                        .selected_text(match choices.format {
+                            ExportFormat::Wav => "WAV",
+                            ExportFormat::Aiff => "AIFF",
+                            ExportFormat::Mp3 => "MP3 320",
+                        })
                         .width(columns[0].available_width())
                         .show_ui(&mut columns[0], |ui| {
                             ui.selectable_value(&mut choices.format, ExportFormat::Wav, "WAV");
                             ui.selectable_value(&mut choices.format, ExportFormat::Aiff, "AIFF");
+                            // MP3 is for sharing a mix, not for separate tracks.
+                            if !choices.stems {
+                                ui.selectable_value(&mut choices.format, ExportFormat::Mp3, "MP3 320")
+                                    .on_hover_text("MP3 at 320 kbps, to share a mix; at most 48 kHz");
+                            }
                         });
                     columns[1].label(RichText::new("Bit depth").size(11.5).color(paper::INK_SOFT));
                     let depth_text = |depth: BitDepth| match depth {
@@ -2729,14 +2764,18 @@ impl DawApp {
                         BitDepth::Int24 => "24-bit",
                         BitDepth::Float32 => "32-bit float",
                     };
-                    egui::ComboBox::from_id_salt("export-depth")
-                        .selected_text(depth_text(choices.depth))
-                        .width(columns[1].available_width())
-                        .show_ui(&mut columns[1], |ui| {
-                            for depth in [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32] {
-                                ui.selectable_value(&mut choices.depth, depth, depth_text(depth));
-                            }
-                        });
+                    // MP3 has no bit depth.
+                    let mp3 = choices.format == ExportFormat::Mp3;
+                    columns[1].add_enabled_ui(!mp3, |ui| {
+                        egui::ComboBox::from_id_salt("export-depth")
+                            .selected_text(if mp3 { "-" } else { depth_text(choices.depth) })
+                            .width(ui.available_width())
+                            .show_ui(ui, |ui| {
+                                for depth in [BitDepth::Int16, BitDepth::Int24, BitDepth::Float32] {
+                                    ui.selectable_value(&mut choices.depth, depth, depth_text(depth));
+                                }
+                            });
+                    });
                     columns[2].label(RichText::new("Sample rate").size(11.5).color(paper::INK_SOFT));
                     let rate_choice = |rate: Option<u32>| rate.map_or_else(|| format!("{} (project)", rate_text(project_rate)), rate_text);
                     egui::ComboBox::from_id_salt("export-rate")
@@ -3376,6 +3415,7 @@ impl DawApp {
             self.cancel_midi_learn();
         }
         self.poll_update();
+        self.poll_install();
         self.sync_transport();
         self.update_meters(dt);
         self.handle_file_shortcuts(ui);
@@ -3437,6 +3477,7 @@ impl DawApp {
         self.deck_window(&ctx);
         self.unsaved_dialog(&ctx);
         self.confirm_simple_dialog(&ctx);
+        self.installed_dialog(&ctx);
         // egui moves the focus to the next widget on Tab; after a switch nothing should keep it,
         // or the space bar and the other keys would stop working.
         if switched {
